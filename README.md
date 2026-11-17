@@ -2,7 +2,7 @@
 
 One head, many arms. You talk to one coding agent, the **head**. It splits your requests into tasks and hands each one to an **arm**: another agent running in the background, in its own git worktree, in parallel. When an arm finishes, the head checks the work and asks you to accept it. Accepted work is committed to its own branch, never merged or pushed for you.
 
-Works with any agent CLI that takes a prompt on the command line (Claude Code, Codex, Gemini CLI, Antigravity, Grok, Aider, ...), on Linux, macOS and Windows. It is a small Node.js tool with no runtime dependencies.
+Works with any agent CLI that takes a prompt on the command line (Claude Code, Codex, Gemini CLI, Antigravity, Grok, ...), on Linux, macOS and Windows. It is a small Node.js tool with no runtime dependencies.
 
 Made by [Essam](https://essam.pro).
 
@@ -105,7 +105,6 @@ Data lives in $OCTOMAXXING_HOME (default ~/.octomaxxing).
 | Gemini CLI | `/octomaxxing` | `["gemini", "-i", "{prompt}"]` | `["gemini", "--approval-mode", "auto_edit", "-p", "{prompt}"]` |
 | Antigravity | `/octomaxxing` | `["agy", "-i", "{prompt}"]` | `["agy", "-p", "{prompt}"]` |
 | Grok | `/octomaxxing` | none | `["grok", "-p", "--always-approve", "{prompt}"]` |
-| Aider | none | none | `["aider", "--yes-always", "--no-auto-commits", "--message", "{prompt}"]` |
 
 Flags come from each tool's documentation; check them against your installed version.
 
@@ -113,10 +112,10 @@ Flags come from each tool's documentation; check them against your installed ver
   - Claude Code's `auto` mode lets a classifier approve safe actions, such as edits and running tests, and blocks risky ones.
   - Codex works in a sandbox limited to the arm's folder.
   - Gemini CLI approves edits only.
-  - Grok's `--always-approve` and Aider's `--yes-always` approve everything; your deny rules (Grok) still apply.
+  - Grok's `--always-approve` approves everything except what your Grok deny rules forbid.
   - Antigravity documents no headless approval flag, so its arms may stop and ask.
   - Every agent also has a flag that skips all checks (for example `--dangerously-skip-permissions` for Claude Code). Its docs recommend that only inside a container or VM.
-- Agents without `head` can still be the head through their slash command (Grok), or only work as arms (Aider).
+- An agent without `head` (Grok) can still be the head through its slash command.
 - Arms use the same agent as the head unless the head picks another one for a task (`--agent`). `octomaxxing head` uses `"defaultAgent"`, or the first agent listed.
 - `maxArms` is how many arms run at once. More tasks wait in a queue and start by themselves.
 

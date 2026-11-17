@@ -23,7 +23,7 @@ describe('config', () => {
   it('rejects templates without {prompt}, bad maxArms and an unknown defaultAgent', () => {
     assert.throws(() => validateConfig({ agents: { a: { head: ['a'], arm: ['a', '{prompt}'] } } }), /agents\.a\.head needs a "\{prompt\}"/);
     assert.throws(() => validateConfig({ agents: { a: { head: ['a', '{prompt}'] } } }), /agents\.a\.arm must be/);
-    assert.doesNotThrow(() => validateConfig({ agents: { aider: { arm: ['aider', '--message', '{prompt}'] } } }), 'arm-only agents are fine');
+    assert.doesNotThrow(() => validateConfig({ agents: { armonly: { arm: ['some-agent', '--message', '{prompt}'] } } }), 'arm-only agents are fine');
     assert.throws(() => validateConfig({ maxArms: 0 }), /maxArms/);
     assert.throws(() => validateConfig({ agents: {}, defaultAgent: 'x' }), /defaultAgent/);
   });
@@ -157,7 +157,7 @@ describe('agent templates and skills', () => {
       assert.equal(removed.length, 3);
       assert.ok(!existsSync(skill) && !existsSync(shared));
       assert.equal(readFileSync(foreign, 'utf8'), 'someone else', 'foreign files are left alone');
-      assert.throws(() => installSkills('aider', env, userHome), /No slash command support for "aider"/);
+      assert.throws(() => installSkills('some-agent', env, userHome), /No slash command support for "some-agent"/);
     } finally {
       cleanup(dir);
     }

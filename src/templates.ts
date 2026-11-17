@@ -10,5 +10,4 @@ export const TEMPLATES: Record<string, AgentTemplate> = {
   gemini: { head: ['gemini', '-i', '{prompt}'], arm: ['gemini', '--approval-mode', 'auto_edit', '-p', '{prompt}'] },
   antigravity: { head: ['agy', '-i', '{prompt}'], arm: ['agy', '-p', '{prompt}'] },
   grok: { arm: ['grok', '-p', '--always-approve', '{prompt}'] },
-  aider: { arm: ['aider', '--yes-always', '--no-auto-commits', '--message', '{prompt}'] },
 };

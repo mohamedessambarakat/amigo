@@ -25,8 +25,8 @@ describe('README stays in sync with the code', () => {
   it('the agent table matches the built-in templates and skill targets', () => {
     assert.doesNotThrow(() => validateConfig(JSON.parse(/```json\n([\s\S]*?)```/.exec(readme)?.[1] ?? '')));
     const json = (cell: string) => (cell === 'none' ? undefined : JSON.parse(cell.replace(/^`|`$/g, '')));
-    const rows = [...readme.matchAll(/^\| (Claude Code|Codex|Gemini CLI|Antigravity|Grok|Aider) \| (.+?) \| (.+?) \| (.+?) \|$/gm)];
-    const names: Record<string, string> = { 'Claude Code': 'claude', Codex: 'codex', 'Gemini CLI': 'gemini', Antigravity: 'antigravity', Grok: 'grok', Aider: 'aider' };
+    const rows = [...readme.matchAll(/^\| (Claude Code|Codex|Gemini CLI|Antigravity|Grok) \| (.+?) \| (.+?) \| (.+?) \|$/gm)];
+    const names: Record<string, string> = { 'Claude Code': 'claude', Codex: 'codex', 'Gemini CLI': 'gemini', Antigravity: 'antigravity', Grok: 'grok' };
     assert.equal(rows.length, Object.keys(TEMPLATES).length);
     for (const [, label, invoke, head, arm] of rows) {
       const agent = names[label as string] as string;
