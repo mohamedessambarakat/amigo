@@ -1,3 +1,5 @@
+![octomaxxing: a buff octopus with a laptop, phone, coffee and a keyboard dumbbell in its arms. One head. Many arms.](docs/images/2026-11-17-banner.jpg)
+
 # octomaxxing
 
 One head, many arms. You talk to one coding agent, the **head**. It splits your requests into tasks and hands each one to an **arm**: another agent running in the background, in its own git worktree, in parallel. When an arm finishes, the head checks the work and asks you to accept it. Accepted work is committed to its own branch, never merged or pushed for you.
@@ -161,6 +163,7 @@ Tests run the real CLI against a fake agent (`test/fake-agent.mjs`) in temporary
 | `src/` | The CLI: commands, agent launching, task state, git worktrees, skill files |
 | `prompts/` | The instructions given to the head (`head.md`) and to every arm (`arm.md`) |
 | `test/` | Unit tests, end-to-end tests and the fake agent |
+| `docs/` | Images for this README |
 
 ## License
 

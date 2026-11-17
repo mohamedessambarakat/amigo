@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 import { HELP } from '../src/cli.ts';
@@ -13,6 +13,10 @@ const readme = readFileSync(join(codeRoot, 'README.md'), 'utf8');
 describe('README stays in sync with the code', () => {
   it('contains the exact help text', () => {
     assert.ok(readme.includes(HELP), 'update the command block in README.md to match HELP in src/cli.ts');
+  });
+
+  it('every file it links to exists', () => {
+    for (const m of readme.matchAll(/\]\((docs\/[^)#]+)\)/g)) assert.ok(existsSync(join(codeRoot, m[1] as string)), `${m[1]} exists`);
   });
 
   it('only mentions commands that exist', () => {
