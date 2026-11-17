@@ -1,0 +1,24 @@
+{
+  "name": "octomaxxing",
+  "version": "0.1.0",
+  "private": true,
+  "description": "One head agent, many arms: run any coding-agent CLI as a lead that delegates tasks to parallel worker agents in git worktrees.",
+  "license": "MIT",
+  "author": "Mohamed Essam Barakat",
+  "repository": "github:mohamedessambarakat/octomaxxing",
+  "type": "module",
+  "bin": {
+    "octomaxxing": "./src/cli.ts"
+  },
+  "engines": {
+    "node": ">=24.3"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "node --test \"test/*.test.ts\""
+  },
+  "devDependencies": {
+    "@types/node": "^24.19.2",
+    "typescript": "^7.0.2"
+  }
+}
