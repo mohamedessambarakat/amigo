@@ -2,7 +2,7 @@
 
 # octomaxxing
 
-One head, many arms. You talk to one coding agent, the **head**. It splits your requests into tasks and hands each one to an **arm**: another agent running in the background, in its own git worktree, in parallel. When an arm finishes, the head checks the work and asks you to accept it. Accepted work is committed to its own branch, never merged or pushed for you.
+One head, many arms. You talk to one coding agent, the **head**. It splits your requests into tasks and hands each one to an **arm**: another agent in its own terminal tab and its own git worktree, working in parallel. You can watch every arm, and type into a Claude Code arm yourself. When an arm finishes, the head checks the work and asks you to accept it. Accepted work is committed to its own branch, never merged or pushed for you.
 
 Works with any agent CLI that takes a prompt on the command line (Claude Code, Codex, Gemini CLI, Antigravity, Grok, ...), on Linux, macOS and Windows. It is a small Node.js tool with no runtime dependencies.
 
@@ -56,9 +56,9 @@ The head greets you with what is free and what finished, then you just talk to i
 > fix the broken footer link in my-app, and add a dark mode toggle to site
 ```
 
-It writes a brief with Done-when criteria for each task and starts the arms. Ask it what is done whenever you like. When an arm finishes, the head checks the result (bigger work gets a separate reviewer arm), shows you the changed files and asks you to accept. On your yes it runs `octomaxxing close <id> --commit`: the work is committed to branch `octomaxxing/<id>` and the worktree is removed. Merging and pushing stay with you.
+It writes a brief with Done-when criteria for each task and starts the arms, each in a new terminal tab named `octomaxxing-<id>`. Ask it what is done whenever you like. When an arm finishes, the head checks the result (bigger work gets a separate reviewer arm), shows you the changed files and asks you to accept. On your yes it runs `octomaxxing close <id> --commit`: the work is committed to branch `octomaxxing/<id>` and the worktree is removed. Merging and pushing stay with you.
 
-Arms that need an answer stop and ask; the head brings the question to you and sends your answer back (`octomaxxing send`), and the arm runs again in the same folder.
+Arms that need an answer stop and ask; the head brings the question to you and sends your answer back, and the arm carries on in the same folder. You can also answer in the arm's tab yourself.
 
 You can use every command yourself too:
 
@@ -75,8 +75,9 @@ octomaxxing: one head agent, many arms.
                                                     start an arm; the brief comes from stdin unless --brief-file is given
   octomaxxing status [<id>]                         all open arms, or one in detail (with its changed files)
   octomaxxing inbox                                 arms that finished since you last looked
+  octomaxxing wait [<id>...] [--timeout-min <n>]    wait until an arm finishes a turn (default 60 min)
   octomaxxing send <id> [--file <file> | <message>] follow-up for a finished arm (message from stdin if neither is given)
-  octomaxxing attach <id>                           print an arm's output and follow it while it runs
+  octomaxxing attach <id>                           print an arm's results and follow it while it runs
   octomaxxing close <id> [--commit [-m <message>]] [--force]
                                                     finish an arm: --commit keeps its work on branch octomaxxing/<id>
   octomaxxing help                                  this text
@@ -86,7 +87,7 @@ Data lives in $OCTOMAXXING_HOME (default ~/.octomaxxing).
 
 ## Agents
 
-`~/.octomaxxing/config.json` holds one entry per agent. `head` starts an interactive session; `arm` runs one task and exits. `{prompt}` is replaced by the instructions. `install-skill` fills this in for you; edit it to change flags.
+`~/.octomaxxing/config.json` holds one entry per agent. `head` starts an interactive session. `arm` starts an arm: Claude Code runs it as an interactive session (see below); other agents run one task and exit. `{prompt}` is replaced by the instructions. `install-skill` fills this in for you; edit it to change flags.
 
 ```json
 {
@@ -96,13 +97,14 @@ Data lives in $OCTOMAXXING_HOME (default ~/.octomaxxing).
       "arm": ["claude", "-p", "--permission-mode", "auto", "{prompt}"]
     }
   },
-  "maxArms": 2
+  "armMb": 600,
+  "reserveMb": 2048
 }
 ```
 
 | Agent | Slash command | `head` | `arm` |
 |---|---|---|---|
-| Claude Code | `/octomaxxing` | `["claude", "{prompt}"]` | `["claude", "-p", "--permission-mode", "auto", "{prompt}"]` |
+| Claude Code | `/octomaxxing` | `["claude", "{prompt}"]` | `["claude", "--permission-mode", "auto", "{prompt}"]` |
 | Codex | `$octomaxxing` | `["codex", "{prompt}"]` | `["codex", "exec", "--sandbox", "workspace-write", "--skip-git-repo-check", "{prompt}"]` |
 | Gemini CLI | `/octomaxxing` | `["gemini", "-i", "{prompt}"]` | `["gemini", "--approval-mode", "auto_edit", "-p", "{prompt}"]` |
 | Antigravity | `/octomaxxing` | `["agy", "-i", "{prompt}"]` | `["agy", "-p", "{prompt}"]` |
@@ -110,7 +112,7 @@ Data lives in $OCTOMAXXING_HOME (default ~/.octomaxxing).
 
 Flags come from each tool's documentation; check them against your installed version.
 
-- **Permissions are yours to choose.** An arm runs without anyone watching, so it can only do what its flags allow, and whatever you allow applies to every arm.
+- **Permissions are yours to choose.** Arms work without anyone approving each step, so an arm can only do what its flags allow, and whatever you allow applies to every arm.
   - Claude Code's `auto` mode lets a classifier approve safe actions, such as edits and running tests, and blocks risky ones.
   - Codex works in a sandbox limited to the arm's folder.
   - Gemini CLI approves edits only.
@@ -119,7 +121,8 @@ Flags come from each tool's documentation; check them against your installed ver
   - Every agent also has a flag that skips all checks (for example `--dangerously-skip-permissions` for Claude Code). Its docs recommend that only inside a container or VM.
 - An agent without `head` (Grok) can still be the head through its slash command.
 - Arms use the same agent as the head unless the head picks another one for a task (`--agent`). `octomaxxing head` uses `"defaultAgent"`, or the first agent listed.
-- `maxArms` is how many arms run at once. More tasks wait in a queue and start by themselves.
+- An arm starts only while free RAM, minus `armMb` (what one arm needs, in MB), stays at or above `reserveMb`. Other tasks wait in a queue and start by themselves as RAM frees up. Only one arm runs in a folder at a time.
+- `"terminal"` picks where arm tabs open: `warp`, `wt` (Windows Terminal), `terminal` (macOS Terminal.app) or `tmux`. By default octomaxxing uses Warp when it is installed, else Windows Terminal on Windows, Terminal.app on macOS, and tmux on Linux (run octomaxxing inside tmux there). `OCTOMAXXING_TERMINAL` overrides it.
 
 Check a template without running anything: `octomaxxing spawn --project <name> --dry-run --brief-file README.md` prints the exact command.
 
@@ -138,12 +141,16 @@ Give your agent the link to this repository and ask it to set up octomaxxing. Ag
 
 - `~/.octomaxxing/` holds `config.json`, `projects.json`, `tasks/<id>/` (brief, prompt, task state, output log) and `worktrees/`.
 - `/octomaxxing` runs `octomaxxing brief --agent <name>`, which prints the head's instructions with a live greeting; the session you are in becomes the head.
-- An arm runs in a detached background process that starts the agent's `arm` command and writes its output to `tasks/<id>/output.log` (`octomaxxing attach <id>` follows it). Arms end their last message with `STATUS: done - ...`, `STATUS: blocked - ...` or `STATUS: question - ...`; that line is the result the head sees in `octomaxxing inbox`. An arm without that line is `done` if the agent exited cleanly, else `failed`.
+- Every arm opens in a new terminal tab. In Warp, octomaxxing writes a tab config `octomaxxing-<id>.toml` (in `%APPDATA%\warp\Warp\data\tab_configs` on Windows or `~/.warp/tab_configs` on macOS), opens `warp://tab_config/octomaxxing-<id>`, and deletes the file when the arm ends. The tab closes by itself when the arm ends cleanly, and waits for a key after an error.
+- Arms end each turn with `STATUS: done - ...`, `STATUS: blocked - ...` or `STATUS: question - ...`; that line is the result the head sees in `octomaxxing inbox` and `octomaxxing wait`.
+- **Claude Code arms** are interactive sessions named `octomaxxing-<id>`, so you can type into them. Hooks (in `tasks/<id>/claude-settings.json`) record each turn's STATUS line. When the head is Claude Code too, it runs as the session `octomaxxing-head`: arms message it with SendMessage when a turn ends, and it can message an arm whose tab is open. A turn that ends without a STATUS line, or without that message, is sent back once. `octomaxxing send` resumes the arm's session in a new tab. Before an arm starts, octomaxxing marks its folder as trusted in `~/.claude.json` (so the session opens without the trust dialog) and removes that entry when the arm's worktree is closed.
+- **Other agents** run their `arm` command once in the tab; the output stays in `tasks/<id>/output.log` (`octomaxxing attach <id>` follows it). Without a STATUS line, the arm is `done` if the agent exited cleanly, else `failed`. A follow-up runs it again with the brief, its last result and every follow-up.
 - On Windows, agents installed by npm are `.cmd` files that only start through `cmd.exe`, which cannot carry a multi-line prompt. Those agents get one line instead: "Read the file <path> and follow the instructions in it exactly." The same happens for any prompt longer than 24,000 characters.
 
 ## Safety
 
-- Arms work unattended, with exactly the permissions their template gives the agent. Start with the narrow ones.
+- Arms work without step-by-step approval, with exactly the permissions their template gives the agent. Start with the narrow ones.
+- octomaxxing marks only its own arm folders as trusted in `~/.claude.json`, keeps every other field of that file, and removes the entry for a worktree it closes.
 - Arms cannot run octomaxxing's managing commands (`spawn`, `send`, `close`, `add`, `install-skill`); only the head can.
 - octomaxxing commits only to `octomaxxing/<id>` branches, and only when you close a task with `--commit`. It refuses if the arm moved its worktree to another branch. It never merges or pushes, and it deletes only an `octomaxxing/<id>` branch that has no commits.
 - `close` refuses to throw away an arm's changes unless you add `--force`.
@@ -156,7 +163,7 @@ npm run typecheck
 npm test
 ```
 
-Tests run the real CLI against a fake agent (`test/fake-agent.mjs`) in temporary folders.
+Tests run the real CLI against a fake agent (`test/fake-agent.mjs`) in temporary folders, with arm tabs replaced by detached processes (`OCTOMAXXING_TERMINAL=test`).
 
 | Folder | What is in it |
 |---|---|

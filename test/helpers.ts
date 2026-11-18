@@ -11,17 +11,30 @@ export function tmpDir(prefix = 'octomaxxing-test-'): string {
   return realpathSync(mkdtempSync(join(os.tmpdir(), prefix)));
 }
 
+/** An arm's tab process can still be finishing (and holding the folder on Windows) just after its task reports. */
 export function cleanup(dir: string): void {
-  rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
+  for (let waited = 0; ; waited += 250) {
+    try {
+      rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+      return;
+    } catch (err) {
+      if (waited > 30_000 || !['EPERM', 'EBUSY', 'ENOTEMPTY'].includes((err as NodeJS.ErrnoException).code ?? '')) throw err;
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 250);
+    }
+  }
 }
 
-/** A home with the fake agent configured. Never the user's real ~/.octomaxxing. */
-export function makeHome(maxArms = 2, arm: string[] = [process.execPath, fakeAgent, '{prompt}']): { dir: string; env: NodeJS.ProcessEnv } {
+/**
+ * A home with the fake agent configured. Never the user's real ~/.octomaxxing or ~/.claude.json. Arm tabs open as
+ * detached processes (OCTOMAXXING_TERMINAL=test). With arms > 0, free RAM is faked so exactly that many arms fit.
+ */
+export function makeHome(arms = 0, arm: string[] = [process.execPath, fakeAgent, '{prompt}']): { dir: string; env: NodeJS.ProcessEnv } {
   const dir = tmpDir();
   const home = join(dir, 'home');
   mkdirSync(home, { recursive: true });
-  writeFileSync(join(home, 'config.json'), JSON.stringify({ agents: { fake: { head: [process.execPath, fakeAgent, '{prompt}'], arm } }, maxArms }));
-  return { dir, env: { ...process.env, OCTOMAXXING_HOME: home } };
+  writeFileSync(join(home, 'config.json'), JSON.stringify({ agents: { fake: { head: [process.execPath, fakeAgent, '{prompt}'], arm } }, armMb: arms ? 100 : 0, reserveMb: 0 }));
+  const env: NodeJS.ProcessEnv = { ...process.env, OCTOMAXXING_HOME: home, OCTOMAXXING_TERMINAL: 'test', OCTOMAXXING_CLAUDE_JSON: join(dir, 'claude.json'), OCTOMAXXING_FREE_MB: String(arms ? arms * 100 + 50 : 4096) };
+  return { dir, env };
 }
 
 export function git(cwd: string, ...args: string[]): string {

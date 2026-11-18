@@ -14,17 +14,19 @@ const tmp = tmpDir();
 after(() => cleanup(tmp));
 
 describe('config', () => {
-  it('accepts a valid config and fills in maxArms', () => {
+  it('accepts a valid config and fills in the RAM gate', () => {
     const c = validateConfig({ agents: { a: { head: ['a', '{prompt}'], arm: ['a', '-p', '{prompt}'] } } });
-    assert.equal(c.maxArms, 2);
+    assert.deepEqual([c.armMb, c.reserveMb], [600, 2048]);
     assert.equal(pickAgent(c, undefined), 'a');
   });
 
-  it('rejects templates without {prompt}, bad maxArms and an unknown defaultAgent', () => {
+  it('rejects templates without {prompt}, bad RAM numbers, an unknown terminal and an unknown defaultAgent', () => {
     assert.throws(() => validateConfig({ agents: { a: { head: ['a'], arm: ['a', '{prompt}'] } } }), /agents\.a\.head needs a "\{prompt\}"/);
     assert.throws(() => validateConfig({ agents: { a: { head: ['a', '{prompt}'] } } }), /agents\.a\.arm must be/);
     assert.doesNotThrow(() => validateConfig({ agents: { armonly: { arm: ['some-agent', '--message', '{prompt}'] } } }), 'arm-only agents are fine');
-    assert.throws(() => validateConfig({ maxArms: 0 }), /maxArms/);
+    assert.throws(() => validateConfig({ armMb: -1 }), /armMb/);
+    assert.throws(() => validateConfig({ reserveMb: 'lots' }), /reserveMb/);
+    assert.throws(() => validateConfig({ terminal: 'xterm' }), /terminal/);
     assert.throws(() => validateConfig({ agents: {}, defaultAgent: 'x' }), /defaultAgent/);
   });
 
@@ -117,7 +119,7 @@ describe('greeting', () => {
     const { dir, env } = makeHome(3);
     try {
       const g = greeting(env, () => 0);
-      assert.match(g, /^🐙 Tentacles warmed up\.\n0 projects · 3\/3 arms free · inbox: empty$/);
+      assert.match(g, /^🐙 Tentacles warmed up\.\n0 projects · 0 arms running · 350 MB free · inbox: empty$/);
       assert.notEqual(greeting(env, () => 1).split('\n')[0], g.split('\n')[0]);
     } finally {
       cleanup(dir);

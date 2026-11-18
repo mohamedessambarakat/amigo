@@ -5,7 +5,7 @@ import type { AgentTemplate } from './config.ts';
  * Flags come from each tool's documentation; `head` is missing where the CLI cannot start an interactive session with a prompt.
  */
 export const TEMPLATES: Record<string, AgentTemplate> = {
-  claude: { head: ['claude', '{prompt}'], arm: ['claude', '-p', '--permission-mode', 'auto', '{prompt}'] },
+  claude: { head: ['claude', '{prompt}'], arm: ['claude', '--permission-mode', 'auto', '{prompt}'] },
   codex: { head: ['codex', '{prompt}'], arm: ['codex', 'exec', '--sandbox', 'workspace-write', '--skip-git-repo-check', '{prompt}'] },
   gemini: { head: ['gemini', '-i', '{prompt}'], arm: ['gemini', '--approval-mode', 'auto_edit', '-p', '{prompt}'] },
   antigravity: { head: ['agy', '-i', '{prompt}'], arm: ['agy', '-p', '{prompt}'] },

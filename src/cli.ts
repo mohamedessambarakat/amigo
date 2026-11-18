@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 import { existsSync, readFileSync } from 'node:fs';
 import { parseArgs, type ParseArgsOptionsConfig } from 'node:util';
-import { attach, closeArm, headPrompt, inbox, runArm, runHead, sendFollowUp, spawnArm, statusText } from './arms.ts';
+import { appendFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { applyHook, attach, closeArm, headPrompt, inbox, noteHead, runHead, runTab, sendFollowUp, spawnArm, statusText, waitForArms } from './arms.ts';
 import { addProject, ensureHome, loadConfig, loadProjects, pickAgent } from './config.ts';
 import { isGitRepo } from './git.ts';
 import { configPath, home } from './paths.ts';
@@ -19,8 +21,9 @@ export const HELP = `octomaxxing: one head agent, many arms.
                                                     start an arm; the brief comes from stdin unless --brief-file is given
   octomaxxing status [<id>]                         all open arms, or one in detail (with its changed files)
   octomaxxing inbox                                 arms that finished since you last looked
+  octomaxxing wait [<id>...] [--timeout-min <n>]    wait until an arm finishes a turn (default 60 min)
   octomaxxing send <id> [--file <file> | <message>] follow-up for a finished arm (message from stdin if neither is given)
-  octomaxxing attach <id>                           print an arm's output and follow it while it runs
+  octomaxxing attach <id>                           print an arm's results and follow it while it runs
   octomaxxing close <id> [--commit [-m <message>]] [--force]
                                                     finish an arm: --commit keeps its work on branch octomaxxing/<id>
   octomaxxing help                                  this text
@@ -41,8 +44,26 @@ const MANAGING = new Set(['spawn', 'send', 'close', 'install-skill', 'add']);
 
 export async function main(argv: string[], env: NodeJS.ProcessEnv = process.env): Promise<number> {
   const [cmd = 'help', ...rest] = argv;
-  if (cmd === '_run') {
-    await runArm(rest[0] ?? '', env);
+  const out = (s: string) => {
+    if (s) process.stdout.write(s.endsWith('\n') ? s : `${s}\n`);
+  };
+  // Internal: the command an arm's tab runs, and the Claude Code hooks inside an arm.
+  if (cmd === '_tab') {
+    const { values, positionals } = parse(rest, { home: { type: 'string' }, run: { type: 'string' }, env: { type: 'string', multiple: true } });
+    const extra = Object.fromEntries(
+      ((values.env as string[] | undefined) ?? []).filter((kv) => kv.startsWith('OCTOMAXXING_') && kv.includes('=')).map((kv) => [kv.slice(0, kv.indexOf('=')), kv.slice(kv.indexOf('=') + 1)]),
+    );
+    const tabEnv = { ...env, ...extra, ...(values.home ? { OCTOMAXXING_HOME: values.home as string } : {}) };
+    return await runTab(positionals[0] ?? '', tabEnv, values.run === undefined ? undefined : Number(values.run));
+  }
+  if (cmd === '_hook') {
+    // A hook must never break the session: errors go to a log and the exit code stays 0.
+    try {
+      const raw = process.stdin.isTTY ? '' : readFileSync(0, 'utf8');
+      if (env.OCTOMAXXING_TASK) out(applyHook(rest[0] ?? '', raw.trim() ? JSON.parse(raw) : {}, env.OCTOMAXXING_TASK, env));
+    } catch (err) {
+      appendFileSync(join(home(env), 'hook-errors.log'), `${new Date().toISOString()} ${rest[0]}: ${(err as Error).message}\n`);
+    }
     return 0;
   }
   if (env.OCTOMAXXING_TASK && MANAGING.has(cmd)) {
@@ -54,8 +75,6 @@ export async function main(argv: string[], env: NodeJS.ProcessEnv = process.env)
       `Created ${home(env)} (config.json, projects.json).\nNext: octomaxxing install-skill (or add your agent to ${configPath(env)}, see the README), then: octomaxxing add <project folder>\n\n`,
     );
   }
-  const out = (s: string) => process.stdout.write(s.endsWith('\n') ? s : `${s}\n`);
-
   switch (cmd) {
     case 'help':
     case '--help':
@@ -71,7 +90,9 @@ export async function main(argv: string[], env: NodeJS.ProcessEnv = process.env)
 
     case 'brief': {
       const { values } = parse(rest, { agent: { type: 'string' } });
-      out(headPrompt(pickAgent(loadConfig(env), values.agent as string | undefined, env), env));
+      const agent = pickAgent(loadConfig(env), values.agent as string | undefined, env);
+      out(headPrompt(agent, env));
+      noteHead(agent, env);
       return 0;
     }
 
@@ -141,6 +162,14 @@ export async function main(argv: string[], env: NodeJS.ProcessEnv = process.env)
       out(inbox(env));
       return 0;
 
+    case 'wait': {
+      const { values, positionals } = parse(rest, { 'timeout-min': { type: 'string' } });
+      const minutes = Number(values['timeout-min'] ?? 60);
+      if (!(minutes > 0)) throw new Error('--timeout-min must be a positive number');
+      out(await waitForArms(positionals, minutes * 60_000, env));
+      return 0;
+    }
+
     case 'send': {
       const { values, positionals } = parse(rest, { file: { type: 'string' } });
       const [id, ...words] = positionals;
@@ -148,7 +177,7 @@ export async function main(argv: string[], env: NodeJS.ProcessEnv = process.env)
       const file = values.file as string | undefined;
       const message = file && file !== '-' ? readFileSync(file, 'utf8') : words.length ? words.join(' ') : readStdin('message');
       const t = sendFollowUp(id, message, env);
-      out(`${t.id} is ${t.status === 'running' ? 'running again' : 'queued (waiting for a free arm)'} with your follow-up.`);
+      out(`${t.id} ${t.status === 'running' ? 'is running again' : t.status === 'failed' ? `could not restart: ${t.summary}` : 'will reopen with your follow-up as soon as its old tab has closed and RAM allows'}.`);
       return 0;
     }
 

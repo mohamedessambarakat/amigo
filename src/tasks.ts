@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readdirSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { readJson, withLock, writeJsonAtomic } from './fsx.ts';
@@ -7,8 +7,8 @@ import { lockPath, taskDir, tasksDir } from './paths.ts';
 /**
  * queued   waiting for a free arm
  * running  the agent is working
- * done / blocked / question   the agent finished its run and said so (see parseStatus)
- * failed   the agent exited with an error, or never started
+ * done / blocked / question   the agent finished its turn (Claude) or run and said so (see parseStatus)
+ * failed   the agent exited with an error, never started, or its tab closed mid-turn
  * closing  close is committing or cleaning up; nothing may start it again
  * closed   the head closed it (committed or discarded)
  */
@@ -38,7 +38,19 @@ export interface Task {
   runs: number;
   /** Follow-up messages from the head, oldest first. */
   followUps: string[];
+  /** How many follow-ups the arm has been given (a resumed Claude session gets only the rest). */
+  followUpsSent?: number;
+  /** The agent process in the arm's tab. */
   pid?: number | null;
+  /** When the arm's tab was last opened. */
+  startedAt?: string | null;
+  /** Claude Code arms: the session id, resumed when a follow-up reopens the tab once the session has started. */
+  sessionId?: string | null;
+  sessionStarted?: boolean;
+  /** octomaxxing added the ~/.claude.json trust entry for cwd (removed again on close). */
+  trustAdded?: boolean;
+  /** Warp only: the tab config file, deleted when the arm ends. */
+  tabConfig?: string | null;
   exitCode?: number | null;
   /** The agent's STATUS line (or its last output line) from the latest run. */
   summary?: string;
@@ -82,12 +94,16 @@ export function claimTaskDir(id: string, env: NodeJS.ProcessEnv = process.env): 
 
 export const HEARTBEAT_MS = 5_000;
 
-/** The runner touches this file while its agent runs; pids alone are not trusted (they get reused after a reboot). */
+/** The arm's tab touches this file while it is open; pids alone are not trusted (they get reused after a reboot). */
 export function beat(id: string, env: NodeJS.ProcessEnv = process.env): void {
   writeFileSync(heartbeatFile(id, env), String(Date.now()));
 }
 
-/** True while the runner's heartbeat is recent. */
+export function clearBeat(id: string, env: NodeJS.ProcessEnv = process.env): void {
+  rmSync(heartbeatFile(id, env), { force: true });
+}
+
+/** True while the tab's heartbeat is recent. */
 export function runnerAlive(id: string, env: NodeJS.ProcessEnv = process.env, now: number = Date.now()): boolean {
   try {
     return now - statSync(heartbeatFile(id, env)).mtimeMs < HEARTBEAT_MS * 4;

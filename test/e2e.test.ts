@@ -54,7 +54,7 @@ describe('end to end with a fake agent', () => {
     }
   });
 
-  it('queues beyond maxArms and starts the next arm when one finishes', async () => {
+  it('queues while RAM is short and starts the next arm when one finishes', async () => {
     const { dir, env } = makeHome(1);
     try {
       for (const name of ['one', 'two']) {
@@ -76,7 +76,7 @@ describe('end to end with a fake agent', () => {
   });
 
   it('runs one arm at a time in a non-git folder', async () => {
-    const { dir, env } = makeHome(3);
+    const { dir, env } = makeHome();
     try {
       const folder = join(dir, 'shared');
       mkdirSync(folder);
@@ -143,7 +143,7 @@ describe('end to end with a fake agent', () => {
       const brief = cli(env, ['brief', '--agent', 'fake']);
       assert.equal(brief.code, 0, brief.err);
       assert.match(brief.out, /You run as the "fake" agent\. Pass `--agent fake`/);
-      assert.match(brief.out, /🐙 .+\n1 project · 2\/2 arms free · inbox: \S+/);
+      assert.match(brief.out, /🐙 .+\n1 project · 0 arms running · \d+ MB free · inbox: \S+/);
     } finally {
       cleanup(dir);
     }
@@ -188,7 +188,7 @@ describe('end to end with a fake agent', () => {
       writeFileSync(join(home(env), 'config.json'), JSON.stringify({ agents: { fake: { head: [process.execPath, fakeAgent, 'MODE:head {prompt}'], arm: [process.execPath, fakeAgent, '{prompt}'] } } }));
       const r = cli(env, ['head']);
       assert.equal(r.code, 0, r.err);
-      assert.match(r.out, /🐙 .+\n0 projects · 2\/2 arms free · inbox: empty/);
+      assert.match(r.out, /🐙 .+\n0 projects · 0 arms running · \d+ MB free · inbox: empty/);
     } finally {
       cleanup(dir);
     }

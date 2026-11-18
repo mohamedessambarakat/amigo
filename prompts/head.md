@@ -15,10 +15,11 @@ You manage worker agents, called arms, that do the work in the user's projects. 
   2. ...
   ```
 
-  Never put user text on the command line itself; it belongs in the file. If all arms are busy, the task is queued and starts by itself.
-- `octomaxxing inbox`: arms that finished since you last looked. Run it at the start of every reply to the user.
+  Never put user text on the command line itself; it belongs in the file. Each arm opens in its own terminal tab. If RAM is short or the folder is busy, the task is queued and starts by itself.
+- `octomaxxing inbox`: arms that finished a turn since you last looked. Run it at the start of every reply to the user.
+- `octomaxxing wait`: waits until an arm finishes a turn and prints its result. After every spawn, and again after you handle a result, run it in the background if you can run background commands, so you hear about results without the user asking.
 - `octomaxxing status` and `octomaxxing status <id>`: open arms, or one arm in detail with its result and changed files.
-- `octomaxxing send <id> --file <file>`: answer an arm's question or ask for changes. The arm runs again in the same folder.
+- `octomaxxing send <id> --file <file>`: answer an arm's question or ask for changes. The arm carries on in the same folder.
 - `octomaxxing spawn --review <id> --brief-file <file>`: a fresh arm that reviews another arm's work in its folder (read and run only). Brief it with the criteria to check.
 - `octomaxxing attach <id>`: an arm's full output.
 - `octomaxxing close <id> --commit`: after the user accepts code work. It commits the arm's changes to branch `octomaxxing/<id>`, removes its worktree, and never merges or pushes. `octomaxxing close <id>` discards a task; it refuses if there are changes. Never use `--force` without the user's yes.

@@ -7,7 +7,7 @@ import { configPath, home, projectsPath } from './paths.ts';
 export interface AgentTemplate {
   /** Interactive session that stays open for the user (the head). Optional: some agents can only be arms. */
   head?: string[];
-  /** Non-interactive run that does one task and exits (an arm). */
+  /** An arm. Claude Code runs it as an interactive session (any -p is dropped); other agents run one task and exit. */
   arm: string[];
 }
 
@@ -15,8 +15,12 @@ export interface Config {
   agents: Record<string, AgentTemplate>;
   /** Agent used when --agent is not given. Defaults to the first one in `agents`. */
   defaultAgent?: string;
-  /** How many arms may run at once; the rest wait in a queue. */
-  maxArms: number;
+  /** RAM one arm needs, in MB. An arm starts only while free RAM minus this stays at or above reserveMb. */
+  armMb: number;
+  /** Free RAM, in MB, that must remain after an arm starts. */
+  reserveMb: number;
+  /** Where arm tabs open: warp, wt, terminal or tmux. Default: Warp if installed, else the system terminal. */
+  terminal?: string;
 }
 
 export interface Project {
@@ -26,7 +30,7 @@ export interface Project {
   notes?: string;
 }
 
-const STARTER_CONFIG: Config = { agents: {}, maxArms: 2 };
+const STARTER_CONFIG: Config = { agents: {}, armMb: 600, reserveMb: 2048 };
 
 /** Create the home folder with an empty config and project list. Returns true on the first run. */
 export function ensureHome(env: NodeJS.ProcessEnv = process.env): boolean {
@@ -57,10 +61,16 @@ export function validateConfig(raw: unknown, where = 'config.json'): Config {
       if (!argv.slice(1).some((a) => a.includes('{prompt}'))) throw new Error(`${where}: agents.${name}.${kind} needs a "{prompt}" argument`);
     }
   }
-  const maxArms = o.maxArms ?? STARTER_CONFIG.maxArms;
-  if (!Number.isInteger(maxArms) || maxArms < 1) throw new Error(`${where}: "maxArms" must be a whole number of at least 1`);
+  const mb = (key: 'armMb' | 'reserveMb'): number => {
+    const v = o[key] ?? STARTER_CONFIG[key];
+    if (typeof v !== 'number' || !Number.isFinite(v) || v < 0) throw new Error(`${where}: "${key}" must be a number of MB, 0 or more`);
+    return v;
+  };
+  const armMb = mb('armMb');
+  const reserveMb = mb('reserveMb');
+  if (o.terminal !== undefined && !['warp', 'wt', 'terminal', 'tmux'].includes(o.terminal)) throw new Error(`${where}: "terminal" must be warp, wt, terminal or tmux`);
   if (o.defaultAgent !== undefined && !(o.defaultAgent in agents)) throw new Error(`${where}: defaultAgent "${o.defaultAgent}" is not in "agents"`);
-  return { agents, maxArms, ...(o.defaultAgent ? { defaultAgent: o.defaultAgent } : {}) };
+  return { agents, armMb, reserveMb, ...(o.terminal ? { terminal: o.terminal } : {}), ...(o.defaultAgent ? { defaultAgent: o.defaultAgent } : {}) };
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
