@@ -17,7 +17,7 @@ you ──▶ head ──spawn──▶ arm 1 (worktree, branch octomaxxing/<id>
 
 ## Install
 
-You need Node.js 24.3 or newer, git, and an agent CLI that already works on your machine.
+You need Node.js 24.3 or newer, git, an agent CLI that already works on your machine, and a terminal octomaxxing can open arm tabs in: Warp (any OS), Windows Terminal, macOS Terminal.app, or tmux on Linux.
 
 ```sh
 git clone https://github.com/mohamedessambarakat/octomaxxing
@@ -94,7 +94,7 @@ Data lives in $OCTOMAXXING_HOME (default ~/.octomaxxing).
   "agents": {
     "claude": {
       "head": ["claude", "{prompt}"],
-      "arm": ["claude", "-p", "--permission-mode", "auto", "{prompt}"]
+      "arm": ["claude", "--permission-mode", "auto", "{prompt}"]
     }
   },
   "armMb": 600,
