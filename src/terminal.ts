@@ -67,13 +67,13 @@ function cmdArg(arg: string): string {
 }
 
 /**
- * The tab runs a small script, so no terminal has to parse the command line itself. A failure waits for a key so the
- * error stays readable; a clean end (including `octomaxxing close`) lets the tab close.
+ * The tab runs a small script, so no terminal has to parse the command line itself. The tab always closes when the arm
+ * ends, error or not: nothing waits for a key. Errors stay visible in `octomaxxing status`, `inbox` and `attach`.
  */
 export function tabScript(argv: string[], platform: NodeJS.Platform): string {
   // The file is UTF-8; without chcp, cmd.exe reads it in the OEM code page and mangles non-ASCII paths.
-  if (platform === 'win32') return `@echo off\r\nchcp 65001 >nul\r\n${argv.map(cmdArg).join(' ')}\r\nif errorlevel 1 pause\r\n`;
-  return `#!/bin/sh\n${argv.map(shQuote).join(' ')} || { printf '\\nFailed (see above). Press Enter to close this tab. '; read -r _; }\n`;
+  if (platform === 'win32') return `@echo off\r\nchcp 65001 >nul\r\n${argv.map(cmdArg).join(' ')}\r\n`;
+  return `#!/bin/sh\n${argv.map(shQuote).join(' ')}\n`;
 }
 
 /** Where Warp reads tab configs: %APPDATA%\warp\Warp\data\tab_configs on Windows, ~/.warp/tab_configs on macOS. */

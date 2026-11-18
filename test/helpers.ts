@@ -25,6 +25,18 @@ export function cleanup(dir: string): void {
 }
 
 /**
+ * The environment a test starts from: this process's, without any OCTOMAXXING_* variable. Arm tabs set
+ * OCTOMAXXING_TASK and OCTOMAXXING_HOME, so `npm test` run inside an arm would otherwise act as that arm, on its home.
+ * Tests set only what they need on top.
+ */
+export function cleanEnv(from: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  return Object.fromEntries(Object.entries(from).filter(([k]) => !k.toUpperCase().startsWith('OCTOMAXXING_')));
+}
+
+// Code that falls back to process.env, git and other child processes see the clean environment too.
+for (const k of Object.keys(process.env)) if (k.toUpperCase().startsWith('OCTOMAXXING_')) delete process.env[k];
+
+/**
  * A home with the fake agent configured. Never the user's real ~/.octomaxxing or ~/.claude.json. Arm tabs open as
  * detached processes (OCTOMAXXING_TERMINAL=test). With arms > 0, free RAM is faked so exactly that many arms fit.
  */
@@ -33,7 +45,7 @@ export function makeHome(arms = 0, arm: string[] = [process.execPath, fakeAgent,
   const home = join(dir, 'home');
   mkdirSync(home, { recursive: true });
   writeFileSync(join(home, 'config.json'), JSON.stringify({ agents: { fake: { head: [process.execPath, fakeAgent, '{prompt}'], arm } }, armMb: arms ? 100 : 0, reserveMb: 0 }));
-  const env: NodeJS.ProcessEnv = { ...process.env, OCTOMAXXING_HOME: home, OCTOMAXXING_TERMINAL: 'test', OCTOMAXXING_CLAUDE_JSON: join(dir, 'claude.json'), OCTOMAXXING_FREE_MB: String(arms ? arms * 100 + 50 : 4096) };
+  const env: NodeJS.ProcessEnv = { ...cleanEnv(), OCTOMAXXING_HOME: home, OCTOMAXXING_TERMINAL: 'test', OCTOMAXXING_CLAUDE_JSON: join(dir, 'claude.json'), OCTOMAXXING_FREE_MB: String(arms ? arms * 100 + 50 : 4096) };
   return { dir, env };
 }
 

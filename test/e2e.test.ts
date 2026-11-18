@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { describe, it } from 'node:test';
 import { cliPath, home } from '../src/paths.ts';
 import { getTask } from '../src/tasks.ts';
-import { cleanup, cli, fakeAgent, git, idFrom, makeHome, makeRepo, waitFor } from './helpers.ts';
+import { cleanup, cli, fakeAgent, git, idFrom, makeHome, makeRepo, tmpDir, waitFor } from './helpers.ts';
 
 describe('end to end with a fake agent', () => {
   it('code project: spawn, inbox, follow-up, review, close --commit', async () => {
@@ -163,6 +163,32 @@ describe('end to end with a fake agent', () => {
       assert.match(cli(env, ['head', '--dry-run']).out, /would start the head \(fake\)/);
     } finally {
       cleanup(dir);
+    }
+  });
+
+  it('runs from inside an arm: OCTOMAXXING_* in the parent environment do not leak into a test', async () => {
+    const outside = tmpDir();
+    const arm = { OCTOMAXXING_TASK: 'x-1', OCTOMAXXING_HOME: join(outside, 'arm-home'), OCTOMAXXING_TERMINAL: 'wt', OCTOMAXXING_FREE_MB: '1' };
+    const saved = Object.fromEntries(Object.keys(arm).map((k) => [k, process.env[k]]));
+    Object.assign(process.env, arm);
+    const { dir, env } = makeHome();
+    for (const [k, v] of Object.entries(saved)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+    try {
+      assert.equal(env.OCTOMAXXING_TASK, undefined);
+      assert.equal(env.OCTOMAXXING_TERMINAL, 'test');
+      const folder = join(dir, 'p');
+      mkdirSync(folder);
+      assert.equal(cli(env, ['add', folder]).code, 0);
+      const r = cli(env, ['spawn', '--project', 'p'], 'Title: inside');
+      assert.equal(r.code, 0, r.err);
+      await waitFor(idFrom(r.out), env, ['done']);
+      assert.ok(!existsSync(arm.OCTOMAXXING_HOME), "the arm's home is never touched");
+    } finally {
+      cleanup(dir);
+      cleanup(outside);
     }
   });
 

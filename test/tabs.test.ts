@@ -59,11 +59,18 @@ describe('terminal tabs', () => {
     assert.match(warpTabConfig('n', 't', '/a', "sh '/h/tab.sh'; exit"), /commands = \["sh '\/h\/tab\.sh'; exit"\]/);
   });
 
-  it('quotes the tab script for cmd.exe and sh, and keeps the tab open after a failure', () => {
-    assert.equal(tabScript(req('win32').argv, 'win32'), '@echo off\r\nchcp 65001 >nul\r\n"C:\\Program Files\\nodejs\\node.exe" C:\\oct\\src\\cli.ts _tab x-1\r\nif errorlevel 1 pause\r\n');
+  it('quotes the tab script for cmd.exe and sh, and never waits for a key', () => {
+    assert.equal(tabScript(req('win32').argv, 'win32'), '@echo off\r\nchcp 65001 >nul\r\n"C:\\Program Files\\nodejs\\node.exe" C:\\oct\\src\\cli.ts _tab x-1\r\n');
     assert.throws(() => tabScript(['C:\\100%\\node.exe'], 'win32'), /\.cmd file/);
-    const sh = tabScript(req('darwin').argv, 'darwin');
-    assert.match(sh, /^#!\/bin\/sh\n'\/usr\/bin\/node' '\/oct\/it'\\''s\/cli\.ts' '_tab' 'x-1' \|\| \{ printf .*Press Enter.*; read -r _; \}\n$/);
+    assert.equal(tabScript(req('darwin').argv, 'darwin'), "#!/bin/sh\n'/usr/bin/node' '/oct/it'\\''s/cli.ts' '_tab' 'x-1'\n");
+    const waits = /pause|Read-Host|read -r|Press Enter|any key/i;
+    for (const kind of ['warp', 'wt', 'terminal', 'tmux'] as const) {
+      for (const platform of ['win32', 'darwin', 'linux'] as const) {
+        const plan = planTab(kind, req(platform), platform === 'win32' ? 'C:\\Users\\u' : '/Users/u');
+        for (const f of plan.files) assert.doesNotMatch(f.content, waits, `${kind}/${platform}: ${f.path}`);
+        assert.doesNotMatch(JSON.stringify(plan.command), waits, `${kind}/${platform} launch command`);
+      }
+    }
   });
 
   it('carries OCTOMAXXING_* settings into the tab, which does not inherit this environment', () => {
