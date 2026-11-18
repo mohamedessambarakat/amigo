@@ -25,14 +25,28 @@ export function changedFiles(cwd: string): string[] {
     .filter((l) => l.trim() !== '');
 }
 
+/** The path in a `git status --porcelain` line (the new name for a rename), without quotes. */
+export const porcelainPath = (line: string): string => line.slice(3).split(' -> ').pop()!.replace(/^"|"$/g, '');
+
+/** File names that usually hold secrets: .env files (not .env.example and the like), private keys, certificates and credential files. */
+export function looksSecret(path: string): boolean {
+  const name = path.replace(/\\/g, '/').split('/').pop()!.toLowerCase();
+  if (/^\.env(\..+)?$/.test(name)) return !/\.(example|sample|template|dist)$/.test(name);
+  return /\.(pem|key|p12|pfx|keystore|jks)$/.test(name) || /^id_(rsa|dsa|ecdsa|ed25519)$/.test(name) || /^(credentials|secrets?)\.(json|ya?ml|toml)$/.test(name) || name === '.netrc';
+}
+
 /**
  * Commit everything in the worktree to `branch`. Returns the short sha, or null when there was nothing to commit.
- * Refuses when the worktree is no longer on that branch (the agent switched or detached it), so nothing lands where nobody looks.
+ * Refuses when the worktree is no longer on that branch (the agent switched or detached it), so nothing lands where nobody looks,
+ * and when a changed file looks like it holds secrets (looksSecret).
  */
 export function commitAll(worktree: string, branch: string, message: string): string | null {
   const head = run('git', ['-C', worktree, 'symbolic-ref', '-q', 'HEAD']).stdout.trim();
   if (head !== `refs/heads/${branch}`) throw new Error(`The worktree is on ${head || 'a detached HEAD'}, not ${branch}. Check it by hand: ${worktree}`);
-  if (changedFiles(worktree).length === 0) return null;
+  const changes = changedFiles(worktree);
+  if (changes.length === 0) return null;
+  const secrets = changes.map(porcelainPath).filter(looksSecret);
+  if (secrets.length) throw new Error(`Refusing to commit files that may hold secrets: ${secrets.join(', ')}. Delete them or add them to .gitignore, then close again.`);
   runOrThrow('git', ['-C', worktree, 'add', '-A']);
   // A machine without a full git identity cannot commit: fill in only the missing part.
   const has = (key: string) => run('git', ['-C', worktree, 'config', key]).stdout.trim() !== '';

@@ -40,7 +40,8 @@ function parse(argv: string[], options: ParseArgsOptionsConfig) {
 }
 
 /** Commands that start, change or close arms. An arm must never run them on other arms. */
-const MANAGING = new Set(['spawn', 'send', 'close', 'install-skill', 'add']);
+// Head-only commands. inbox, wait and brief count too: an arm running them marks results seen or rewrites head.json.
+const MANAGING = new Set(['spawn', 'send', 'close', 'install-skill', 'add', 'inbox', 'wait', 'brief']);
 
 export async function main(argv: string[], env: NodeJS.ProcessEnv = process.env): Promise<number> {
   const [cmd = 'help', ...rest] = argv;

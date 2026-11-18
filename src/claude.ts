@@ -25,10 +25,18 @@ export function claudeArmTemplate(template: string[], o: { id: string; sessionId
   return [cmd, '--name', armName(o.id), o.resume ? '--resume' : '--session-id', o.sessionId, '--settings', o.settingsFile, ...rest.filter((a) => a !== '-p' && a !== '--print')];
 }
 
-/** The head's extra flags when `octomaxxing head` starts Claude Code: its name, and accepting messages from arms. */
-export function claudeHeadTemplate(template: string[]): string[] {
+/**
+ * The head's extra flags when `octomaxxing head` starts Claude Code: its name, and its settings file (headSettings).
+ * The settings go in a file, not inline JSON: an npm install starts through cmd.exe on Windows, which mangles the quotes.
+ */
+export function claudeHeadTemplate(template: string[], settingsFile: string): string[] {
   const [cmd, ...rest] = template as [string, ...string[]];
-  return [cmd, '--name', HEAD_NAME, '--settings', JSON.stringify({ crossSessionInbound: 'accept' }), ...rest];
+  return [cmd, '--name', HEAD_NAME, '--settings', settingsFile, ...rest];
+}
+
+/** The head's settings: accept messages from arms. */
+export function headSettings(): Record<string, unknown> {
+  return { crossSessionInbound: 'accept' };
 }
 
 /**

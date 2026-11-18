@@ -152,7 +152,7 @@ Give your agent the link to this repository and ask it to set up octomaxxing. Ag
 - Arms work without step-by-step approval, with exactly the permissions their template gives the agent. Start with the narrow ones.
 - octomaxxing marks only its own arm folders as trusted in `~/.claude.json`, keeps every other field of that file, and removes the entry for a worktree it closes.
 - Arms cannot run octomaxxing's managing commands (`spawn`, `send`, `close`, `add`, `install-skill`); only the head can.
-- octomaxxing commits only to `octomaxxing/<id>` branches, and only when you close a task with `--commit`. It refuses if the arm moved its worktree to another branch. It never merges or pushes, and it deletes only an `octomaxxing/<id>` branch that has no commits.
+- octomaxxing commits only to `octomaxxing/<id>` branches, and only when you close a task with `--commit`. It refuses if the arm moved its worktree to another branch. It also refuses when a changed file looks like it holds secrets (`.env`, private keys, credential files): delete it or add it to `.gitignore`, then close again. It never merges or pushes, and it deletes only an `octomaxxing/<id>` branch that has no commits.
 - `close` refuses to throw away an arm's changes unless you add `--force`.
 
 ## Development

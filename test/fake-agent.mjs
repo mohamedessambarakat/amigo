@@ -25,7 +25,8 @@ if (has('You are a reviewer')) {
 if (has('MODE:manage')) {
   // An arm trying to run octomaxxing itself must be refused.
   const r = spawnSync(process.execPath, [process.env.CLI_PATH, 'close', 'anything', '--force'], { encoding: 'utf8' });
-  console.log(`STATUS: done - manage exit ${r.status}: ${r.stderr.trim()}`);
+  const inbox = spawnSync(process.execPath, [process.env.CLI_PATH, 'inbox'], { encoding: 'utf8' });
+  console.log(`STATUS: done - manage exit ${r.status}: ${r.stderr.trim()} | inbox exit ${inbox.status}`);
   process.exit(0);
 }
 if (has('MODE:switch')) execFileSync('git', ['checkout', '-q', '-b', 'elsewhere']);

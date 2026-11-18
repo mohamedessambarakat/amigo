@@ -5,10 +5,11 @@ import { after, describe, it } from 'node:test';
 import { armPrompt, greeting, titleOf } from '../src/arms.ts';
 import { INLINE_LIMIT, buildLaunch, pointerLine, quoteForCmd, resolveExecutable } from '../src/command.ts';
 import { nameFromPath, pickAgent, validateConfig, validateProjects } from '../src/config.ts';
+import { commitAll, looksSecret, porcelainPath } from '../src/git.ts';
 import { HEARTBEAT_MS, beat, newId, parseStatus, runnerAlive, type Task } from '../src/tasks.ts';
 import { installSkills, removeSkills } from '../src/skills.ts';
 import { TEMPLATES } from '../src/templates.ts';
-import { cleanup, makeHome, tmpDir } from './helpers.ts';
+import { cleanup, git, makeHome, makeRepo, tmpDir } from './helpers.ts';
 
 const tmp = tmpDir();
 after(() => cleanup(tmp));
@@ -175,6 +176,32 @@ describe('runner heartbeat', () => {
       beat('hb-1', env);
       assert.equal(runnerAlive('hb-1', env), true);
       assert.equal(runnerAlive('hb-1', env, Date.now() + HEARTBEAT_MS * 5), false);
+    } finally {
+      cleanup(dir);
+    }
+  });
+});
+
+describe('secret files', () => {
+  it('flags secret-looking names but not examples', () => {
+    for (const p of ['.env', 'app/.env.local', 'keys\\server.pem', 'id_ed25519', 'config/credentials.json', 'secrets.yaml']) assert.ok(looksSecret(p), p);
+    for (const p of ['.env.example', 'src/env.ts', 'README.md', 'keyboard.ts', 'docs/secrets.md']) assert.ok(!looksSecret(p), p);
+  });
+
+  it('reads porcelain paths, renames and quotes included', () => {
+    assert.equal(porcelainPath('?? .env'), '.env');
+    assert.equal(porcelainPath('R  old.txt -> new.pem'), 'new.pem');
+    assert.equal(porcelainPath(' M "a b/.env"'), 'a b/.env');
+  });
+
+  it('commitAll refuses a worktree with a .env file', () => {
+    const dir = tmpDir();
+    try {
+      const repo = makeRepo(join(dir, 'r'));
+      git(repo, 'checkout', '-q', '-b', 'octomaxxing/t-1');
+      writeFileSync(join(repo, '.env'), 'TOKEN=fake');
+      assert.throws(() => commitAll(repo, 'octomaxxing/t-1', 'm'), /may hold secrets: \.env/);
+      assert.equal(git(repo, 'status', '--porcelain').trim(), '?? .env');
     } finally {
       cleanup(dir);
     }

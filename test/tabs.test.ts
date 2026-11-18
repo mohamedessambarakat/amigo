@@ -86,7 +86,7 @@ describe('Claude Code arms', () => {
     const t = claudeArmTemplate(['claude', '-p', '--permission-mode', 'auto', '{prompt}'], { id: 'x-1', sessionId: 'S', resume: false, settingsFile: '/s.json' });
     assert.deepEqual(t, ['claude', '--name', 'octomaxxing-x-1', '--session-id', 'S', '--settings', '/s.json', '--permission-mode', 'auto', '{prompt}']);
     assert.deepEqual(claudeArmTemplate(['claude', '{prompt}'], { id: 'x-1', sessionId: 'S', resume: true, settingsFile: '/s.json' }).slice(3, 5), ['--resume', 'S']);
-    assert.deepEqual(claudeHeadTemplate(['claude', '{prompt}']), ['claude', '--name', 'octomaxxing-head', '--settings', '{"crossSessionInbound":"accept"}', '{prompt}']);
+    assert.deepEqual(claudeHeadTemplate(['claude', '{prompt}'], '/h.json'), ['claude', '--name', 'octomaxxing-head', '--settings', '/h.json', '{prompt}']);
     const hooks = (armSettings() as { hooks: Record<string, [{ hooks: [{ command: string }] }]> }).hooks;
     assert.match(hooks.Stop![0].hooks[0].command, /^node "[^"\\]+cli\.ts" _hook stop$/);
     assert.match(hooks.UserPromptSubmit![0].hooks[0].command, / _hook prompt$/);

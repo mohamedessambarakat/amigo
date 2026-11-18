@@ -8,6 +8,7 @@ import {
   claudeArmNotes,
   claudeArmTemplate,
   claudeHeadTemplate,
+  headSettings,
   forgetFolder,
   headIsClaude,
   isClaude,
@@ -633,12 +634,14 @@ export async function runHead(agentName: string | undefined, opts: { dryRun?: bo
   if (!template) throw new Error(`Agent "${agent}" has no "head" template: start the head with /octomaxxing inside it (octomaxxing install-skill), or use --agent with another agent.`);
   const file = join(home(env), 'head-prompt.md');
   const prompt = headPrompt(agent, env);
-  const launch = buildLaunch(isClaude(template) ? claudeHeadTemplate(template) : template, { prompt, promptFile: file }, env);
+  const headSettingsFile = join(home(env), 'head-settings.json');
+  const launch = buildLaunch(isClaude(template) ? claudeHeadTemplate(template, headSettingsFile) : template, { prompt, promptFile: file }, env);
   if (opts.dryRun) {
     process.stdout.write(`DRY RUN: would start the head (${agent}) in ${home(env)}:\n${describeLaunch(launch)}\n`);
     return 0;
   }
   writeFileSync(file, prompt);
+  if (isClaude(template)) writeJsonAtomic(headSettingsFile, headSettings());
   noteHead(agent, env);
   const childEnv = { ...env, OCTOMAXXING_HOME: home(env) };
   const child = spawnAgent(launch, { cwd: home(env), stdio: 'inherit', env: childEnv });

@@ -139,7 +139,9 @@ describe('end to end with a fake agent', () => {
       mkdirSync(folder);
       cli(env, ['add', folder]);
       const id = idFrom(cli({ ...env, CLI_PATH: cliPath }, ['spawn', '--project', 'p'], 'Title: sneaky\nMODE:manage').out);
-      assert.match((await waitFor(id, env, ['done'])).summary ?? '', /manage exit 1: octomaxxing: You are running inside arm/);
+      const summary = (await waitFor(id, env, ['done'])).summary ?? '';
+      assert.match(summary, /manage exit 1: octomaxxing: You are running inside arm/);
+      assert.match(summary, /inbox exit 1/);
       const brief = cli(env, ['brief', '--agent', 'fake']);
       assert.equal(brief.code, 0, brief.err);
       assert.match(brief.out, /You run as the "fake" agent\. Pass `--agent fake`/);
