@@ -95,6 +95,7 @@ export function nextArmNumber(env: NodeJS.ProcessEnv = process.env): number {
  * is still open wins.
  */
 export function resolveId(ref: string, env: NodeJS.ProcessEnv = process.env): string {
+  ref = ref.replace(/^#(?=\d+$)/, ''); // the board labels arms #3
   const all = listTasks(env);
   if (all.some((t) => t.id === ref)) return ref;
   const matches = /^\d+$/.test(ref) ? all.filter((t) => armNumber(t.id) === ref) : all.filter((t) => ref && t.id.startsWith(ref));

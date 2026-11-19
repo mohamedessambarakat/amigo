@@ -5,6 +5,7 @@ import { appendFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { applyHook, attach, boardText, closeArm, headPrompt, inbox, runHead, runTab, sendFollowUp, showArm, spawnArm, statusText, waitForArms } from './arms.ts';
 import { addProject, ensureHome, loadConfig, loadProjects, pickAgent } from './config.ts';
+import { IN_BOARD_ENV, decodeStatusLine, runUserStatusLine } from './claude.ts';
 import { isGitRepo } from './git.ts';
 import { resolveId } from './tasks.ts';
 import { configPath, home } from './paths.ts';
@@ -37,6 +38,21 @@ Data lives in ${'$'}OCTOMAXXING_HOME (default ~/.octomaxxing).`;
 function readStdin(what: string): string {
   if (process.stdin.isTTY) throw new Error(`Pass the ${what} on stdin or as a file (see octomaxxing help)`);
   return readFileSync(0, 'utf8');
+}
+
+/** The JSON Claude Code sends a status line on stdin; '' at a terminal, or if it does not arrive within waitMs. */
+function statusLineInput(waitMs = 500): Promise<string> {
+  if (process.stdin.isTTY) return Promise.resolve('');
+  return new Promise((done) => {
+    let data = '';
+    const finish = () => {
+      clearTimeout(timer);
+      process.stdin.pause();
+      done(data);
+    };
+    const timer = setTimeout(finish, waitMs);
+    process.stdin.setEncoding('utf8').on('data', (d: string) => (data += d)).on('end', finish).on('error', finish);
+  });
 }
 
 function parse(argv: string[], options: ParseArgsOptionsConfig) {
@@ -161,15 +177,21 @@ export async function main(argv: string[], env: NodeJS.ProcessEnv = process.env)
       return 0;
     }
 
-    case 'board':
-      parse(rest, {});
+    case 'board': {
+      const { values } = parse(rest, { user: { type: 'string' } });
       // It is a status line: print the problem instead of failing, so the head's footer never goes blank.
+      let text: string;
       try {
-        out(boardText(env));
+        text = boardText(env);
       } catch (err) {
-        out(`🐙 board unavailable: ${(err as Error).message}`);
+        text = `🐙 board unavailable: ${(err as Error).message}`;
       }
+      // The user's own status line goes below the arms, fed the JSON Claude Code sent the board. Never from inside itself.
+      const user = typeof values.user === 'string' && env[IN_BOARD_ENV] !== '1' ? decodeStatusLine(values.user) : undefined;
+      const mine = user ? await runUserStatusLine(user, await statusLineInput(), env) : '';
+      out(mine ? `${text}\n${mine}` : text);
       return 0;
+    }
 
     case 'inbox':
       parse(rest, {});

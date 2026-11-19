@@ -3,12 +3,12 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 import { applyHook, armPrompt, followUpPrompt, tabEnvArgs } from '../src/arms.ts';
-import { armSettings, headSettings, claudeArmNotes, claudeArmTemplate, claudeHeadTemplate, claudeJsonPath, dropTrust, isClaude, mergeTrust, reportReason, sessionAddress, turnMessagedHead } from '../src/claude.ts';
+import { armSettings, decodeStatusLine, headSettings, isBoardCommand, runUserStatusLine, statusLineShell, userStatusLine, claudeArmNotes, claudeArmTemplate, claudeHeadTemplate, claudeJsonPath, dropTrust, isClaude, mergeTrust, reportReason, sessionAddress, turnMessagedHead } from '../src/claude.ts';
 import { parseVmStat, ramAllows } from '../src/ram.ts';
 import { descendants } from '../src/proc.ts';
 import { beat, saveTask, type Task } from '../src/tasks.ts';
 import { consoleWindowScript, planTab, selectTerminal, tabScript, warpTabConfig } from '../src/terminal.ts';
-import { cleanup, cli, makeHome, waitFor } from './helpers.ts';
+import { cleanup, cli, makeHome, tmpDir, waitFor } from './helpers.ts';
 
 const req = (platform: NodeJS.Platform) => ({
   name: 'octomaxxing-x-1',
@@ -114,6 +114,67 @@ describe('Claude Code arms', () => {
     const status = (headSettings() as { statusLine: { command: string; refreshInterval: number } }).statusLine;
     assert.match(status.command, /^node "[^"\\]+cli\.ts" board$/);
     assert.equal(status.refreshInterval, 2);
+  });
+
+  it("keeps the user's own status line: read once from their settings, carried in the board's command", () => {
+    const dir = tmpDir();
+    try {
+      const file = join(dir, 'settings.json');
+      const env = { OCTOMAXXING_CLAUDE_SETTINGS: file, SHELL: '/bin/zsh' };
+      assert.equal(userStatusLine(env, 'linux'), undefined, 'no settings file');
+      writeFileSync(file, JSON.stringify({ model: 'opus' }));
+      assert.equal(userStatusLine(env, 'linux'), undefined, 'no statusLine');
+      writeFileSync(file, JSON.stringify({ statusLine: { type: 'command', command: 'node "C:/x/octomaxxing/src/cli.ts" board' } }));
+      assert.equal(userStatusLine(env, 'linux'), undefined, 'the board itself is never run inside the board');
+      writeFileSync(file, JSON.stringify({ statusLine: { type: 'command', command: 'node "$HOME/.claude/statusline.js"' } }));
+      const user = userStatusLine(env, 'linux');
+      assert.deepEqual(user, { command: 'node "$HOME/.claude/statusline.js"', shell: ['/bin/zsh', '-c'] });
+      const command = (headSettings(user) as { statusLine: { command: string } }).statusLine.command;
+      const m = /^node "[^"\\]+cli\.ts" board --user ([A-Za-z0-9_-]+)$/.exec(command);
+      assert.ok(m, `shell-safe board command: ${command}`);
+      assert.deepEqual(decodeStatusLine(m[1]!), user);
+      assert.equal(decodeStatusLine('not-json'), undefined);
+      assert.ok(isBoardCommand('octomaxxing board') && !isBoardCommand('node ~/.claude/statusline.js --board-ish'));
+      // On Windows, Git Bash next to git (as Claude Code uses), else PowerShell.
+      const gitBin = join(dir, 'Git', 'mingw64', 'bin');
+      mkdirSync(gitBin, { recursive: true });
+      writeFileSync(join(gitBin, 'git.exe'), '');
+      const win = { PATH: gitBin, PATHEXT: '.EXE' };
+      assert.deepEqual(statusLineShell(win, 'win32'), ['powershell.exe', '-NoProfile', '-Command']);
+      mkdirSync(join(dir, 'Git', 'bin'));
+      writeFileSync(join(dir, 'Git', 'bin', 'bash.exe'), '');
+      assert.deepEqual(statusLineShell(win, 'win32'), [join(dir, 'Git', 'bin', 'bash.exe'), '-c']);
+    } finally {
+      cleanup(dir);
+    }
+  });
+
+  it("runs the user's status line with Claude Code's JSON, and leaves it out when it fails or hangs", async () => {
+    const js = (code: string) => ({ command: code, shell: [process.execPath, '-e'] });
+    const echo = js("let d='';process.stdin.on('data',c=>d+=c).on('end',()=>console.log('model: '+JSON.parse(d).model.display_name))");
+    assert.equal(await runUserStatusLine(echo, '{"model":{"display_name":"Opus"}}', process.env), 'model: Opus');
+    assert.equal(await runUserStatusLine(js("console.log('half'); process.exit(3)"), '', process.env), '', 'a failing command is left out');
+    assert.equal(await runUserStatusLine({ command: 'x', shell: ['no-such-shell-xyz'] }, '', process.env), '', 'a shell that cannot start is left out');
+    const started = Date.now();
+    assert.equal(await runUserStatusLine(js('setInterval(() => {}, 1000)'), '', process.env, 500), '', 'a hanging command is left out');
+    assert.ok(Date.now() - started < 3000, 'and the board does not wait for it');
+  });
+
+  it('prints the arm lines, then the user line; just the arms when the user line fails or would loop', () => {
+    const { dir, env } = makeHome();
+    try {
+      const old = new Date(Date.now() - 65_000).toISOString();
+      saveTask({ id: '3-tripwire', title: 'Tripwire: MVP build plan', agent: 'fake', status: 'running', createdAt: old, updatedAt: old, startedAt: old, runs: 1, followUps: [], seen: true, project: 'tripwire', cwd: '/w', repo: null, worktree: null, branch: null, baseSha: null } as Task, env);
+      const user = (code: string) => Buffer.from(JSON.stringify({ command: code, shell: [process.execPath, '-e'] })).toString('base64url');
+      const mine = user("let d='';process.stdin.on('data',c=>d+=c).on('end',()=>console.log('[mine] '+JSON.parse(d).cwd))");
+      const r = cli(env, ['board', '--user', mine], '{"cwd":"/home/me/proj"}');
+      assert.equal(r.code, 0, r.err);
+      assert.match(r.out, /^🐙 arms: 1 running · 0 queued · 0 new results\n▶ #3  running  Tripwire: MVP build plan  \[tripwire\]  1m 0\ds\n\[mine\] \/home\/me\/proj\n$/);
+      assert.doesNotMatch(cli(env, ['board', '--user', user('process.exit(1)')]).out, /\n\n|mine/);
+      assert.equal(cli({ ...env, OCTOMAXXING_IN_BOARD: '1' }, ['board', '--user', mine], '{"cwd":"x"}').out.split('\n').length, 3, 'no user line from inside itself');
+    } finally {
+      cleanup(dir);
+    }
   });
 
   it('tells the arm to message the session that spawned it, whatever its name', () => {
