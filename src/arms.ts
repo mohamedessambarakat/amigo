@@ -10,7 +10,6 @@ import {
   claudeHeadTemplate,
   guessTranscriptPath,
   headSettings,
-  userStatusLine,
   forgetFolder,
   isClaude,
   ownSessionEnv,
@@ -26,7 +25,7 @@ import { branchName, changedFiles, commitAll, committedFiles, createWorktree, de
 import { cliPath, codeRoot, home, lockPath, taskDir, worktreesDir } from './paths.ts';
 import { killTree } from './proc.ts';
 import { freeMemMb, ramAllows } from './ram.ts';
-import { openTab, removeTabConfig, selectTerminal, setConsoleVisible } from './terminal.ts';
+import { openTab, removeTabConfig, selectTerminal } from './terminal.ts';
 import {
   FINISHED,
   HEARTBEAT_MS,
@@ -38,7 +37,6 @@ import {
   listTasks,
   logFile,
   mutateTask,
-  armNumber,
   newId,
   nextArmNumber,
   parseStatus,
@@ -122,7 +120,8 @@ export function spawnArm(input: SpawnInput, opts: { dryRun?: boolean }, env: Nod
   if (!input.project === !input.review) throw new Error('Give either --project <name> or --review <task-id>');
   const config = loadConfig(env);
   const agent = pickAgent(config, input.agent, env);
-  const terminal = selectTerminal(config.terminal, { env, platform: process.platform });
+  // Fails early, before any folder is made, when no tab can be opened from this terminal.
+  selectTerminal({ env, platform: process.platform });
   const title = input.title?.trim() || titleOf(input.brief);
   let id = newId(title, nextArmNumber(env));
   if (!opts.dryRun) {
@@ -154,7 +153,7 @@ export function spawnArm(input: SpawnInput, opts: { dryRun?: boolean }, env: Nod
 
   const launch = armLaunch(task, config, armPrompt(task, input.brief, notesFor(task.project, env)), env);
   const where = task.worktree ? `new worktree ${task.worktree} on branch ${task.branch} (from ${task.repo})` : `${task.cwd} (in place${task.reviewOf ? `, reviewing ${task.reviewOf}` : ''})`;
-  const text = [`task:    ${id}  "${title}"`, `folder:  ${where}`, `agent:   ${agent} (${terminal === 'background' ? 'in the background' : `${terminal} tab`} as ${armName(id)})`, `command: ${describeLaunch(launch)}`].join('\n');
+  const text = [`task:    ${id}  "${title}"`, `folder:  ${where}`, `agent:   ${agent} (in a new tab, as ${armName(id)})`, `command: ${describeLaunch(launch)}`].join('\n');
   if (opts.dryRun) return { task, text: `DRY RUN, nothing was started.\n${text}` };
 
   writeFileSync(briefFile(id, env), input.brief.trim() + '\n');
@@ -169,7 +168,7 @@ export function spawnArm(input: SpawnInput, opts: { dryRun?: boolean }, env: Nod
   return { task: after, text: `${state}\n${text}` };
 }
 
-const TAB_LOST = 'The arm stopped without reporting: its tab or background process closed or never started (see octomaxxing attach).';
+const TAB_LOST = 'The arm stopped without reporting: its tab closed or never opened (see octomaxxing attach).';
 
 /**
  * Mark arms whose tab is gone in the middle of a turn (closed, crashed, reboot, or it never opened) as failed. The pid
@@ -222,7 +221,7 @@ export function drain(env: NodeJS.ProcessEnv = process.env): string[] {
 
 /**
  * A tab starts with the terminal's environment, not this process's, but its end starts the next queued arm: so the
- * OCTOMAXXING_* settings travel with it as arguments.
+ * OCTOMAXXING_* settings travel with it as arguments, with the terminal found for the head, so queued arms open there too.
  */
 export function tabEnvArgs(env: NodeJS.ProcessEnv): string[] {
   return Object.entries(env)
@@ -233,7 +232,7 @@ export function tabEnvArgs(env: NodeJS.ProcessEnv): string[] {
 function startArm(t: Task, config: Config, env: NodeJS.ProcessEnv): boolean {
   try {
     const claude = isClaude(armTemplate(t, config));
-    const terminal = selectTerminal(config.terminal, { env, platform: process.platform });
+    const terminal = selectTerminal({ env, platform: process.platform });
     const resume = claude && t.sessionStarted === true;
     if (resume) {
       writeFileSync(promptFile(t.id, env), followUpPrompt(t));
@@ -265,8 +264,7 @@ function startArm(t: Task, config: Config, env: NodeJS.ProcessEnv): boolean {
       title: `octomaxxing: ${t.title}`,
       // The tab's shell sits in the task folder, never in the worktree, so it cannot block removing the worktree on close.
       cwd: taskDir(t.id, env),
-      run: now.runs,
-      argv: [process.execPath, cliPath, '_tab', t.id, '--run', String(now.runs), '--home', home(env), ...tabEnvArgs(env)],
+      argv: [process.execPath, cliPath, '_tab', t.id, '--run', String(now.runs), '--home', home(env), ...tabEnvArgs({ ...env, OCTOMAXXING_TERMINAL: terminal })],
       dir: taskDir(t.id, env),
       platform: process.platform,
       env: { ...env, OCTOMAXXING_HOME: home(env) },
@@ -300,7 +298,7 @@ function recordPid(id: string, pid: number | undefined, env: NodeJS.ProcessEnv, 
  */
 export async function runTab(id: string, env: NodeJS.ProcessEnv = process.env, run?: number): Promise<number> {
   const t = requireTask(id, env);
-  // A tab that opens late, or is reopened from Warp's menu, must not start a second session.
+  // A tab that opens late, or is reopened from the terminal's menu, must not start a second session.
   if (t.status !== 'running' || (run !== undefined && t.runs !== run) || runnerAlive(id, env)) {
     process.stdout.write(`octomaxxing: ${id} is ${t.status} (run ${t.runs}), not starting it from this tab.\n`);
     return 0;
@@ -625,47 +623,6 @@ export function statusText(id: string | undefined, env: NodeJS.ProcessEnv = proc
   return [head, ...open.map((t) => `${t.id}  ${t.status.padEnd(8)}  [${t.project}] ${t.title}  (${age(t.updatedAt)})`)].join('\n');
 }
 
-/**
- * `octomaxxing show|hide <id>`: bring a background arm's window up to type into it, or tuck it away again. Only Windows
- * background arms have a hidden window; elsewhere this says where the arm is.
- */
-export function showArm(id: string, show: boolean, env: NodeJS.ProcessEnv = process.env): string {
-  const t = requireTask(id, env);
-  if (!t.pid || !runnerAlive(t.id, env)) throw new Error(`${t.id} has no open session (it is ${t.status}). octomaxxing attach ${t.id} shows its output.`);
-  const terminal = selectTerminal(loadConfig(env).terminal, { env, platform: process.platform });
-  if (terminal !== 'background') return `${t.id} runs in a ${terminal} tab named ${armName(t.id)}: switch to it there.`;
-  if (process.platform !== 'win32') return `${t.id} runs in tmux. Watch it with: tmux attach -t ${armName(t.id)}-run${t.runs}   (leave again with Ctrl+B, then D)`;
-  setConsoleVisible(t.pid, show);
-  return show
-    ? `Showing ${t.id}. Type into it in that window. Closing the window stops the arm: run octomaxxing hide ${t.id} to tuck it away instead.`
-    : `Hid ${t.id}; it keeps running in the background.`;
-}
-
-const BOARD_ICONS: Record<Task['status'], string> = { running: '▶', queued: '…', done: '✓', question: '?', blocked: '!', failed: '✗', closing: '·', closed: '·' };
-const BOARD_ORDER: Task['status'][] = ['running', 'question', 'blocked', 'failed', 'done', 'queued', 'closing'];
-
-/**
- * The head's live board (its Claude Code status line): one line per open arm. Read-only and quick, since it runs every
- * couple of seconds: it never starts queued arms or marks results seen.
- */
-export function boardText(env: NodeJS.ProcessEnv = process.env, max = 6): string {
-  const open = listTasks(env)
-    .filter((t) => t.status !== 'closed')
-    .sort((a, b) => BOARD_ORDER.indexOf(a.status) - BOARD_ORDER.indexOf(b.status) || a.createdAt.localeCompare(b.createdAt));
-  const count = (s: Task['status']) => open.filter((t) => t.status === s).length;
-  const review = open.filter((t) => FINISHED.includes(t.status) && !t.seen).length;
-  const head = `🐙 arms: ${count('running')} running · ${count('queued')} queued · ${review} new result${review === 1 ? '' : 's'}`;
-  if (!open.length) return '🐙 no arms';
-  // What you type in commands goes first: the arm's number as arm3 (so it never reads as a count, and it pastes into any
-  // shell as one word, where #3 would start a comment), or the whole id for arms from before numbering.
-  const handles = open.slice(0, max).map((t) => { const n = armNumber(t.id); return n ? `arm${n}` : t.id; });
-  const width = Math.max(...handles.map((h) => h.length));
-  const line = (t: Task, i: number) => `${BOARD_ICONS[t.status]} ${handles[i]!.padEnd(width)}  ${t.status.padEnd(8)} ${t.title.length > 40 ? `${t.title.slice(0, 39)}…` : t.title}  [${t.project}]  ${age(t.status === 'running' ? (t.startedAt ?? t.updatedAt) : t.updatedAt)}`;
-  const shown = open.slice(0, max).map(line);
-  if (open.length > max) shown.push(`  +${open.length - max} more: octomaxxing status`);
-  return [head, ...shown].join('\n');
-}
-
 const GREETINGS = [
   '🐙 Tentacles warmed up.',
   "🐙 Ready to maxx. Hand me the work, I'll hand it out.",
@@ -688,7 +645,7 @@ export function greeting(env: NodeJS.ProcessEnv = process.env, pick: (n: number)
 
 const CLAUDE_HEAD = `## Talking to arms (you are Claude Code)
 
-- Claude arms are sessions named \`octomaxxing-<id>\`, running in the background (or in terminal tabs, if the user set "terminal"). Each one messages the session that spawned it when a turn ends, whatever that session is named, so never ask the user to rename this session.
+- Claude arms are sessions named \`octomaxxing-<id>\` in terminal tabs. Each one messages the session that spawned it when a turn ends, whatever that session is named, so never ask the user to rename this session.
 - To answer an arm whose session is still open, use SendMessage to \`octomaxxing-<id>\`: the arm carries on in the same session. \`octomaxxing send\` restarts its session instead.
 - Messages from arms can be held for the user's approval, so never rely on them alone: \`octomaxxing wait\` and \`octomaxxing inbox\` always have every result.`;
 
@@ -721,7 +678,7 @@ export async function runHead(agentName: string | undefined, opts: { dryRun?: bo
     return 0;
   }
   writeFileSync(file, prompt);
-  if (isClaude(template)) writeJsonAtomic(headSettingsFile, headSettings(userStatusLine(env)));
+  if (isClaude(template)) writeJsonAtomic(headSettingsFile, headSettings());
   const childEnv = { ...env, OCTOMAXXING_HOME: home(env) };
   const child = spawnAgent(launch, { cwd: home(env), stdio: 'inherit', env: childEnv });
   return await new Promise((done, fail) => {

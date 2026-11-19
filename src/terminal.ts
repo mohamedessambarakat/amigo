@@ -6,12 +6,12 @@ import { resolveExecutable } from './command.ts';
 import { run } from './proc.ts';
 
 /**
- * Where an arm runs. `background` (the default) opens no window: a hidden console on Windows, a detached tmux session on
- * macOS and Linux, so the arm still gets a real terminal and nothing takes your focus. The others open a visible tab.
- * `test` is for the test suite only: it runs the tab's command as a detached child process.
+ * How an arm's tab opens. It is always the terminal the head runs in, found from the variables that terminal sets; one
+ * that offers no way to open a tab gets a new console window (`window`). Nobody configures this. OCTOMAXXING_TERMINAL is
+ * internal: it carries the found kind into arm tabs, and `test` there runs the tab's command as a detached process.
  */
-export type TerminalKind = 'background' | 'warp' | 'wt' | 'terminal' | 'tmux' | 'test';
-const KINDS: readonly TerminalKind[] = ['background', 'warp', 'wt', 'terminal', 'tmux', 'test'];
+export type TerminalKind = 'tmux' | 'wezterm' | 'warp' | 'wt' | 'terminal' | 'window' | 'test';
+const KINDS: readonly TerminalKind[] = ['tmux', 'wezterm', 'warp', 'wt', 'terminal', 'window', 'test'];
 
 export interface TerminalEnv {
   env: NodeJS.ProcessEnv;
@@ -20,12 +20,28 @@ export interface TerminalEnv {
   find?: (cmd: string) => string | null;
 }
 
-/** OCTOMAXXING_TERMINAL, then config "terminal", then `background`. */
-export function selectTerminal(configured: string | undefined, t: TerminalEnv): TerminalKind {
-  const kind = (t.env.OCTOMAXXING_TERMINAL || configured || 'background') as TerminalKind;
-  if (!KINDS.includes(kind)) throw new Error(`Unknown terminal "${kind}" (use background, warp, wt, terminal or tmux)`);
-  if (kind === 'background' && t.platform !== 'win32' && !(t.find ?? ((c) => resolveExecutable(c, t.env, t.platform)))('tmux')) {
-    throw new Error('Background arms on macOS and Linux run in detached tmux sessions: install tmux, or set "terminal" in config.json to warp, terminal or tmux');
+/** The terminal this process runs in. tmux goes first: it may run inside any of the others. */
+export function detectTerminal(env: NodeJS.ProcessEnv, platform: NodeJS.Platform): TerminalKind {
+  if (env.TMUX) return 'tmux';
+  switch (env.TERM_PROGRAM) {
+    case 'WezTerm':
+      return 'wezterm';
+    case 'WarpTerminal':
+      return 'warp';
+    case 'Apple_Terminal':
+      return 'terminal';
+  }
+  // Windows Terminal sets no TERM_PROGRAM, only WT_SESSION, which a terminal started from it can inherit: so it is last.
+  if (platform === 'win32' && env.WT_SESSION) return 'wt';
+  return platform === 'darwin' ? 'terminal' : 'window';
+}
+
+/** The terminal found for the head (carried in OCTOMAXXING_TERMINAL), else the one this process runs in. */
+export function selectTerminal(t: TerminalEnv): TerminalKind {
+  const carried = t.env.OCTOMAXXING_TERMINAL as TerminalKind | undefined;
+  const kind = carried && KINDS.includes(carried) ? carried : detectTerminal(t.env, t.platform);
+  if (kind === 'window' && t.platform === 'linux' && !(t.find ?? ((c) => resolveExecutable(c, t.env, t.platform)))('x-terminal-emulator')) {
+    throw new Error('octomaxxing cannot open a tab or a window from this terminal: no terminal emulator found (x-terminal-emulator)');
   }
   return kind;
 }
@@ -33,9 +49,6 @@ export function selectTerminal(configured: string | undefined, t: TerminalEnv): 
 export interface TabRequest {
   /** Tab name, octomaxxing-<id>. */
   name: string;
-  /** The task's run number. A background tmux session is named after it too: the previous run's session can still be
-   * ending when a follow-up starts the next, and tmux refuses two sessions with one name. */
-  run?: number;
   title: string;
   cwd: string;
   /** The command the tab runs: node, the CLI and its arguments. */
@@ -102,16 +115,6 @@ export function planTab(kind: TerminalKind, req: TabRequest, home: string = os.h
   // Warp on Windows starts PowerShell, on macOS the login shell. `exit` closes the tab once the script is done.
   const shellLine = win ? `& ${psQuote(script)}; exit` : `sh ${shQuote(script)}; exit`;
   switch (kind) {
-    case 'background': {
-      if (win) {
-        // Start-Process gives cmd.exe a console of its own, hidden: the arm sees a real terminal, and no window opens.
-        const ps = `Start-Process -FilePath cmd.exe -ArgumentList '/c', ${psQuote(`"${script}"`)} -WorkingDirectory ${psQuote(req.cwd)} -WindowStyle Hidden`;
-        return { files, command: { cmd: 'powershell.exe', args: ['-NoProfile', '-NonInteractive', '-Command', ps] }, tabConfig: null };
-      }
-      // The session ends, and is gone, when the script exits. `tmux attach -t octomaxxing-<id>` watches it.
-      const session = req.run === undefined ? req.name : `${req.name}-run${req.run}`;
-      return { files, command: { cmd: 'tmux', args: ['new-session', '-d', '-s', session, '-c', req.cwd, 'sh', script] }, tabConfig: null };
-    }
     case 'warp': {
       const tabConfig = path.join(warpTabConfigDir(req.platform, req.env, home), `${req.name}.toml`);
       files.push({ path: tabConfig, content: warpTabConfig(req.name, req.title, req.cwd, shellLine) });
@@ -120,10 +123,21 @@ export function planTab(kind: TerminalKind, req: TabRequest, home: string = os.h
       return { files, command, tabConfig };
     }
     case 'wt': {
-      // `;` separates wt subcommands, so it cannot appear in an argument. All arms share the window "octomaxxing".
-      if ([req.cwd, script].some((s) => s.includes(';'))) throw new Error('Windows Terminal cannot open a path that contains ";"');
+      // `;` separates wt subcommands, so it cannot appear in an argument. `-w 0` is the window the head runs in.
+      if ([req.cwd, script].some((s) => s.includes(';'))) throw new Error('This terminal cannot open a tab in a path that contains ";"');
       const title = req.title.replace(/;/g, ',');
-      return { files, command: { cmd: 'wt.exe', args: ['-w', 'octomaxxing', 'new-tab', '--title', title, '--suppressApplicationTitle', '--startingDirectory', req.cwd, 'cmd', '/c', script] }, tabConfig: null };
+      return { files, command: { cmd: 'wt.exe', args: ['-w', '0', 'new-tab', '--title', title, '--suppressApplicationTitle', '--startingDirectory', req.cwd, 'cmd', '/c', script] }, tabConfig: null };
+    }
+    case 'wezterm':
+      // A new tab in the window of the pane the head runs in (WEZTERM_PANE); openTab then names it.
+      return { files, command: { cmd: 'wezterm', args: ['cli', 'spawn', '--cwd', req.cwd, '--', ...(win ? ['cmd.exe', '/c', script] : ['sh', script])] }, tabConfig: null };
+    case 'window': {
+      if (win) {
+        // Start-Process gives cmd.exe a console window of its own, in the user's default terminal app.
+        const ps = `Start-Process -FilePath cmd.exe -ArgumentList '/c', ${psQuote(`"${script}"`)} -WorkingDirectory ${psQuote(req.cwd)}`;
+        return { files, command: { cmd: 'powershell.exe', args: ['-NoProfile', '-NonInteractive', '-Command', ps] }, tabConfig: null };
+      }
+      return { files, command: { cmd: 'x-terminal-emulator', args: ['-e', 'sh', '-c', `cd ${shQuote(req.cwd)} && sh ${shQuote(script)}`] }, tabConfig: null };
     }
     case 'terminal': {
       const line = `cd ${shQuote(req.cwd)} && ${shellLine}`;
@@ -151,45 +165,11 @@ export function openTab(kind: TerminalKind, req: TabRequest): { tabConfig: strin
     return { tabConfig: null };
   }
   const r = run(plan.command!.cmd, plan.command!.args);
-  if (r.error || r.status !== 0) throw new Error(`Could not open a ${kind} tab: ${r.error?.message ?? ((r.stderr || r.stdout).trim() || `exit ${r.status}`)}`);
+  if (r.error || r.status !== 0) throw new Error(`Could not open a tab for the arm: ${r.error?.message ?? ((r.stderr || r.stdout).trim() || `exit ${r.status}`)}`);
+  // `wezterm cli spawn` prints the new pane's id. The title is a nicety: a failure leaves the tab open as it is.
+  const pane = r.stdout.trim();
+  if (kind === 'wezterm' && /^\d+$/.test(pane)) run('wezterm', ['cli', 'set-tab-title', '--pane-id', pane, req.title]);
   return { tabConfig: plan.tabConfig };
-}
-
-/**
- * PowerShell that shows (or hides again) the hidden console a Windows background arm runs in. It finds the window by
- * attaching to the console of a process inside it. Exit 2: that process has no console any more (the arm ended).
- */
-export function consoleWindowScript(pid: number, show: boolean): string {
-  if (!Number.isInteger(pid) || pid <= 0) throw new Error(`Bad pid ${pid}`);
-  return [
-    'Add-Type -TypeDefinition @"',
-    'using System; using System.Runtime.InteropServices;',
-    'public class OctoConsole {',
-    '  [DllImport("kernel32.dll")] public static extern bool FreeConsole();',
-    '  [DllImport("kernel32.dll")] public static extern bool AttachConsole(uint pid);',
-    '  [DllImport("kernel32.dll")] public static extern IntPtr GetConsoleWindow();',
-    '  [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int cmd);',
-    '  [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);',
-    '}',
-    '"@',
-    '[OctoConsole]::FreeConsole() | Out-Null',
-    `if (-not [OctoConsole]::AttachConsole(${pid})) { exit 2 }`,
-    '$h = [OctoConsole]::GetConsoleWindow()',
-    '[OctoConsole]::FreeConsole() | Out-Null',
-    'if ($h -eq [IntPtr]::Zero) { exit 2 }',
-    // 9 restores the window; 0 hides it.
-    show ? '[OctoConsole]::ShowWindow($h, 9) | Out-Null; [OctoConsole]::SetForegroundWindow($h) | Out-Null' : '[OctoConsole]::ShowWindow($h, 0) | Out-Null',
-    'exit 0',
-  ].join('\n');
-}
-
-/** Show or hide a Windows background arm's console window. */
-export function setConsoleVisible(pid: number, show: boolean): void {
-  const encoded = Buffer.from(consoleWindowScript(pid, show), 'utf16le').toString('base64');
-  const r = run('powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand', encoded]);
-  if (r.error) throw new Error(`Could not run PowerShell: ${r.error.message}`);
-  if (r.status === 2) throw new Error('The arm has no console any more: it has ended');
-  if (r.status !== 0) throw new Error(`Could not ${show ? 'show' : 'hide'} the arm's window: ${(r.stderr || r.stdout).trim() || `exit ${r.status}`}`);
 }
 
 export function removeTabConfig(path: string | null | undefined): void {

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { after, describe, it } from 'node:test';
-import { age, armPrompt, boardText, greeting, headPrompt, titleOf } from '../src/arms.ts';
+import { age, armPrompt, greeting, headPrompt, titleOf } from '../src/arms.ts';
 import { INLINE_LIMIT, buildLaunch, pointerLine, quoteForCmd, resolveExecutable } from '../src/command.ts';
 import { nameFromPath, pickAgent, validateConfig, validateProjects } from '../src/config.ts';
 import { commitAll, looksSecret, porcelainPath } from '../src/git.ts';
@@ -21,13 +21,12 @@ describe('config', () => {
     assert.equal(pickAgent(c, undefined), 'a');
   });
 
-  it('rejects templates without {prompt}, bad memory numbers, an unknown terminal and an unknown defaultAgent', () => {
+  it('rejects templates without {prompt}, bad memory numbers and an unknown defaultAgent', () => {
     assert.throws(() => validateConfig({ agents: { a: { head: ['a'], arm: ['a', '{prompt}'] } } }), /agents\.a\.head needs a "\{prompt\}"/);
     assert.throws(() => validateConfig({ agents: { a: { head: ['a', '{prompt}'] } } }), /agents\.a\.arm must be/);
     assert.doesNotThrow(() => validateConfig({ agents: { armonly: { arm: ['some-agent', '--message', '{prompt}'] } } }), 'arm-only agents are fine');
     assert.throws(() => validateConfig({ armMb: -1 }), /armMb/);
     assert.throws(() => validateConfig({ reserveMb: 'lots' }), /reserveMb/);
-    assert.throws(() => validateConfig({ terminal: 'xterm' }), /terminal/);
     assert.throws(() => validateConfig({ agents: {}, defaultAgent: 'x' }), /defaultAgent/);
   });
 
@@ -137,34 +136,21 @@ describe('greeting', () => {
   });
 });
 
-describe('board', () => {
-  it('lists open arms, busiest first, and caps the lines', () => {
+describe('arm ids', () => {
+  it('take arm2 and #2 as arm 2', () => {
     const { dir, env } = makeHome();
     try {
-      assert.equal(boardText(env), '🐙 no arms');
-      const old = new Date(Date.now() - 5 * 60_000).toISOString();
-      const task = (id: string, status: Task['status'], extra: Partial<Task> = {}) =>
-        saveTask({ id, title: `Task ${id}`, agent: 'fake', status, createdAt: old, updatedAt: old, runs: 1, followUps: [], seen: true, project: 'p', cwd: '/w', repo: null, worktree: null, branch: null, baseSha: null, ...extra } as Task, env);
-      task('1-alpha', 'done', { seen: false });
-      task('2-beta', 'running', { startedAt: old });
-      task('3-gamma', 'queued');
-      task('4-delta', 'closed');
-      const lines = boardText(env).split('\n');
-      assert.equal(lines[0], '🐙 arms: 1 running · 1 queued · 1 new result');
-      assert.deepEqual(lines.slice(1).map((l) => l.split(/\s+/).slice(0, 2).join(' ')), ['▶ arm2', '✓ arm1', '… arm3'], 'number first, as armN; running, then finished, then queued; closed is hidden');
-      assert.equal(lines[1], '▶ arm2  running  Task 2-beta  [p]  5m 00s');
-      assert.equal(resolveId('arm2', env), '2-beta', 'the arm2 label works as an id too');
-      assert.equal(resolveId('#2', env), '2-beta', 'and the older #2 label');
-      const capped = boardText(env, 2).split('\n');
-      assert.equal(capped.length, 4);
-      assert.equal(capped[3], '  +1 more: octomaxxing status');
-      task('old-style-id', 'running', { startedAt: old });
-      assert.match(boardText(env), /\n▶ old-style-id  running  Task old-style-id  \[p\]  5m 00s\n/, 'ids from before numbering show as they are');
+      const old = new Date().toISOString();
+      saveTask({ id: '2-beta', title: 'Task 2-beta', agent: 'fake', status: 'running', createdAt: old, updatedAt: old, runs: 1, followUps: [], seen: true, project: 'p', cwd: '/w', repo: null, worktree: null, branch: null, baseSha: null } as Task, env);
+      assert.equal(resolveId('2', env), '2-beta');
+      assert.equal(resolveId('arm2', env), '2-beta');
+      assert.equal(resolveId('#2', env), '2-beta');
     } finally {
       cleanup(dir);
     }
   });
 });
+
 
 describe('ages', () => {
   it('shows seconds, minutes and seconds, or hours and minutes', () => {
@@ -289,14 +275,15 @@ describe('arm numbers', () => {
 });
 
 describe('head instructions', () => {
-  it('tell the head to open an arm window when asked to show an arm', () => {
+  it('say arms open in tabs, with no show or hide commands', () => {
     const { dir, env } = makeHome();
     try {
       const prompt = headPrompt('fake', env);
-      assert.match(prompt, /`octomaxxing show <id>`: when the user asks to open, show, see or watch an arm/);
-      assert.match(prompt, /Never answer such a request with `status` or `attach`/);
+      assert.match(prompt, /Each arm opens in its own tab of the terminal you run in/);
+      assert.doesNotMatch(prompt, /octomaxxing (show|hide|board)|background, with no window/);
     } finally {
       cleanup(dir);
     }
   });
 });
+

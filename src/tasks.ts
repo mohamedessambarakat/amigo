@@ -101,13 +101,13 @@ export function resolveId(ref: string, env: NodeJS.ProcessEnv = process.env): st
   if (all.some((t) => t.id === ref)) return ref;
   // An id from before arms were numbered (arm12-deadbeef) keeps the meaning "arm12" had then, over the arm12 shorthand.
   const shorthand = ref && !all.some((t) => armNumber(t.id) === null && t.id.startsWith(ref));
-  if (shorthand) ref = ref.replace(/^(arm|#)(?=\d+$)/i, ''); // the board labels arms arm3 (and once #3)
+  if (shorthand) ref = ref.replace(/^(arm|#)(?=\d+$)/i, ''); // arm3 and #3 mean arm 3 too
   if (all.some((t) => t.id === ref)) return ref;
   const matches = /^\d+$/.test(ref) ? all.filter((t) => armNumber(t.id) === ref) : all.filter((t) => ref && t.id.startsWith(ref));
   const open = matches.filter((t) => t.status !== 'closed');
   const pick = matches.length === 1 ? matches : open;
   if (pick.length === 1) return pick[0]!.id;
-  if (!matches.length) throw new Error(`No arm matches "${ref}" (see octomaxxing board)`);
+  if (!matches.length) throw new Error(`No arm matches "${ref}" (see octomaxxing status)`);
   throw new Error(`"${ref}" matches several arms: ${(open.length ? open : matches).map((t) => t.id).join(', ')}`);
 }
 
