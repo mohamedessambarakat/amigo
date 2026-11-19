@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { after, describe, it } from 'node:test';
-import { armPrompt, boardText, greeting, titleOf } from '../src/arms.ts';
+import { armPrompt, boardText, greeting, headPrompt, titleOf } from '../src/arms.ts';
 import { INLINE_LIMIT, buildLaunch, pointerLine, quoteForCmd, resolveExecutable } from '../src/command.ts';
 import { nameFromPath, pickAgent, validateConfig, validateProjects } from '../src/config.ts';
 import { commitAll, looksSecret, porcelainPath } from '../src/git.ts';
@@ -263,6 +263,19 @@ describe('arm numbers', () => {
       assert.equal(resolveId('2', env), '2-fix-footer', 'a number never matches a longer number');
       task('fix-loop-cd34ef56', 'queued');
       assert.throws(() => resolveId('fix-lo', env), /several arms/);
+    } finally {
+      cleanup(dir);
+    }
+  });
+});
+
+describe('head instructions', () => {
+  it('tell the head to open an arm window when asked to show an arm', () => {
+    const { dir, env } = makeHome();
+    try {
+      const prompt = headPrompt('fake', env);
+      assert.match(prompt, /`octomaxxing show <id>`: when the user asks to open, show, see or watch an arm/);
+      assert.match(prompt, /Never answer such a request with `status` or `attach`/);
     } finally {
       cleanup(dir);
     }
