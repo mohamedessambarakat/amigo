@@ -64,7 +64,7 @@ export function armPrompt(t: Task, brief: string, notes: string | undefined, cla
   if (claudeNotes) parts.push(claudeNotes);
   if (t.reviewOf) {
     parts.push(
-      `## You are a reviewer\n\nYou check the work of task ${t.reviewOf} in this folder. Read, run and report only: do not edit, commit, stage, reset or delete anything. End with STATUS: done followed by your verdict.`,
+      `## You are a reviewer\n\nYou check the work of task ${t.reviewOf} in this folder. Read, run and report only: do not edit, commit, stage, reset or delete anything. Check the brief's criteria, then the blast radius: what the change could break outside its own diff, each risk with a real file:line ("searched, nothing found" is an answer; never invent a caller). Prove the fact its safety rests on by running real code, such as a small script or test that fails loudly if you are wrong; if you could not, say **unproven**. Never run anything against live data or production services. End with STATUS: done followed by your verdict.`,
     );
   }
   parts.push(`## Project notes (hard rules)\n\n${notes?.trim() || 'None.'}`);
@@ -583,8 +583,8 @@ export function statusText(id: string | undefined, env: NodeJS.ProcessEnv = proc
 const GREETINGS = [
   '🐙 Tentacles warmed up.',
   "🐙 Ready to maxx. Hand me the work, I'll hand it out.",
-  '🐙 Head online.',
-  '🐙 All arms stretched. Point me at something.',
+  '🐙 Head online. Spotter ready.',
+  '🐙 All arms stretched. Point me at something heavy.',
   '🐙 Octomaxxing online. What are we maxxing today?',
   '🐙 Eight arms, zero excuses.',
 ];

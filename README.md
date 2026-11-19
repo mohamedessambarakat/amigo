@@ -51,12 +51,14 @@ The head greets you with what is free and what finished, then you just talk to i
 
 ```
 🐙 Tentacles warmed up.
-2 projects · 2/2 arms free · inbox: empty
+2 projects · 0 arms running · 9120 MB free · inbox: empty
 
 > fix the broken footer link in my-app, and add a dark mode toggle to site
 ```
 
-It writes a brief with Done-when criteria for each task and starts the arms, each in a new terminal tab named `octomaxxing-<id>`. Ask it what is done whenever you like. When an arm finishes, the head checks the result (bigger work gets a separate reviewer arm), shows you the changed files and asks you to accept. On your yes it runs `octomaxxing close <id> --commit`: the work is committed to branch `octomaxxing/<id>` and the worktree is removed. Merging and pushing stay with you.
+It writes a brief with Done-when criteria for each task and starts the arms, each in a new terminal tab named `octomaxxing-<id>`. Ask it what is done whenever you like. When an arm finishes, the head checks the result and asks you to accept, telling you how many files changed. Bigger work first gets a separate reviewer arm, which checks the Done-when criteria and the blast radius: what the change could break outside its own diff, with the fact its safety rests on proven by running code or flagged as unproven. On your yes it runs `octomaxxing close <id> --commit`: the work is committed to branch `octomaxxing/<id>` and the worktree is removed. Merging and pushing stay with you.
+
+The head reports in short plain prose: what happened, with real numbers, and what it holds up; then, only if something needs you, its recommendation and why, with the choices as options (clickable where the agent has a question tool, otherwise `A)`, `B)`, `C)`). It has a gym-bro streak, kept to its greeting and one tag line per reply, and drops it entirely for failures, security warnings and anything you have to approve.
 
 Arms that need an answer stop and ask; the head brings the question to you and sends your answer back, and the arm carries on in the same folder. You can also answer in the arm's tab yourself.
 

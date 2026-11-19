@@ -112,6 +112,12 @@ describe('tasks', () => {
     const t = { id: 'x-1', project: 'p', cwd: '/w', followUps: ['use blue'], summary: 'which color?' } as Task;
     const p = armPrompt(t, 'Title: paint', 'never touch .env');
     for (const part of ['Task id: x-1', 'never touch .env', 'Title: paint', 'which color?', '1. use blue', 'STATUS: done']) assert.ok(p.includes(part), part);
+    assert.ok(!p.includes('blast radius'), 'only reviewers get the blast-radius check');
+  });
+
+  it('gives reviewers the blast-radius check, read-only on production', () => {
+    const r = armPrompt({ id: 'r-1', project: 'p', cwd: '/w', followUps: [], reviewOf: 'x-1' } as unknown as Task, 'Title: review', undefined);
+    for (const part of ['task x-1', 'blast radius', 'file:line', '**unproven**', 'production', 'STATUS: done']) assert.ok(r.includes(part), part);
   });
 });
 
