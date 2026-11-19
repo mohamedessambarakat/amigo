@@ -35,7 +35,9 @@ import {
   listTasks,
   logFile,
   mutateTask,
+  armNumber,
   newId,
+  nextArmNumber,
   parseStatus,
   promptFile,
   requireTask,
@@ -116,11 +118,12 @@ export function spawnArm(input: SpawnInput, opts: { dryRun?: boolean }, env: Nod
   const agent = pickAgent(config, input.agent, env);
   const terminal = selectTerminal(config.terminal, { env, platform: process.platform });
   const title = input.title?.trim() || titleOf(input.brief);
-  let id = newId(title);
+  let id = newId(title, nextArmNumber(env));
   if (!opts.dryRun) {
+    // Two spawns at once can pick the same number: the folder decides, the loser takes the next one.
     for (let i = 0; !claimTaskDir(id, env); i++) {
-      if (i >= 5) throw new Error('Could not find a free task id');
-      id = newId(title);
+      if (i >= 20) throw new Error('Could not find a free task id');
+      id = newId(title, nextArmNumber(env));
     }
   }
   const now = new Date().toISOString();
@@ -581,23 +584,12 @@ export function statusText(id: string | undefined, env: NodeJS.ProcessEnv = proc
   return [head, ...open.map((t) => `${t.id}  ${t.status.padEnd(8)}  [${t.project}] ${t.title}  (${age(t.updatedAt)})`)].join('\n');
 }
 
-/** An open arm by its id, or by the start of its id when only one open arm matches (the board shows ids at line ends). */
-export function findArm(ref: string, env: NodeJS.ProcessEnv = process.env): Task {
-  const open = listTasks(env).filter((t) => t.status !== 'closed');
-  const exact = open.find((t) => t.id === ref);
-  if (exact) return exact;
-  const matches = ref ? open.filter((t) => t.id.startsWith(ref)) : [];
-  if (matches.length === 1) return matches[0]!;
-  if (!matches.length) throw new Error(`No open arm matches "${ref}" (see octomaxxing board)`);
-  throw new Error(`"${ref}" matches several arms: ${matches.map((t) => t.id).join(', ')}`);
-}
-
 /**
  * `octomaxxing show|hide <id>`: bring a background arm's window up to type into it, or tuck it away again. Only Windows
  * background arms have a hidden window; elsewhere this says where the arm is.
  */
-export function showArm(ref: string, show: boolean, env: NodeJS.ProcessEnv = process.env): string {
-  const t = findArm(ref, env);
+export function showArm(id: string, show: boolean, env: NodeJS.ProcessEnv = process.env): string {
+  const t = requireTask(id, env);
   if (!t.pid || !runnerAlive(t.id, env)) throw new Error(`${t.id} has no open session (it is ${t.status}). octomaxxing attach ${t.id} shows its output.`);
   const terminal = selectTerminal(loadConfig(env).terminal, { env, platform: process.platform });
   if (terminal !== 'background') return `${t.id} runs in a ${terminal} tab named ${armName(t.id)}: switch to it there.`;
@@ -623,7 +615,10 @@ export function boardText(env: NodeJS.ProcessEnv = process.env, max = 6): string
   const review = open.filter((t) => FINISHED.includes(t.status) && !t.seen).length;
   const head = `🐙 ${count('running')} running · ${count('queued')} queued · ${review} new result${review === 1 ? '' : 's'}`;
   if (!open.length) return '🐙 no arms';
-  const line = (t: Task) => `${BOARD_ICONS[t.status]} ${t.status.padEnd(8)} ${t.title.length > 40 ? `${t.title.slice(0, 39)}…` : t.title}  [${t.project}]  ${age(t.status === 'running' ? (t.startedAt ?? t.updatedAt) : t.updatedAt)}  ${t.id}`;
+  // What you type in commands goes first: the arm's number, or the whole id for arms from before numbering.
+  const handles = open.slice(0, max).map((t) => armNumber(t.id) ?? t.id);
+  const width = Math.max(...handles.map((h) => h.length));
+  const line = (t: Task, i: number) => `${BOARD_ICONS[t.status]} ${handles[i]!.padEnd(width)}  ${t.status.padEnd(8)} ${t.title.length > 40 ? `${t.title.slice(0, 39)}…` : t.title}  [${t.project}]  ${age(t.status === 'running' ? (t.startedAt ?? t.updatedAt) : t.updatedAt)}`;
   const shown = open.slice(0, max).map(line);
   if (open.length > max) shown.push(`  +${open.length - max} more: octomaxxing status`);
   return [head, ...shown].join('\n');

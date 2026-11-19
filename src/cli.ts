@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { applyHook, attach, boardText, closeArm, headPrompt, inbox, runHead, runTab, sendFollowUp, showArm, spawnArm, statusText, waitForArms } from './arms.ts';
 import { addProject, ensureHome, loadConfig, loadProjects, pickAgent } from './config.ts';
 import { isGitRepo } from './git.ts';
+import { resolveId } from './tasks.ts';
 import { configPath, home } from './paths.ts';
 import { installSkills, removeSkills } from './skills.ts';
 
@@ -143,7 +144,7 @@ export async function main(argv: string[], env: NodeJS.ProcessEnv = process.env)
         {
           brief,
           project: values.project as string | undefined,
-          review: values.review as string | undefined,
+          review: values.review === undefined ? undefined : resolveId(values.review as string, env),
           title: values.title as string | undefined,
           agent: values.agent as string | undefined,
         },
@@ -156,7 +157,7 @@ export async function main(argv: string[], env: NodeJS.ProcessEnv = process.env)
 
     case 'status': {
       const { positionals } = parse(rest, {});
-      out(statusText(positionals[0], env));
+      out(statusText(positionals[0] === undefined ? undefined : resolveId(positionals[0], env), env));
       return 0;
     }
 
@@ -179,7 +180,7 @@ export async function main(argv: string[], env: NodeJS.ProcessEnv = process.env)
       const { values, positionals } = parse(rest, { 'timeout-min': { type: 'string' } });
       const minutes = Number(values['timeout-min'] ?? 60);
       if (!(minutes > 0)) throw new Error('--timeout-min must be a positive number');
-      out(await waitForArms(positionals, minutes * 60_000, env));
+      out(await waitForArms(positionals.map((r) => resolveId(r, env)), minutes * 60_000, env));
       return 0;
     }
 
@@ -189,7 +190,7 @@ export async function main(argv: string[], env: NodeJS.ProcessEnv = process.env)
       if (!id) throw new Error('send needs a task id');
       const file = values.file as string | undefined;
       const message = file && file !== '-' ? readFileSync(file, 'utf8') : words.length ? words.join(' ') : readStdin('message');
-      const t = sendFollowUp(id, message, env);
+      const t = sendFollowUp(resolveId(id, env), message, env);
       out(`${t.id} ${t.status === 'running' ? 'is running again' : t.status === 'failed' ? `could not restart: ${t.summary}` : 'will reopen with your follow-up as soon as its old tab has closed and RAM allows'}.`);
       return 0;
     }
@@ -197,15 +198,15 @@ export async function main(argv: string[], env: NodeJS.ProcessEnv = process.env)
     case 'show':
     case 'hide': {
       const { positionals } = parse(rest, {});
-      if (!positionals[0]) throw new Error(`${cmd} needs a task id (the end of its line on the board; the start of it is enough)`);
-      out(showArm(positionals[0], cmd === 'show', env));
+      if (!positionals[0]) throw new Error(`${cmd} needs an arm number (first on its board line)`);
+      out(showArm(resolveId(positionals[0], env), cmd === 'show', env));
       return 0;
     }
 
     case 'attach': {
       const { positionals } = parse(rest, {});
       if (!positionals[0]) throw new Error('attach needs a task id');
-      await attach(positionals[0], env);
+      await attach(resolveId(positionals[0], env), env);
       return 0;
     }
 
@@ -213,7 +214,7 @@ export async function main(argv: string[], env: NodeJS.ProcessEnv = process.env)
       const { values, positionals } = parse(rest, { commit: { type: 'boolean' }, message: { type: 'string', short: 'm' }, force: { type: 'boolean' } });
       if (!positionals[0]) throw new Error('close needs a task id');
       if (values.message && !values.commit) throw new Error('-m only makes sense with --commit');
-      for (const line of closeArm(positionals[0], { commit: Boolean(values.commit), message: values.message as string | undefined, force: Boolean(values.force) }, env)) out(line);
+      for (const line of closeArm(resolveId(positionals[0], env), { commit: Boolean(values.commit), message: values.message as string | undefined, force: Boolean(values.force) }, env)) out(line);
       return 0;
     }
 

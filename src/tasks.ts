@@ -1,6 +1,5 @@
 import { existsSync, mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { randomBytes } from 'node:crypto';
 import { readJson, withLock, writeJsonAtomic } from './fsx.ts';
 import { lockPath, taskDir, tasksDir } from './paths.ts';
 
@@ -66,14 +65,44 @@ export function assertValidId(id: string): void {
   if (!ID_RE.test(id)) throw new Error(`Invalid task id "${id}"`);
 }
 
-export function newId(title: string, rand: () => string = () => randomBytes(4).toString('hex')): string {
-  const slug = title
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .slice(0, 24)
-    .replace(/-+$/g, '');
-  return `${slug || 'task'}-${rand()}`;
+/** A new id: the arm's number, then a few words of its title (`7-fix-footer`). The number alone is enough in every command. */
+export function newId(title: string, n: number): string {
+  const words = title.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+  let slug = (words[0] ?? '').slice(0, 16);
+  for (const w of words.slice(1)) {
+    if (slug.length + 1 + w.length > 16) break;
+    slug += `-${w}`;
+  }
+  return slug ? `${n}-${slug}` : String(n);
+}
+
+const NUMBER_RE = /^(\d+)(?:-|$)/;
+
+/** The number an id starts with (`7` for `7-fix-footer`); ids from before numbering have none. */
+export function armNumber(id: string): string | null {
+  return NUMBER_RE.exec(id)?.[1] ?? null;
+}
+
+/** One more than the highest arm number used so far, closed arms included: a number is never reused. */
+export function nextArmNumber(env: NodeJS.ProcessEnv = process.env): number {
+  const dir = tasksDir(env);
+  const used = existsSync(dir) ? readdirSync(dir).map((d) => Number(armNumber(d) ?? 0)) : [];
+  return Math.max(0, ...used) + 1;
+}
+
+/**
+ * The task a person means: its exact id, its number (`7`), or the start of its id. When several match, the one arm that
+ * is still open wins.
+ */
+export function resolveId(ref: string, env: NodeJS.ProcessEnv = process.env): string {
+  const all = listTasks(env);
+  if (all.some((t) => t.id === ref)) return ref;
+  const matches = /^\d+$/.test(ref) ? all.filter((t) => armNumber(t.id) === ref) : all.filter((t) => ref && t.id.startsWith(ref));
+  const open = matches.filter((t) => t.status !== 'closed');
+  const pick = matches.length === 1 ? matches : open;
+  if (pick.length === 1) return pick[0]!.id;
+  if (!matches.length) throw new Error(`No arm matches "${ref}" (see octomaxxing board)`);
+  throw new Error(`"${ref}" matches several arms: ${(open.length ? open : matches).map((t) => t.id).join(', ')}`);
 }
 
 export const taskFile = (id: string, env: NodeJS.ProcessEnv = process.env): string => join(taskDir(id, env), 'task.json');

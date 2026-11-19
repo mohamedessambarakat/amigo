@@ -2,11 +2,11 @@ import assert from 'node:assert/strict';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { after, describe, it } from 'node:test';
-import { armPrompt, boardText, findArm, greeting, titleOf } from '../src/arms.ts';
+import { armPrompt, boardText, greeting, titleOf } from '../src/arms.ts';
 import { INLINE_LIMIT, buildLaunch, pointerLine, quoteForCmd, resolveExecutable } from '../src/command.ts';
 import { nameFromPath, pickAgent, validateConfig, validateProjects } from '../src/config.ts';
 import { commitAll, looksSecret, porcelainPath } from '../src/git.ts';
-import { HEARTBEAT_MS, beat, newId, parseStatus, runnerAlive, saveTask, type Task } from '../src/tasks.ts';
+import { HEARTBEAT_MS, armNumber, beat, newId, nextArmNumber, parseStatus, resolveId, runnerAlive, saveTask, type Task } from '../src/tasks.ts';
 import { installSkills, removeSkills } from '../src/skills.ts';
 import { TEMPLATES } from '../src/templates.ts';
 import { cleanup, git, makeHome, makeRepo, tmpDir } from './helpers.ts';
@@ -101,9 +101,12 @@ describe('tasks', () => {
     assert.equal(parseStatus('STATUS: done - <what changed>'), null, 'placeholder lines from an echoed prompt are ignored');
   });
 
-  it('makes ids and titles from the brief', () => {
-    assert.equal(newId('Fix the Footer Link!', () => 'ab12'), 'fix-the-footer-link-ab12');
-    assert.equal(newId('عنوان', () => 'ab12'), 'task-ab12');
+  it('makes short numbered ids and titles from the brief', () => {
+    assert.equal(newId('Fix the Footer Link!', 7), '7-fix-the-footer');
+    assert.equal(newId('Internationalization overhaul', 12), '12-internationaliza', 'one long word is cut at 16 letters');
+    assert.equal(newId('عنوان', 3), '3');
+    assert.equal(armNumber('7-fix-footer'), '7');
+    assert.equal(armNumber('2fa-login-ab12cd34'), null, 'old random ids have no number');
     assert.equal(titleOf('Title: Fix footer\nmore'), 'Fix footer');
     assert.equal(titleOf('# Heading\nmore'), 'Heading');
   });
@@ -142,22 +145,17 @@ describe('board', () => {
       const old = new Date(Date.now() - 5 * 60_000).toISOString();
       const task = (id: string, status: Task['status'], extra: Partial<Task> = {}) =>
         saveTask({ id, title: `Task ${id}`, agent: 'fake', status, createdAt: old, updatedAt: old, runs: 1, followUps: [], seen: true, project: 'p', cwd: '/w', repo: null, worktree: null, branch: null, baseSha: null, ...extra } as Task, env);
-      task('a-1', 'done', { seen: false });
-      task('b-2', 'running', { startedAt: old });
-      task('c-3', 'queued');
-      task('d-4', 'closed');
+      task('1-alpha', 'done', { seen: false });
+      task('2-beta', 'running', { startedAt: old });
+      task('3-gamma', 'queued');
+      task('4-delta', 'closed');
       const lines = boardText(env).split('\n');
       assert.equal(lines[0], '🐙 1 running · 1 queued · 1 new result');
-      assert.deepEqual(lines.slice(1).map((l) => l.split(/\s+/)[0]), ['▶', '✓', '…'], 'running, then finished, then queued; closed is hidden');
-      assert.match(lines[1]!, /Task b-2 {2}\[p\] {2}5m {2}b-2$/);
+      assert.deepEqual(lines.slice(1).map((l) => l.split(/\s+/).slice(0, 2).join(' ')), ['▶ 2', '✓ 1', '… 3'], 'number first; running, then finished, then queued; closed is hidden');
+      assert.equal(lines[1], '▶ 2  running  Task 2-beta  [p]  5m');
       const capped = boardText(env, 2).split('\n');
       assert.equal(capped.length, 4);
       assert.equal(capped[3], '  +1 more: octomaxxing status');
-      assert.equal(findArm('b-2', env).id, 'b-2');
-      assert.equal(findArm('c', env).id, 'c-3', 'the start of an id is enough');
-      task('c-9', 'queued');
-      assert.throws(() => findArm('c', env), /several arms/);
-      assert.throws(() => findArm('d', env), /No open arm/, 'closed arms do not match');
     } finally {
       cleanup(dir);
     }
@@ -238,6 +236,33 @@ describe('secret files', () => {
       writeFileSync(join(repo, '.env'), 'TOKEN=fake');
       assert.throws(() => commitAll(repo, 'octomaxxing/t-1', 'm'), /may hold secrets: \.env/);
       assert.equal(git(repo, 'status', '--porcelain').trim(), '?? .env');
+    } finally {
+      cleanup(dir);
+    }
+  });
+});
+
+describe('arm numbers', () => {
+  it('counts up, never reuses a number, and resolves what a person types', () => {
+    const { dir, env } = makeHome();
+    try {
+      assert.equal(nextArmNumber(env), 1);
+      const now = new Date().toISOString();
+      const task = (id: string, status: Task['status']) =>
+        saveTask({ id, title: id, agent: 'fake', status, createdAt: now, updatedAt: now, runs: 1, followUps: [], seen: true, project: 'p', cwd: '/w', repo: null, worktree: null, branch: null, baseSha: null } as Task, env);
+      task('1-old-work', 'closed');
+      task('2-fix-footer', 'running');
+      task('fix-login-ab12cd34', 'done');
+      assert.equal(nextArmNumber(env), 3, 'closed arms keep their number');
+      assert.equal(resolveId('2', env), '2-fix-footer');
+      assert.equal(resolveId('1', env), '1-old-work', 'a closed arm still resolves for status');
+      assert.equal(resolveId('fix-l', env), 'fix-login-ab12cd34', 'old ids by their start');
+      assert.equal(resolveId('2-fix-footer', env), '2-fix-footer');
+      assert.throws(() => resolveId('9', env), /No arm matches "9"/);
+      task('20-other', 'queued');
+      assert.equal(resolveId('2', env), '2-fix-footer', 'a number never matches a longer number');
+      task('fix-loop-cd34ef56', 'queued');
+      assert.throws(() => resolveId('fix-lo', env), /several arms/);
     } finally {
       cleanup(dir);
     }
