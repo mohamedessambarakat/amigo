@@ -18,6 +18,32 @@ export function sessionAddress(env: NodeJS.ProcessEnv): string | undefined {
 }
 export const armName = (id: string): string => `octomaxxing-${id}`;
 
+/**
+ * Variables a running Claude session sets for the commands it runs. `octomaxxing spawn` and `send` run in the head's
+ * shell, so without this every arm inherits them and starts as a child of the head's session: it then never writes its
+ * own transcript (~/.claude/projects/<cwd>/<session id>.jsonl), and `--resume` of it fails with "No conversation found
+ * with session ID". User settings such as CLAUDE_CONFIG_DIR or CLAUDE_CODE_USE_BEDROCK are kept.
+ */
+const SESSION_VARS = new Set([
+  'CLAUDECODE',
+  'CLAUDE_PID',
+  'CLAUDE_EFFORT',
+  'CLAUDE_CODE_SESSION_ID',
+  'CLAUDE_CODE_CHILD_SESSION',
+  'CLAUDE_CODE_CHILD_NOTES_DIR',
+  'CLAUDE_CODE_SESSION_ATTENDED',
+  'CLAUDE_CODE_ENTRYPOINT',
+  'CLAUDE_CODE_EXECPATH',
+  'CLAUDE_CODE_VERSION',
+  'CLAUDE_CODE_MESSAGING_SOCKET',
+  'CLAUDE_CODE_MESSAGING_TOKEN',
+]);
+
+/** The environment for a new top-level Claude session: env without the variables of the session it was started from. */
+export function ownSessionEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  return Object.fromEntries(Object.entries(env).filter(([k]) => !SESSION_VARS.has(k.toUpperCase())));
+}
+
 /** A template whose command is Claude Code. */
 export function isClaude(template: string[]): boolean {
   return /^claude(\.(exe|cmd))?$/i.test(basename(template[0] ?? ''));

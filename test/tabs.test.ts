@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 import { applyHook, armPrompt, followUpPrompt, tabEnvArgs } from '../src/arms.ts';
-import { armSettings, headSettings, claudeArmNotes, claudeArmTemplate, claudeHeadTemplate, claudeJsonPath, dropTrust, isClaude, mergeTrust, reportReason, sessionAddress, turnMessagedHead } from '../src/claude.ts';
+import { armSettings, headSettings, claudeArmNotes, claudeArmTemplate, claudeHeadTemplate, claudeJsonPath, dropTrust, isClaude, mergeTrust, ownSessionEnv, reportReason, sessionAddress, turnMessagedHead } from '../src/claude.ts';
 import { parseVmStat, ramAllows } from '../src/ram.ts';
 import { descendants } from '../src/proc.ts';
 import { beat, saveTask, type Task } from '../src/tasks.ts';
@@ -103,6 +103,11 @@ describe('terminal tabs', () => {
 
 describe('Claude Code arms', () => {
   it('recognises Claude and builds the interactive arm and head commands', () => {
+    assert.deepEqual(
+      ownSessionEnv({ CLAUDECODE: '1', CLAUDE_CODE_SESSION_ID: 'head', claude_code_child_session: '1', CLAUDE_CODE_MESSAGING_SOCKET: 's', CLAUDE_CONFIG_DIR: '/c', CLAUDE_CODE_USE_BEDROCK: '1', PATH: '/bin' }),
+      { CLAUDE_CONFIG_DIR: '/c', CLAUDE_CODE_USE_BEDROCK: '1', PATH: '/bin' },
+      "an arm drops the head session's variables and keeps the user's settings",
+    );
     assert.ok(isClaude(['claude', '{prompt}']) && isClaude(['C:\\bin\\claude.exe']) && !isClaude(['codex', 'exec']));
     const t = claudeArmTemplate(['claude', '-p', '--permission-mode', 'auto', '{prompt}'], { id: 'x-1', sessionId: 'S', resume: false, settingsFile: '/s.json' });
     assert.deepEqual(t, ['claude', '--name', 'octomaxxing-x-1', '--session-id', 'S', '--settings', '/s.json', '--permission-mode', 'auto', '{prompt}']);

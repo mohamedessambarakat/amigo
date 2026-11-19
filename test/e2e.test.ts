@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
-import { cliPath, home } from '../src/paths.ts';
+import { cliPath, codeRoot, home } from '../src/paths.ts';
 import { getTask } from '../src/tasks.ts';
 import { cleanup, cli, fakeAgent, git, idFrom, makeHome, makeRepo, tmpDir, waitFor } from './helpers.ts';
 
@@ -234,6 +234,30 @@ describe('end to end with a fake agent', () => {
       const id = idFrom(cli(env, ['spawn', '--project', 'p'], 'Title: via cmd\nquotes " and 100% are fine here').out);
       assert.equal((await waitFor(id, env, ['done', 'failed'])).status, 'done');
       assert.equal(readFileSync(join(folder, 'arm-output.txt'), 'utf8'), 'pointer=true\n');
+    } finally {
+      cleanup(dir);
+    }
+  });
+
+  it("starts a Claude arm as its own session and keeps a failed launch's stderr in output.log", async () => {
+    const { dir, env } = makeHome();
+    const fakeClaude = join(codeRoot, 'test', 'fake-claude.mjs');
+    const win = process.platform === 'win32';
+    const shim = join(dir, win ? 'claude.cmd' : 'claude');
+    writeFileSync(shim, win ? `@echo off\r\n"${process.execPath}" "${fakeClaude}" %*\r\n` : `#!/bin/sh\nexec "${process.execPath}" "${fakeClaude}" "$@"\n`, { mode: 0o755 });
+    writeFileSync(join(home(env), 'config.json'), JSON.stringify({ agents: { claude: { arm: [shim, '{prompt}'] } } }));
+    try {
+      const folder = join(dir, 'p');
+      mkdirSync(folder);
+      cli(env, ['add', folder]);
+      // spawn runs in the head's shell, which carries the head session's variables.
+      const id = idFrom(cli({ ...env, CLAUDE_CODE_SESSION_ID: 'head-session', CLAUDECODE: '1' }, ['spawn', '--project', 'p'], 'Title: resume').out);
+      const t = await waitFor(id, env, ['failed', 'done']);
+      assert.equal(t.status, 'failed');
+      assert.match(t.summary ?? '', /^The session ended in the middle of a turn \(exit 1\): No conversation found with session ID: [0-9a-f-]{36}$/);
+      const log = readFileSync(join(home(env), 'tasks', id, 'output.log'), 'utf8');
+      assert.match(log, /No conversation found with session ID/);
+      assert.doesNotMatch(log, /inherited/, 'the arm does not inherit the head session');
     } finally {
       cleanup(dir);
     }

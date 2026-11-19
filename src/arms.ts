@@ -11,6 +11,7 @@ import {
   headSettings,
   forgetFolder,
   isClaude,
+  ownSessionEnv,
   reportReason,
   sessionAddress,
   transcriptMessagedHead,
@@ -328,24 +329,43 @@ export async function runTab(id: string, env: NodeJS.ProcessEnv = process.env, r
   return code;
 }
 
+function appendLog(id: string, text: string | Buffer, env: NodeJS.ProcessEnv): void {
+  try {
+    appendFileSync(logFile(id, env), text);
+  } catch {
+    // the log is a convenience; losing a line must not take the session down
+  }
+}
+
 async function runClaudeArm(t: Task, env: NodeJS.ProcessEnv): Promise<number> {
   const launch = armLaunch(t, loadConfig(env), readFileSync(promptFile(t.id, env), 'utf8'), env);
   // Ctrl+C belongs to the session, not to this wrapper.
   process.on('SIGINT', () => {});
-  const child = spawnAgent(launch, { cwd: t.cwd, stdio: 'inherit', env: { ...env, OCTOMAXXING_TASK: t.id, OCTOMAXXING_HOME: home(env) } });
+  // stderr is piped (and still shown in the tab) so a launch that dies at once, like a failed --resume, leaves its error
+  // in output.log; the session's screen is stdout, which stays the tab's own.
+  const child = spawnAgent(launch, { cwd: t.cwd, stdio: ['inherit', 'inherit', 'pipe'], env: { ...ownSessionEnv(env), OCTOMAXXING_TASK: t.id, OCTOMAXXING_HOME: home(env) } });
+  let stderr = '';
+  child.stderr?.on('data', (chunk: Buffer) => {
+    process.stderr.write(chunk);
+    stderr += chunk.toString();
+    appendLog(t.id, chunk, env);
+  });
   // Only now does the session exist (resumable later) and has it been given the follow-ups in its prompt.
   if (!recordPid(t.id, child.pid, env, (cur) => ({ sessionStarted: true, followUpsSent: cur.followUps.length }))) return 0;
   const exit = await new Promise<number | null>((done) => {
     child.on('error', (err) => {
       process.stderr.write(`octomaxxing: claude could not start: ${err.message}\n`);
+      appendLog(t.id, `octomaxxing: claude could not start: ${err.message}\n`, env);
       done(null);
     });
-    child.on('exit', (c) => done(c));
+    // close, not exit: it also waits for the stderr pipe to drain.
+    child.on('close', (c) => done(c));
   });
+  const why = lastLines(stderr, 1);
   const after = mutateTask(
     t.id,
     (cur) => {
-      if (cur.status === 'running') return { status: 'failed', pid: null, exitCode: exit, seen: false, summary: `The session ended in the middle of a turn (exit ${exit}).` };
+      if (cur.status === 'running') return { status: 'failed', pid: null, exitCode: exit, seen: false, summary: `The session ended in the middle of a turn (exit ${exit})${why ? `: ${why}` : '.'}` };
       return { pid: null, exitCode: exit };
     },
     env,
