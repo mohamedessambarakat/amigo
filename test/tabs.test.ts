@@ -3,11 +3,11 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 import { applyHook, armPrompt, followUpPrompt, tabEnvArgs } from '../src/arms.ts';
-import { armSettings, claudeArmNotes, claudeArmTemplate, claudeHeadTemplate, claudeJsonPath, dropTrust, isClaude, mergeTrust, reportReason, sessionAddress, turnMessagedHead } from '../src/claude.ts';
+import { armSettings, headSettings, claudeArmNotes, claudeArmTemplate, claudeHeadTemplate, claudeJsonPath, dropTrust, isClaude, mergeTrust, reportReason, sessionAddress, turnMessagedHead } from '../src/claude.ts';
 import { parseVmStat, ramAllows } from '../src/ram.ts';
 import { descendants } from '../src/proc.ts';
 import { beat, saveTask, type Task } from '../src/tasks.ts';
-import { planTab, selectTerminal, tabScript, warpTabConfig } from '../src/terminal.ts';
+import { consoleWindowScript, planTab, selectTerminal, tabScript, warpTabConfig } from '../src/terminal.ts';
 import { cleanup, cli, makeHome, waitFor } from './helpers.ts';
 
 const req = (platform: NodeJS.Platform) => ({
@@ -21,16 +21,30 @@ const req = (platform: NodeJS.Platform) => ({
 });
 
 describe('terminal tabs', () => {
-  it('picks the terminal: override, then Warp if installed, then the system terminal', () => {
-    const none = () => false;
-    assert.equal(selectTerminal(undefined, { env: { OCTOMAXXING_TERMINAL: 'wt' }, platform: 'darwin', exists: none }), 'wt');
-    assert.equal(selectTerminal('tmux', { env: {}, platform: 'darwin', exists: none }), 'tmux');
-    assert.equal(selectTerminal(undefined, { env: { LOCALAPPDATA: 'C:\\L' }, platform: 'win32', exists: (p) => p.endsWith('Warp') }), 'warp');
-    assert.equal(selectTerminal(undefined, { env: {}, platform: 'darwin', exists: (p) => p === '/Applications/Warp.app' }), 'warp');
-    assert.equal(selectTerminal(undefined, { env: {}, platform: 'darwin', exists: none }), 'terminal');
-    assert.equal(selectTerminal(undefined, { env: { TMUX: '/tmp/t' }, platform: 'linux', exists: none }), 'tmux');
-    assert.throws(() => selectTerminal(undefined, { env: {}, platform: 'linux', exists: none }), /inside tmux/);
-    assert.throws(() => selectTerminal('xterm', { env: {}, platform: 'linux', exists: none }), /Unknown terminal/);
+  it('runs arms in the background unless a terminal is set', () => {
+    const tmux = () => '/usr/bin/tmux';
+    const none = () => null;
+    assert.equal(selectTerminal(undefined, { env: {}, platform: 'win32', find: none }), 'background', 'Windows needs nothing extra');
+    assert.equal(selectTerminal(undefined, { env: {}, platform: 'darwin', find: tmux }), 'background');
+    assert.equal(selectTerminal(undefined, { env: {}, platform: 'linux', find: tmux }), 'background');
+    assert.throws(() => selectTerminal(undefined, { env: {}, platform: 'linux', find: none }), /install tmux/);
+    assert.equal(selectTerminal(undefined, { env: { OCTOMAXXING_TERMINAL: 'wt' }, platform: 'darwin', find: none }), 'wt');
+    assert.equal(selectTerminal('warp', { env: {}, platform: 'linux', find: none }), 'warp');
+    assert.throws(() => selectTerminal('xterm', { env: {}, platform: 'linux', find: none }), /Unknown terminal/);
+  });
+
+  it('opens a background arm in a hidden console (Windows) or a detached tmux session', () => {
+    const win = planTab('background', { ...req('win32'), cwd: "C:\\it's here" });
+    assert.equal(win.tabConfig, null);
+    assert.deepEqual(win.command, {
+      cmd: 'powershell.exe',
+      args: ['-NoProfile', '-NonInteractive', '-Command', `Start-Process -FilePath cmd.exe -ArgumentList '/c', '"C:\\h\\tasks\\x-1\\tab.cmd"' -WorkingDirectory 'C:\\it''s here' -WindowStyle Hidden`],
+    });
+    assert.deepEqual(planTab('background', req('darwin')).command, { cmd: 'tmux', args: ['new-session', '-d', '-s', 'octomaxxing-x-1', '-c', '/work/my app', 'sh', '/h/tasks/x-1/tab.sh'] });
+    assert.equal(planTab('background', { ...req('linux'), run: 2 }).command?.args[3], 'octomaxxing-x-1-run2', 'a follow-up never collides with the ending run');
+    assert.match(consoleWindowScript(42, true), /AttachConsole\(42\)[\s\S]*ShowWindow\(\$h, 9\)/);
+    assert.match(consoleWindowScript(42, false), /ShowWindow\(\$h, 0\)/);
+    assert.throws(() => consoleWindowScript(Number.NaN, true), /Bad pid/);
   });
 
   it('writes a Warp tab config that runs the tab script and closes the tab', () => {
@@ -64,7 +78,7 @@ describe('terminal tabs', () => {
     assert.throws(() => tabScript(['C:\\100%\\node.exe'], 'win32'), /\.cmd file/);
     assert.equal(tabScript(req('darwin').argv, 'darwin'), "#!/bin/sh\n'/usr/bin/node' '/oct/it'\\''s/cli.ts' '_tab' 'x-1'\n");
     const waits = /pause|Read-Host|read -r|Press Enter|any key/i;
-    for (const kind of ['warp', 'wt', 'terminal', 'tmux'] as const) {
+    for (const kind of ['background', 'warp', 'wt', 'terminal', 'tmux'] as const) {
       for (const platform of ['win32', 'darwin', 'linux'] as const) {
         const plan = planTab(kind, req(platform), platform === 'win32' ? 'C:\\Users\\u' : '/Users/u');
         for (const f of plan.files) assert.doesNotMatch(f.content, waits, `${kind}/${platform}: ${f.path}`);
@@ -97,6 +111,9 @@ describe('Claude Code arms', () => {
     const hooks = (armSettings() as { hooks: Record<string, [{ hooks: [{ command: string }] }]> }).hooks;
     assert.match(hooks.Stop![0].hooks[0].command, /^node "[^"\\]+cli\.ts" _hook stop$/);
     assert.match(hooks.UserPromptSubmit![0].hooks[0].command, / _hook prompt$/);
+    const status = (headSettings() as { statusLine: { command: string; refreshInterval: number } }).statusLine;
+    assert.match(status.command, /^node "[^"\\]+cli\.ts" board$/);
+    assert.equal(status.refreshInterval, 2);
   });
 
   it('tells the arm to message the session that spawned it, whatever its name', () => {

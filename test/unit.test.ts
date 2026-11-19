@@ -2,11 +2,11 @@ import assert from 'node:assert/strict';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { after, describe, it } from 'node:test';
-import { armPrompt, greeting, titleOf } from '../src/arms.ts';
+import { armPrompt, boardText, findArm, greeting, titleOf } from '../src/arms.ts';
 import { INLINE_LIMIT, buildLaunch, pointerLine, quoteForCmd, resolveExecutable } from '../src/command.ts';
 import { nameFromPath, pickAgent, validateConfig, validateProjects } from '../src/config.ts';
 import { commitAll, looksSecret, porcelainPath } from '../src/git.ts';
-import { HEARTBEAT_MS, beat, newId, parseStatus, runnerAlive, type Task } from '../src/tasks.ts';
+import { HEARTBEAT_MS, beat, newId, parseStatus, runnerAlive, saveTask, type Task } from '../src/tasks.ts';
 import { installSkills, removeSkills } from '../src/skills.ts';
 import { TEMPLATES } from '../src/templates.ts';
 import { cleanup, git, makeHome, makeRepo, tmpDir } from './helpers.ts';
@@ -128,6 +128,36 @@ describe('greeting', () => {
       const g = greeting(env, () => 0);
       assert.match(g, /^🐙 Tentacles warmed up\.\n0 projects · 0 arms running · inbox: empty$/);
       assert.notEqual(greeting(env, () => 1).split('\n')[0], g.split('\n')[0]);
+    } finally {
+      cleanup(dir);
+    }
+  });
+});
+
+describe('board', () => {
+  it('lists open arms, busiest first, and caps the lines', () => {
+    const { dir, env } = makeHome();
+    try {
+      assert.equal(boardText(env), '🐙 no arms');
+      const old = new Date(Date.now() - 5 * 60_000).toISOString();
+      const task = (id: string, status: Task['status'], extra: Partial<Task> = {}) =>
+        saveTask({ id, title: `Task ${id}`, agent: 'fake', status, createdAt: old, updatedAt: old, runs: 1, followUps: [], seen: true, project: 'p', cwd: '/w', repo: null, worktree: null, branch: null, baseSha: null, ...extra } as Task, env);
+      task('a-1', 'done', { seen: false });
+      task('b-2', 'running', { startedAt: old });
+      task('c-3', 'queued');
+      task('d-4', 'closed');
+      const lines = boardText(env).split('\n');
+      assert.equal(lines[0], '🐙 1 running · 1 queued · 1 new result');
+      assert.deepEqual(lines.slice(1).map((l) => l.split(/\s+/)[0]), ['▶', '✓', '…'], 'running, then finished, then queued; closed is hidden');
+      assert.match(lines[1]!, /Task b-2 {2}\[p\] {2}5m {2}b-2$/);
+      const capped = boardText(env, 2).split('\n');
+      assert.equal(capped.length, 4);
+      assert.equal(capped[3], '  +1 more: octomaxxing status');
+      assert.equal(findArm('b-2', env).id, 'b-2');
+      assert.equal(findArm('c', env).id, 'c-3', 'the start of an id is enough');
+      task('c-9', 'queued');
+      assert.throws(() => findArm('c', env), /several arms/);
+      assert.throws(() => findArm('d', env), /No open arm/, 'closed arms do not match');
     } finally {
       cleanup(dir);
     }

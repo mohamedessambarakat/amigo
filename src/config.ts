@@ -19,7 +19,7 @@ export interface Config {
   armMb: number;
   /** Free RAM, in MB, that must remain after an arm starts. */
   reserveMb: number;
-  /** Where arm tabs open: warp, wt, terminal or tmux. Default: Warp if installed, else the system terminal. */
+  /** Where arms run: background (default, no window), or a visible tab in warp, wt, terminal or tmux. */
   terminal?: string;
 }
 
@@ -68,7 +68,7 @@ export function validateConfig(raw: unknown, where = 'config.json'): Config {
   };
   const armMb = mb('armMb');
   const reserveMb = mb('reserveMb');
-  if (o.terminal !== undefined && !['warp', 'wt', 'terminal', 'tmux'].includes(o.terminal)) throw new Error(`${where}: "terminal" must be warp, wt, terminal or tmux`);
+  if (o.terminal !== undefined && !['background', 'warp', 'wt', 'terminal', 'tmux'].includes(o.terminal)) throw new Error(`${where}: "terminal" must be background, warp, wt, terminal or tmux`);
   if (o.defaultAgent !== undefined && !(o.defaultAgent in agents)) throw new Error(`${where}: defaultAgent "${o.defaultAgent}" is not in "agents"`);
   return { agents, armMb, reserveMb, ...(o.terminal ? { terminal: o.terminal } : {}), ...(o.defaultAgent ? { defaultAgent: o.defaultAgent } : {}) };
 }

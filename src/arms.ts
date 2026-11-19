@@ -23,7 +23,7 @@ import { branchName, changedFiles, commitAll, committedFiles, createWorktree, de
 import { cliPath, codeRoot, home, lockPath, taskDir, worktreesDir } from './paths.ts';
 import { killTree } from './proc.ts';
 import { freeMemMb, ramAllows } from './ram.ts';
-import { openTab, removeTabConfig, selectTerminal } from './terminal.ts';
+import { openTab, removeTabConfig, selectTerminal, setConsoleVisible } from './terminal.ts';
 import {
   FINISHED,
   HEARTBEAT_MS,
@@ -145,7 +145,7 @@ export function spawnArm(input: SpawnInput, opts: { dryRun?: boolean }, env: Nod
 
   const launch = armLaunch(task, config, armPrompt(task, input.brief, notesFor(task.project, env)), env);
   const where = task.worktree ? `new worktree ${task.worktree} on branch ${task.branch} (from ${task.repo})` : `${task.cwd} (in place${task.reviewOf ? `, reviewing ${task.reviewOf}` : ''})`;
-  const text = [`task:    ${id}  "${title}"`, `folder:  ${where}`, `agent:   ${agent} (${terminal} tab ${armName(id)})`, `command: ${describeLaunch(launch)}`].join('\n');
+  const text = [`task:    ${id}  "${title}"`, `folder:  ${where}`, `agent:   ${agent} (${terminal === 'background' ? 'in the background' : `${terminal} tab`} as ${armName(id)})`, `command: ${describeLaunch(launch)}`].join('\n');
   if (opts.dryRun) return { task, text: `DRY RUN, nothing was started.\n${text}` };
 
   writeFileSync(briefFile(id, env), input.brief.trim() + '\n');
@@ -160,7 +160,7 @@ export function spawnArm(input: SpawnInput, opts: { dryRun?: boolean }, env: Nod
   return { task: after, text: `${state}\n${text}` };
 }
 
-const TAB_LOST = 'The arm stopped without reporting: its tab closed or never opened (see octomaxxing attach).';
+const TAB_LOST = 'The arm stopped without reporting: its tab or background process closed or never started (see octomaxxing attach).';
 
 /**
  * Mark arms whose tab is gone in the middle of a turn (closed, crashed, reboot, or it never opened) as failed. The pid
@@ -256,6 +256,7 @@ function startArm(t: Task, config: Config, env: NodeJS.ProcessEnv): boolean {
       title: `octomaxxing: ${t.title}`,
       // The tab's shell sits in the task folder, never in the worktree, so it cannot block removing the worktree on close.
       cwd: taskDir(t.id, env),
+      run: now.runs,
       argv: [process.execPath, cliPath, '_tab', t.id, '--run', String(now.runs), '--home', home(env), ...tabEnvArgs(env)],
       dir: taskDir(t.id, env),
       platform: process.platform,
@@ -560,7 +561,7 @@ export function statusText(id: string | undefined, env: NodeJS.ProcessEnv = proc
     const t = requireTask(id, env);
     const lines = [
       `${t.id}  ${t.status}  [${t.project}] ${t.title}`,
-      `agent:   ${t.agent}   runs: ${t.runs}   updated ${age(t.updatedAt)} ago${runnerAlive(t.id, env) ? `   tab open: ${armName(t.id)}` : ''}`,
+      `agent:   ${t.agent}   runs: ${t.runs}   updated ${age(t.updatedAt)} ago${runnerAlive(t.id, env) ? `   session open: ${armName(t.id)}` : ''}`,
       `folder:  ${t.cwd}${t.branch ? `   branch: ${t.branch}` : ''}${t.reviewOf ? `   reviewing: ${t.reviewOf}` : ''}`,
     ];
     if (t.summary) lines.push(`result:  ${t.summary}`);
@@ -578,6 +579,54 @@ export function statusText(id: string | undefined, env: NodeJS.ProcessEnv = proc
   const head = `Arms: ${running} running, ${open.filter((t) => t.status === 'queued').length} queued. Free RAM ${freeMemMb(env)} MB (an arm starts while ${config.armMb} MB for it still leaves ${config.reserveMb} MB).`;
   if (!open.length) return `${head} No open tasks.`;
   return [head, ...open.map((t) => `${t.id}  ${t.status.padEnd(8)}  [${t.project}] ${t.title}  (${age(t.updatedAt)})`)].join('\n');
+}
+
+/** An open arm by its id, or by the start of its id when only one open arm matches (the board shows ids at line ends). */
+export function findArm(ref: string, env: NodeJS.ProcessEnv = process.env): Task {
+  const open = listTasks(env).filter((t) => t.status !== 'closed');
+  const exact = open.find((t) => t.id === ref);
+  if (exact) return exact;
+  const matches = ref ? open.filter((t) => t.id.startsWith(ref)) : [];
+  if (matches.length === 1) return matches[0]!;
+  if (!matches.length) throw new Error(`No open arm matches "${ref}" (see octomaxxing board)`);
+  throw new Error(`"${ref}" matches several arms: ${matches.map((t) => t.id).join(', ')}`);
+}
+
+/**
+ * `octomaxxing show|hide <id>`: bring a background arm's window up to type into it, or tuck it away again. Only Windows
+ * background arms have a hidden window; elsewhere this says where the arm is.
+ */
+export function showArm(ref: string, show: boolean, env: NodeJS.ProcessEnv = process.env): string {
+  const t = findArm(ref, env);
+  if (!t.pid || !runnerAlive(t.id, env)) throw new Error(`${t.id} has no open session (it is ${t.status}). octomaxxing attach ${t.id} shows its output.`);
+  const terminal = selectTerminal(loadConfig(env).terminal, { env, platform: process.platform });
+  if (terminal !== 'background') return `${t.id} runs in a ${terminal} tab named ${armName(t.id)}: switch to it there.`;
+  if (process.platform !== 'win32') return `${t.id} runs in tmux. Watch it with: tmux attach -t ${armName(t.id)}-run${t.runs}   (leave again with Ctrl+B, then D)`;
+  setConsoleVisible(t.pid, show);
+  return show
+    ? `Showing ${t.id}. Type into it in that window. Closing the window stops the arm: run octomaxxing hide ${t.id} to tuck it away instead.`
+    : `Hid ${t.id}; it keeps running in the background.`;
+}
+
+const BOARD_ICONS: Record<Task['status'], string> = { running: '▶', queued: '…', done: '✓', question: '?', blocked: '!', failed: '✗', closing: '·', closed: '·' };
+const BOARD_ORDER: Task['status'][] = ['running', 'question', 'blocked', 'failed', 'done', 'queued', 'closing'];
+
+/**
+ * The head's live board (its Claude Code status line): one line per open arm. Read-only and quick, since it runs every
+ * couple of seconds: it never starts queued arms or marks results seen.
+ */
+export function boardText(env: NodeJS.ProcessEnv = process.env, max = 6): string {
+  const open = listTasks(env)
+    .filter((t) => t.status !== 'closed')
+    .sort((a, b) => BOARD_ORDER.indexOf(a.status) - BOARD_ORDER.indexOf(b.status) || a.createdAt.localeCompare(b.createdAt));
+  const count = (s: Task['status']) => open.filter((t) => t.status === s).length;
+  const review = open.filter((t) => FINISHED.includes(t.status) && !t.seen).length;
+  const head = `🐙 ${count('running')} running · ${count('queued')} queued · ${review} new result${review === 1 ? '' : 's'}`;
+  if (!open.length) return '🐙 no arms';
+  const line = (t: Task) => `${BOARD_ICONS[t.status]} ${t.status.padEnd(8)} ${t.title.length > 40 ? `${t.title.slice(0, 39)}…` : t.title}  [${t.project}]  ${age(t.status === 'running' ? (t.startedAt ?? t.updatedAt) : t.updatedAt)}  ${t.id}`;
+  const shown = open.slice(0, max).map(line);
+  if (open.length > max) shown.push(`  +${open.length - max} more: octomaxxing status`);
+  return [head, ...shown].join('\n');
 }
 
 const GREETINGS = [
@@ -602,8 +651,8 @@ export function greeting(env: NodeJS.ProcessEnv = process.env, pick: (n: number)
 
 const CLAUDE_HEAD = `## Talking to arms (you are Claude Code)
 
-- Claude arms are sessions named \`octomaxxing-<id>\` in terminal tabs. Each one messages the session that spawned it when a turn ends, whatever that session is named, so never ask the user to rename this session.
-- To answer an arm whose tab is still open, use SendMessage to \`octomaxxing-<id>\`: the arm carries on in the same session. \`octomaxxing send\` restarts its session in a new tab instead.
+- Claude arms are sessions named \`octomaxxing-<id>\`, running in the background (or in terminal tabs, if the user set "terminal"). Each one messages the session that spawned it when a turn ends, whatever that session is named, so never ask the user to rename this session.
+- To answer an arm whose session is still open, use SendMessage to \`octomaxxing-<id>\`: the arm carries on in the same session. \`octomaxxing send\` restarts its session instead.
 - Messages from arms can be held for the user's approval, so never rely on them alone: \`octomaxxing wait\` and \`octomaxxing inbox\` always have every result.`;
 
 /** The head's full instructions, for `octomaxxing head` and for the /octomaxxing skill (`octomaxxing brief`). */
@@ -647,7 +696,7 @@ export async function runHead(agentName: string | undefined, opts: { dryRun?: bo
 /** Print an arm's output (for Claude arms: how each turn ended), then keep following it while it runs. */
 export async function attach(id: string, env: NodeJS.ProcessEnv = process.env, out: NodeJS.WritableStream = process.stdout): Promise<void> {
   const log = logFile(id, env);
-  if (requireTask(id, env).sessionId) out.write(`[${id} is a Claude session in the tab ${armName(id)}; this shows how each turn ended]\n`);
+  if (requireTask(id, env).sessionId) out.write(`[${id} is the Claude session ${armName(id)}; this shows how each turn ended]\n`);
   let offset = 0;
   const flush = () => {
     if (!existsSync(log)) return;

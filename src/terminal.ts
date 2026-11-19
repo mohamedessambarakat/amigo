@@ -1,44 +1,41 @@
 import { spawn } from 'node:child_process';
-import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, posix, win32 } from 'node:path';
 import os from 'node:os';
 import { resolveExecutable } from './command.ts';
 import { run } from './proc.ts';
 
 /**
- * Where an arm's tab opens. `test` is for the test suite only: it runs the tab's command as a detached child process.
+ * Where an arm runs. `background` (the default) opens no window: a hidden console on Windows, a detached tmux session on
+ * macOS and Linux, so the arm still gets a real terminal and nothing takes your focus. The others open a visible tab.
+ * `test` is for the test suite only: it runs the tab's command as a detached child process.
  */
-export type TerminalKind = 'warp' | 'wt' | 'terminal' | 'tmux' | 'test';
-const KINDS: readonly TerminalKind[] = ['warp', 'wt', 'terminal', 'tmux', 'test'];
+export type TerminalKind = 'background' | 'warp' | 'wt' | 'terminal' | 'tmux' | 'test';
+const KINDS: readonly TerminalKind[] = ['background', 'warp', 'wt', 'terminal', 'tmux', 'test'];
 
 export interface TerminalEnv {
   env: NodeJS.ProcessEnv;
   platform: NodeJS.Platform;
-  exists?: (path: string) => boolean;
+  /** Finds a command on PATH (default: resolveExecutable). */
+  find?: (cmd: string) => string | null;
 }
 
-/** OCTOMAXXING_TERMINAL, then config "terminal", then: Warp if installed, else Windows Terminal (Windows), Terminal.app (macOS) or tmux (Linux). */
+/** OCTOMAXXING_TERMINAL, then config "terminal", then `background`. */
 export function selectTerminal(configured: string | undefined, t: TerminalEnv): TerminalKind {
-  const exists = t.exists ?? existsSync;
-  const forced = t.env.OCTOMAXXING_TERMINAL || configured;
-  if (forced) {
-    if (!KINDS.includes(forced as TerminalKind)) throw new Error(`Unknown terminal "${forced}" (use warp, wt, terminal or tmux)`);
-    return forced as TerminalKind;
+  const kind = (t.env.OCTOMAXXING_TERMINAL || configured || 'background') as TerminalKind;
+  if (!KINDS.includes(kind)) throw new Error(`Unknown terminal "${kind}" (use background, warp, wt, terminal or tmux)`);
+  if (kind === 'background' && t.platform !== 'win32' && !(t.find ?? ((c) => resolveExecutable(c, t.env, t.platform)))('tmux')) {
+    throw new Error('Background arms on macOS and Linux run in detached tmux sessions: install tmux, or set "terminal" in config.json to warp, terminal or tmux');
   }
-  if (t.platform === 'win32') {
-    const local = t.env.LOCALAPPDATA;
-    if (local && exists(win32.join(local, 'Programs', 'Warp'))) return 'warp';
-    if (resolveExecutable('wt', t.env, 'win32')) return 'wt';
-    throw new Error('No terminal found for arm tabs: install Warp or Windows Terminal, or set "terminal" in config.json');
-  }
-  if (t.platform === 'darwin') return exists('/Applications/Warp.app') ? 'warp' : 'terminal';
-  if (t.env.TMUX) return 'tmux';
-  throw new Error('On Linux, arms open as tmux windows: run octomaxxing (and the head) inside tmux');
+  return kind;
 }
 
 export interface TabRequest {
   /** Tab name, octomaxxing-<id>. */
   name: string;
+  /** The task's run number. A background tmux session is named after it too: the previous run's session can still be
+   * ending when a follow-up starts the next, and tmux refuses two sessions with one name. */
+  run?: number;
   title: string;
   cwd: string;
   /** The command the tab runs: node, the CLI and its arguments. */
@@ -105,6 +102,16 @@ export function planTab(kind: TerminalKind, req: TabRequest, home: string = os.h
   // Warp on Windows starts PowerShell, on macOS the login shell. `exit` closes the tab once the script is done.
   const shellLine = win ? `& ${psQuote(script)}; exit` : `sh ${shQuote(script)}; exit`;
   switch (kind) {
+    case 'background': {
+      if (win) {
+        // Start-Process gives cmd.exe a console of its own, hidden: the arm sees a real terminal, and no window opens.
+        const ps = `Start-Process -FilePath cmd.exe -ArgumentList '/c', ${psQuote(`"${script}"`)} -WorkingDirectory ${psQuote(req.cwd)} -WindowStyle Hidden`;
+        return { files, command: { cmd: 'powershell.exe', args: ['-NoProfile', '-NonInteractive', '-Command', ps] }, tabConfig: null };
+      }
+      // The session ends, and is gone, when the script exits. `tmux attach -t octomaxxing-<id>` watches it.
+      const session = req.run === undefined ? req.name : `${req.name}-run${req.run}`;
+      return { files, command: { cmd: 'tmux', args: ['new-session', '-d', '-s', session, '-c', req.cwd, 'sh', script] }, tabConfig: null };
+    }
     case 'warp': {
       const tabConfig = path.join(warpTabConfigDir(req.platform, req.env, home), `${req.name}.toml`);
       files.push({ path: tabConfig, content: warpTabConfig(req.name, req.title, req.cwd, shellLine) });
@@ -146,6 +153,43 @@ export function openTab(kind: TerminalKind, req: TabRequest): { tabConfig: strin
   const r = run(plan.command!.cmd, plan.command!.args);
   if (r.error || r.status !== 0) throw new Error(`Could not open a ${kind} tab: ${r.error?.message ?? ((r.stderr || r.stdout).trim() || `exit ${r.status}`)}`);
   return { tabConfig: plan.tabConfig };
+}
+
+/**
+ * PowerShell that shows (or hides again) the hidden console a Windows background arm runs in. It finds the window by
+ * attaching to the console of a process inside it. Exit 2: that process has no console any more (the arm ended).
+ */
+export function consoleWindowScript(pid: number, show: boolean): string {
+  if (!Number.isInteger(pid) || pid <= 0) throw new Error(`Bad pid ${pid}`);
+  return [
+    'Add-Type -TypeDefinition @"',
+    'using System; using System.Runtime.InteropServices;',
+    'public class OctoConsole {',
+    '  [DllImport("kernel32.dll")] public static extern bool FreeConsole();',
+    '  [DllImport("kernel32.dll")] public static extern bool AttachConsole(uint pid);',
+    '  [DllImport("kernel32.dll")] public static extern IntPtr GetConsoleWindow();',
+    '  [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int cmd);',
+    '  [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);',
+    '}',
+    '"@',
+    '[OctoConsole]::FreeConsole() | Out-Null',
+    `if (-not [OctoConsole]::AttachConsole(${pid})) { exit 2 }`,
+    '$h = [OctoConsole]::GetConsoleWindow()',
+    '[OctoConsole]::FreeConsole() | Out-Null',
+    'if ($h -eq [IntPtr]::Zero) { exit 2 }',
+    // 9 restores the window; 0 hides it.
+    show ? '[OctoConsole]::ShowWindow($h, 9) | Out-Null; [OctoConsole]::SetForegroundWindow($h) | Out-Null' : '[OctoConsole]::ShowWindow($h, 0) | Out-Null',
+    'exit 0',
+  ].join('\n');
+}
+
+/** Show or hide a Windows background arm's console window. */
+export function setConsoleVisible(pid: number, show: boolean): void {
+  const encoded = Buffer.from(consoleWindowScript(pid, show), 'utf16le').toString('base64');
+  const r = run('powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand', encoded]);
+  if (r.error) throw new Error(`Could not run PowerShell: ${r.error.message}`);
+  if (r.status === 2) throw new Error('The arm has no console any more: it has ended');
+  if (r.status !== 0) throw new Error(`Could not ${show ? 'show' : 'hide'} the arm's window: ${(r.stderr || r.stdout).trim() || `exit ${r.status}`}`);
 }
 
 export function removeTabConfig(path: string | null | undefined): void {

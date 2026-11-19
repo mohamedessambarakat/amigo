@@ -41,9 +41,9 @@ export function claudeHeadTemplate(template: string[], settingsFile: string): st
   return [cmd, '--name', HEAD_NAME, '--settings', settingsFile, ...rest];
 }
 
-/** The head's settings: accept messages from arms. */
+/** The head's settings: accept messages from arms, and show the live board of arms as the status line. */
 export function headSettings(): Record<string, unknown> {
-  return { crossSessionInbound: 'accept' };
+  return { crossSessionInbound: 'accept', statusLine: { type: 'command', command: `node "${cliPath.replace(/\\/g, '/')}" board`, refreshInterval: 2 } };
 }
 
 /**
@@ -58,7 +58,7 @@ export function armSettings(): Record<string, unknown> {
 /** The arm part only Claude arms get. */
 export function claudeArmNotes(id: string, headAddress: string | undefined): string {
   const lines = [
-    `## Your session\n\nYou are the Claude Code session \`${armName(id)}\`, open in a terminal tab the user can see and type in. Your session stays open after each turn: the head or the user may send you more.`,
+    `## Your session\n\nYou are the Claude Code session \`${armName(id)}\`. You may be running in the background with no window, so never wait for someone to type into your session: ask questions through your report. Your session stays open after each turn: the head may send you more.`,
   ];
   if (headAddress) {
     lines.push(`When a turn ends (done, blocked or a question), first message the head, the session that started you: ${send(headAddress)}, just carry on. Then end with your STATUS line.`);
