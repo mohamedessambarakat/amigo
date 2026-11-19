@@ -151,9 +151,10 @@ describe('board', () => {
       task('4-delta', 'closed');
       const lines = boardText(env).split('\n');
       assert.equal(lines[0], '🐙 arms: 1 running · 1 queued · 1 new result');
-      assert.deepEqual(lines.slice(1).map((l) => l.split(/\s+/).slice(0, 2).join(' ')), ['▶ #2', '✓ #1', '… #3'], 'number first, as #n; running, then finished, then queued; closed is hidden');
-      assert.equal(lines[1], '▶ #2  running  Task 2-beta  [p]  5m 00s');
-      assert.equal(resolveId('#2', env), '2-beta', 'the #2 label works as an id too');
+      assert.deepEqual(lines.slice(1).map((l) => l.split(/\s+/).slice(0, 2).join(' ')), ['▶ arm2', '✓ arm1', '… arm3'], 'number first, as armN; running, then finished, then queued; closed is hidden');
+      assert.equal(lines[1], '▶ arm2  running  Task 2-beta  [p]  5m 00s');
+      assert.equal(resolveId('arm2', env), '2-beta', 'the arm2 label works as an id too');
+      assert.equal(resolveId('#2', env), '2-beta', 'and the older #2 label');
       const capped = boardText(env, 2).split('\n');
       assert.equal(capped.length, 4);
       assert.equal(capped[3], '  +1 more: octomaxxing status');

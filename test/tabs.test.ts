@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
@@ -160,6 +161,46 @@ describe('Claude Code arms', () => {
     assert.ok(Date.now() - started < 3000, 'and the board does not wait for it');
   });
 
+  it("carries a command with quotes, $HOME and spaces through the board's command unchanged", () => {
+    const tricky = `node "C:/Program Files/my line.js" --tag 'it''s' $HOME "$HOME/a b" \`pwd\` 100% & echo "done"`;
+    const command = (headSettings({ command: tricky, shell: ['/bin/bash', '-c'] }) as { statusLine: { command: string } }).statusLine.command;
+    const encoded = / --user ([A-Za-z0-9_-]+)$/.exec(command)![1]!;
+    assert.deepEqual(decodeStatusLine(encoded), { command: tricky, shell: ['/bin/bash', '-c'] });
+  });
+
+  it('writes valid head settings with just the board when the user has no status line', () => {
+    const dir = tmpDir();
+    try {
+      const file = join(dir, 'settings.json');
+      writeFileSync(file, JSON.stringify({ model: 'opus' }));
+      const settings = JSON.parse(JSON.stringify(headSettings(userStatusLine({ OCTOMAXXING_CLAUDE_SETTINGS: file }, 'linux')))) as { crossSessionInbound: string; statusLine: { type: string; command: string } };
+      assert.equal(settings.crossSessionInbound, 'accept');
+      assert.equal(settings.statusLine.type, 'command');
+      assert.match(settings.statusLine.command, /^node "[^"\\]+cli\.ts" board$/);
+    } finally {
+      cleanup(dir);
+    }
+  });
+
+  const gitBash = process.platform === 'win32' ? statusLineShell() : [];
+  it('runs a PowerShell status line with its quotes, $HOME and spaces intact', { skip: process.platform !== 'win32' && 'Windows only' }, async () => {
+    const ps = { command: `Write-Output "a  b" '$HOME' "$HOME" 'it''s'`, shell: ['powershell.exe', '-NoProfile', '-Command'] };
+    assert.equal(await runUserStatusLine(ps, '', process.env, 10_000), `a  b\n$HOME\n${process.env.USERPROFILE}\nit's`.replace(/\n/g, '\r\n'));
+  });
+
+  it('leaves no process behind when a Git Bash status line hangs', { skip: !/bash/i.test(gitBash[0] ?? '') && 'needs Git Bash on Windows' }, async () => {
+    const line = { command: 'echo "a  b" "$HOME"', shell: gitBash };
+    assert.equal(await runUserStatusLine(line, '', process.env), `a  b ${process.env.HOME?.replace(/\\/g, '/').replace(/^([A-Za-z]):/, (_, d: string) => `/${d.toLowerCase()}`)}`, 'quotes and $HOME pass through the timeout wrapper');
+    // A sleep with a duration no one else uses, so only ours are counted.
+    const ours = () => execFileSync('powershell.exe', ['-NoProfile', '-Command', `@(Get-CimInstance Win32_Process -Filter "Name='sleep.exe'" | Where-Object { $_.CommandLine -match '47\\.31' }).Count`], { encoding: 'utf8' }).trim();
+    const before = ours();
+    const started = Date.now();
+    assert.equal(await runUserStatusLine({ command: 'sleep 47.31; echo late', shell: gitBash }, '', process.env, 1000), '');
+    assert.ok(Date.now() - started < 2500, 'the board does not wait for it');
+    await new Promise((r) => setTimeout(r, 300));
+    assert.deepEqual([before, ours()], ['0', '0'], 'sleep.exe processes before and after the timeout');
+  });
+
   it('prints the arm lines, then the user line; just the arms when the user line fails or would loop', () => {
     const { dir, env } = makeHome();
     try {
@@ -169,7 +210,7 @@ describe('Claude Code arms', () => {
       const mine = user("let d='';process.stdin.on('data',c=>d+=c).on('end',()=>console.log('[mine] '+JSON.parse(d).cwd))");
       const r = cli(env, ['board', '--user', mine], '{"cwd":"/home/me/proj"}');
       assert.equal(r.code, 0, r.err);
-      assert.match(r.out, /^🐙 arms: 1 running · 0 queued · 0 new results\n▶ #3  running  Tripwire: MVP build plan  \[tripwire\]  1m 0\ds\n\[mine\] \/home\/me\/proj\n$/);
+      assert.match(r.out, /^🐙 arms: 1 running · 0 queued · 0 new results\n▶ arm3  running  Tripwire: MVP build plan  \[tripwire\]  1m 0\ds\n\[mine\] \/home\/me\/proj\n$/);
       assert.doesNotMatch(cli(env, ['board', '--user', user('process.exit(1)')]).out, /\n\n|mine/);
       assert.equal(cli({ ...env, OCTOMAXXING_IN_BOARD: '1' }, ['board', '--user', mine], '{"cwd":"x"}').out.split('\n').length, 3, 'no user line from inside itself');
     } finally {

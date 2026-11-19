@@ -102,12 +102,19 @@ export const IN_BOARD_ENV = 'OCTOMAXXING_IN_BOARD';
  * Run the user's status line with the JSON Claude Code sent the board on stdin, and give back its output, or '' when it
  * fails, prints nothing or takes longer than timeoutMs (then its whole process tree is stopped).
  */
-export function runUserStatusLine(line: UserStatusLine, stdin: string, env: NodeJS.ProcessEnv = process.env, timeoutMs = 1000): Promise<string> {
+export function runUserStatusLine(line: UserStatusLine, stdin: string, env: NodeJS.ProcessEnv = process.env, timeoutMs = 1000, platform: NodeJS.Platform = process.platform): Promise<string> {
   return new Promise((done) => {
     const [shell, ...args] = line.shell as [string, ...string[]];
+    // Git Bash on Windows breaks the Windows parent chain when it runs a program (sleep.exe's parent is already gone), so
+    // taskkill /T misses it. GNU timeout puts the command in its own process group and kills the whole group, so it
+    // stops the clock there, and our own kill below is only the fallback.
+    const grouped = platform === 'win32' && /bash(\.exe)?$/i.test(shell);
+    const argv = grouped
+      ? [...args, `if command -v timeout >/dev/null 2>&1; then exec timeout -s KILL ${timeoutMs / 1000} "$BASH" -c "$1"; else exec "$BASH" -c "$1"; fi`, 'octomaxxing-status-line', line.command]
+      : [...args, line.command];
     let child: ReturnType<typeof spawn>;
     try {
-      child = spawn(shell, [...args, line.command], { env: { ...env, [IN_BOARD_ENV]: '1' }, stdio: ['pipe', 'pipe', 'ignore'], windowsHide: true });
+      child = spawn(shell, argv, { env: { ...env, [IN_BOARD_ENV]: '1' }, stdio: ['pipe', 'pipe', 'ignore'], windowsHide: true });
     } catch {
       return done('');
     }
@@ -123,7 +130,7 @@ export function runUserStatusLine(line: UserStatusLine, stdin: string, env: Node
     const timer = setTimeout(() => {
       if (child.pid) killTree(child.pid);
       finish('');
-    }, timeoutMs);
+    }, grouped ? timeoutMs + 500 : timeoutMs);
     child.on('error', () => finish(''));
     child.stdout?.setEncoding('utf8').on('data', (d: string) => (out += d));
     child.on('close', (code) => finish(code === 0 ? out.replace(/\s+$/, '') : ''));

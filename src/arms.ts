@@ -618,9 +618,9 @@ export function boardText(env: NodeJS.ProcessEnv = process.env, max = 6): string
   const review = open.filter((t) => FINISHED.includes(t.status) && !t.seen).length;
   const head = `🐙 arms: ${count('running')} running · ${count('queued')} queued · ${review} new result${review === 1 ? '' : 's'}`;
   if (!open.length) return '🐙 no arms';
-  // What you type in commands goes first: the arm's number as #3 (so it never reads as a count), or the whole id for arms
-  // from before numbering.
-  const handles = open.slice(0, max).map((t) => { const n = armNumber(t.id); return n ? `#${n}` : t.id; });
+  // What you type in commands goes first: the arm's number as arm3 (so it never reads as a count, and it pastes into any
+  // shell as one word, where #3 would start a comment), or the whole id for arms from before numbering.
+  const handles = open.slice(0, max).map((t) => { const n = armNumber(t.id); return n ? `arm${n}` : t.id; });
   const width = Math.max(...handles.map((h) => h.length));
   const line = (t: Task, i: number) => `${BOARD_ICONS[t.status]} ${handles[i]!.padEnd(width)}  ${t.status.padEnd(8)} ${t.title.length > 40 ? `${t.title.slice(0, 39)}…` : t.title}  [${t.project}]  ${age(t.status === 'running' ? (t.startedAt ?? t.updatedAt) : t.updatedAt)}`;
   const shown = open.slice(0, max).map(line);
