@@ -1,14 +1,21 @@
 import { existsSync, readFileSync } from 'node:fs';
 import os from 'node:os';
 import { basename, join, resolve } from 'node:path';
-import { readJson, sleepSync, withLock, writeJsonAtomic } from './fsx.ts';
-import { cliPath, home, lockPath } from './paths.ts';
+import { sleepSync, withLock, writeJsonAtomic } from './fsx.ts';
+import { cliPath, lockPath } from './paths.ts';
 
 /**
  * Claude Code arms run as interactive sessions in their tab: named octomaxxing-<id>, with hooks that record each turn's
- * STATUS line, and able to message the head (a Claude session named octomaxxing-head) and be messaged by it.
+ * STATUS line, and able to message the head and be messaged by it. The head is reached by the messaging address of the
+ * session that spawned the arm, so it can be named anything; HEAD_NAME is only the label `octomaxxing head` gives it.
  */
 export const HEAD_NAME = 'octomaxxing-head';
+
+/** The messaging address of the Claude session this command runs in (the head, when it runs `octomaxxing spawn`). */
+export function sessionAddress(env: NodeJS.ProcessEnv): string | undefined {
+  const socket = env.CLAUDE_CODE_MESSAGING_SOCKET?.trim();
+  return socket ? `uds:${socket}` : undefined;
+}
 export const armName = (id: string): string => `octomaxxing-${id}`;
 
 /** A template whose command is Claude Code. */
@@ -49,25 +56,14 @@ export function armSettings(): Record<string, unknown> {
 }
 
 /** The arm part only Claude arms get. */
-export function claudeArmNotes(id: string, headIsClaude: boolean): string {
+export function claudeArmNotes(id: string, headAddress: string | undefined): string {
   const lines = [
     `## Your session\n\nYou are the Claude Code session \`${armName(id)}\`, open in a terminal tab the user can see and type in. Your session stays open after each turn: the head or the user may send you more.`,
   ];
-  if (headIsClaude) {
-    lines.push(
-      `When a turn ends (done, blocked or a question), first message the head: use the SendMessage tool (load it with ToolSearch "select:SendMessage" if needed) to send \`${HEAD_NAME}\` your result. Try it once: if no session has that name or the message was not sent, just carry on. Then end with your STATUS line.`,
-    );
+  if (headAddress) {
+    lines.push(`When a turn ends (done, blocked or a question), first message the head, the session that started you: ${send(headAddress)}, just carry on. Then end with your STATUS line.`);
   }
   return lines.join('\n\n');
-}
-
-/** Which agent the head runs as, written by `octomaxxing head` and `octomaxxing brief`. */
-const headFile = (env: NodeJS.ProcessEnv): string => join(home(env), 'head.json');
-export function recordHead(agent: string, claude: boolean, env: NodeJS.ProcessEnv = process.env): void {
-  writeJsonAtomic(headFile(env), { agent, claude });
-}
-export function headIsClaude(env: NodeJS.ProcessEnv = process.env): boolean {
-  return readJson<{ claude?: boolean }>(headFile(env), {}).claude === true;
 }
 
 // ---------- the Stop hook's check that the arm reported to the head ----------
@@ -77,10 +73,8 @@ interface TranscriptEntry {
   message?: { content?: unknown };
 }
 
-const HEAD_RE = new RegExp(`^${HEAD_NAME}( \\[[^\\]]+\\])?$`);
-
-/** Did the latest turn (everything after the last real prompt) send a message to the head? */
-export function turnMessagedHead(jsonl: string): boolean {
+/** Did the latest turn (everything after the last real prompt) send a message to the head's address? */
+export function turnMessagedHead(jsonl: string, headAddress: string): boolean {
   const entries: TranscriptEntry[] = [];
   for (const line of jsonl.split('\n')) {
     if (!line.trim()) continue;
@@ -94,29 +88,30 @@ export function turnMessagedHead(jsonl: string): boolean {
     const e = entries[i]!;
     const content = e.message?.content;
     const parts: { type?: string; name?: string; input?: { to?: unknown } }[] = Array.isArray(content) ? content : typeof content === 'string' ? [{ type: 'text' }] : [];
-    if (e.type === 'assistant' && parts.some((p) => p.type === 'tool_use' && p.name === 'SendMessage' && typeof p.input?.to === 'string' && HEAD_RE.test(p.input.to))) return true;
+    if (e.type === 'assistant' && parts.some((p) => p.type === 'tool_use' && p.name === 'SendMessage' && p.input?.to === headAddress)) return true;
     if (e.type === 'user' && parts.length > 0 && parts.some((p) => p.type !== 'tool_result')) return false;
   }
   return false;
 }
 
-export function transcriptMessagedHead(path: string | undefined): boolean {
+export function transcriptMessagedHead(path: string | undefined, headAddress: string): boolean {
   if (!path) return true;
   try {
-    return turnMessagedHead(readFileSync(path, 'utf8'));
+    return turnMessagedHead(readFileSync(path, 'utf8'), headAddress);
   } catch {
     return true; // an unreadable transcript must not trap the arm
   }
 }
 
-const SEND = `use the SendMessage tool (load it with ToolSearch "select:SendMessage" if needed) to send ${HEAD_NAME} your result. Try it once: if no session has that name or the message was not sent, just stop`;
+const send = (to: string): string =>
+  `use the SendMessage tool (load it with ToolSearch "select:SendMessage" if needed) to send your result with \`to\` set to exactly \`${to}\`. Try it once: if that session is gone or the message was not sent`;
 const STATUS_LINE = 'end your final message with one line: STATUS: done|blocked|question - <one-line summary>';
 
 /** Why the Stop hook sends the arm back: only what its turn was missing. */
-export function reportReason(messaged: boolean, hasStatus: boolean): string {
-  if (!messaged && !hasStatus) return `Before stopping: (1) ${SEND}. (2) Then ${STATUS_LINE}.`;
-  if (!messaged) return `Before stopping, ${SEND}. Then end with your STATUS line again.`;
-  return `Before stopping, ${STATUS_LINE} (your message to ${HEAD_NAME} already went out; do not send it again).`;
+export function reportReason(messaged: boolean, hasStatus: boolean, headAddress = ''): string {
+  if (!messaged && !hasStatus) return `Before stopping: (1) ${send(headAddress)}, just stop. (2) Then ${STATUS_LINE}.`;
+  if (!messaged) return `Before stopping, ${send(headAddress)}, just stop. Then end with your STATUS line again.`;
+  return `Before stopping, ${STATUS_LINE} (your message to the head already went out; do not send it again).`;
 }
 
 // ---------- workspace trust ----------

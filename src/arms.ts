@@ -10,10 +10,9 @@ import {
   claudeHeadTemplate,
   headSettings,
   forgetFolder,
-  headIsClaude,
   isClaude,
-  recordHead,
   reportReason,
+  sessionAddress,
   transcriptMessagedHead,
   trustFolder,
 } from './claude.ts';
@@ -125,7 +124,8 @@ export function spawnArm(input: SpawnInput, opts: { dryRun?: boolean }, env: Nod
     }
   }
   const now = new Date().toISOString();
-  const base = { id, title, agent, status: 'queued' as const, createdAt: now, updatedAt: now, runs: 0, followUps: [], seen: true };
+  const headAddress = sessionAddress(env);
+  const base = { id, title, agent, status: 'queued' as const, createdAt: now, updatedAt: now, runs: 0, followUps: [], seen: true, ...(headAddress ? { headAddress } : {}) };
 
   let task: Task;
   if (input.review) {
@@ -230,7 +230,7 @@ function startArm(t: Task, config: Config, env: NodeJS.ProcessEnv): boolean {
       writeFileSync(promptFile(t.id, env), followUpPrompt(t));
     } else {
       const brief = readFileSync(briefFile(t.id, env), 'utf8');
-      writeFileSync(promptFile(t.id, env), armPrompt(t, brief, notesFor(t.project, env), claude ? claudeArmNotes(t.id, headIsClaude(env)) : undefined));
+      writeFileSync(promptFile(t.id, env), armPrompt(t, brief, notesFor(t.project, env), claude ? claudeArmNotes(t.id, t.headAddress) : undefined));
     }
     let trustAdded = false;
     if (claude) {
@@ -424,9 +424,9 @@ export function applyHook(name: string, payload: HookPayload, id: string, env: N
     (cur) => {
       if (!live(cur.status)) return null;
       if (!payload.stop_hook_active) {
-        const messaged = !headIsClaude(env) || transcriptMessagedHead(payload.transcript_path);
+        const messaged = !cur.headAddress || transcriptMessagedHead(payload.transcript_path, cur.headAddress);
         if (!messaged || !report) {
-          out = JSON.stringify({ decision: 'block', reason: reportReason(messaged, Boolean(report)) });
+          out = JSON.stringify({ decision: 'block', reason: reportReason(messaged, Boolean(report), cur.headAddress) });
           return null;
         }
       }
@@ -596,13 +596,13 @@ export function greeting(env: NodeJS.ProcessEnv = process.env, pick: (n: number)
   const running = tasks.filter((t) => t.status === 'running').length;
   const waiting = tasks.filter((t) => FINISHED.includes(t.status) && !t.seen).map((t) => t.id);
   const projects = loadProjects(env).length;
-  const status = `${projects} project${projects === 1 ? '' : 's'} · ${running} arm${running === 1 ? '' : 's'} running · ${freeMemMb(env)} MB free · inbox: ${waiting.length ? waiting.join(', ') : 'empty'}`;
+  const status = `${projects} project${projects === 1 ? '' : 's'} · ${running} arm${running === 1 ? '' : 's'} running · inbox: ${waiting.length ? waiting.join(', ') : 'empty'}`;
   return `${GREETINGS[pick(GREETINGS.length)]}\n${status}`;
 }
 
 const CLAUDE_HEAD = `## Talking to arms (you are Claude Code)
 
-- Claude arms are sessions named \`octomaxxing-<id>\` in terminal tabs, and they message the session named \`octomaxxing-head\` when a turn ends. Your session needs that name: if you were started with /octomaxxing, ask the user once to type \`/rename octomaxxing-head\`.
+- Claude arms are sessions named \`octomaxxing-<id>\` in terminal tabs. Each one messages the session that spawned it when a turn ends, whatever that session is named, so never ask the user to rename this session.
 - To answer an arm whose tab is still open, use SendMessage to \`octomaxxing-<id>\`: the arm carries on in the same session. \`octomaxxing send\` restarts its session in a new tab instead.
 - Messages from arms can be held for the user's approval, so never rely on them alone: \`octomaxxing wait\` and \`octomaxxing inbox\` always have every result.`;
 
@@ -618,12 +618,6 @@ export function headPrompt(agent: string, env: NodeJS.ProcessEnv = process.env):
     ...(claude ? [CLAUDE_HEAD] : []),
     `## Start\n\nBegin your first reply with exactly these two lines, then wait for the user:\n\n${greeting(env)}`,
   ].join('\n\n') + '\n';
-}
-
-/** Remember which agent the head is, so Claude arms know whether to message it. */
-export function noteHead(agent: string, env: NodeJS.ProcessEnv = process.env): void {
-  const config = loadConfig(env);
-  recordHead(agent, isClaude(config.agents[agent]?.head ?? config.agents[agent]?.arm ?? []), env);
 }
 
 /** Start the head in this terminal and wait for it to exit. */
@@ -642,7 +636,6 @@ export async function runHead(agentName: string | undefined, opts: { dryRun?: bo
   }
   writeFileSync(file, prompt);
   if (isClaude(template)) writeJsonAtomic(headSettingsFile, headSettings());
-  noteHead(agent, env);
   const childEnv = { ...env, OCTOMAXXING_HOME: home(env) };
   const child = spawnAgent(launch, { cwd: home(env), stdio: 'inherit', env: childEnv });
   return await new Promise((done, fail) => {

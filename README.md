@@ -51,7 +51,7 @@ The head greets you with what is free and what finished, then you just talk to i
 
 ```
 🐙 Tentacles warmed up.
-2 projects · 0 arms running · 9120 MB free · inbox: empty
+2 projects · 0 arms running · inbox: empty
 
 > fix the broken footer link in my-app, and add a dark mode toggle to site
 ```
@@ -145,7 +145,7 @@ Give your agent the link to this repository and ask it to set up octomaxxing. Ag
 - `/octomaxxing` runs `octomaxxing brief --agent <name>`, which prints the head's instructions with a live greeting; the session you are in becomes the head.
 - Every arm opens in a new terminal tab. In Warp, octomaxxing writes a tab config `octomaxxing-<id>.toml` (in `%APPDATA%\warp\Warp\data\tab_configs` on Windows or `~/.warp/tab_configs` on macOS), opens `warp://tab_config/octomaxxing-<id>`, and deletes the file when the arm ends. The tab closes by itself when the arm ends, also after an error; the error stays in `octomaxxing status`, `inbox` and `attach`.
 - Arms end each turn with `STATUS: done - ...`, `STATUS: blocked - ...` or `STATUS: question - ...`; that line is the result the head sees in `octomaxxing inbox` and `octomaxxing wait`.
-- **Claude Code arms** are interactive sessions named `octomaxxing-<id>`, so you can type into them. Hooks (in `tasks/<id>/claude-settings.json`) record each turn's STATUS line. When the head is Claude Code too, it runs as the session `octomaxxing-head`: arms message it with SendMessage when a turn ends, and it can message an arm whose tab is open. A turn that ends without a STATUS line, or without that message, is sent back once. `octomaxxing send` resumes the arm's session in a new tab. Before an arm starts, octomaxxing marks its folder as trusted in `~/.claude.json` (so the session opens without the trust dialog) and removes that entry when the arm's worktree is closed.
+- **Claude Code arms** are interactive sessions named `octomaxxing-<id>`, so you can type into them. Hooks (in `tasks/<id>/claude-settings.json`) record each turn's STATUS line. When the head is Claude Code too, each arm messages the session that spawned it (by its messaging address, so the head can be named anything and renamed freely) with SendMessage when a turn ends, and the head can message an arm whose tab is open. A turn that ends without a STATUS line, or without that message, is sent back once. `octomaxxing send` resumes the arm's session in a new tab. Before an arm starts, octomaxxing marks its folder as trusted in `~/.claude.json` (so the session opens without the trust dialog) and removes that entry when the arm's worktree is closed.
 - **Other agents** run their `arm` command once in the tab; the output stays in `tasks/<id>/output.log` (`octomaxxing attach <id>` follows it). Without a STATUS line, the arm is `done` if the agent exited cleanly, else `failed`. A follow-up runs it again with the brief, its last result and every follow-up.
 - On Windows, agents installed by npm are `.cmd` files that only start through `cmd.exe`, which cannot carry a multi-line prompt. Those agents get one line instead: "Read the file <path> and follow the instructions in it exactly." The same happens for any prompt longer than 24,000 characters.
 

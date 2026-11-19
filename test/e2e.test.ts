@@ -145,7 +145,7 @@ describe('end to end with a fake agent', () => {
       const brief = cli(env, ['brief', '--agent', 'fake']);
       assert.equal(brief.code, 0, brief.err);
       assert.match(brief.out, /You run as the "fake" agent\. Pass `--agent fake`/);
-      assert.match(brief.out, /🐙 .+\n1 project · 0 arms running · \d+ MB free · inbox: \S+/);
+      assert.match(brief.out, /🐙 .+\n1 project · 0 arms running · inbox: \S+/);
     } finally {
       cleanup(dir);
     }
@@ -216,7 +216,7 @@ describe('end to end with a fake agent', () => {
       writeFileSync(join(home(env), 'config.json'), JSON.stringify({ agents: { fake: { head: [process.execPath, fakeAgent, 'MODE:head {prompt}'], arm: [process.execPath, fakeAgent, '{prompt}'] } } }));
       const r = cli(env, ['head']);
       assert.equal(r.code, 0, r.err);
-      assert.match(r.out, /🐙 .+\n0 projects · 0 arms running · \d+ MB free · inbox: empty/);
+      assert.match(r.out, /🐙 .+\n0 projects · 0 arms running · inbox: empty/);
     } finally {
       cleanup(dir);
     }

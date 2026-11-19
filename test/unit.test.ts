@@ -126,7 +126,7 @@ describe('greeting', () => {
     const { dir, env } = makeHome(3);
     try {
       const g = greeting(env, () => 0);
-      assert.match(g, /^🐙 Tentacles warmed up\.\n0 projects · 0 arms running · 350 MB free · inbox: empty$/);
+      assert.match(g, /^🐙 Tentacles warmed up\.\n0 projects · 0 arms running · inbox: empty$/);
       assert.notEqual(greeting(env, () => 1).split('\n')[0], g.split('\n')[0]);
     } finally {
       cleanup(dir);

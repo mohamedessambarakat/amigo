@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 import { applyHook, armPrompt, followUpPrompt, tabEnvArgs } from '../src/arms.ts';
-import { armSettings, claudeArmNotes, claudeArmTemplate, claudeHeadTemplate, claudeJsonPath, dropTrust, isClaude, mergeTrust, recordHead, reportReason, turnMessagedHead } from '../src/claude.ts';
+import { armSettings, claudeArmNotes, claudeArmTemplate, claudeHeadTemplate, claudeJsonPath, dropTrust, isClaude, mergeTrust, reportReason, sessionAddress, turnMessagedHead } from '../src/claude.ts';
 import { parseVmStat, ramAllows } from '../src/ram.ts';
 import { descendants } from '../src/proc.ts';
 import { beat, saveTask, type Task } from '../src/tasks.ts';
@@ -99,11 +99,15 @@ describe('Claude Code arms', () => {
     assert.match(hooks.UserPromptSubmit![0].hooks[0].command, / _hook prompt$/);
   });
 
-  it('tells the arm to message the head only when the head is Claude', () => {
-    assert.match(claudeArmNotes('x-1', true), /SendMessage[\s\S]*octomaxxing-head/);
-    assert.doesNotMatch(claudeArmNotes('x-1', false), /SendMessage/);
+  it('tells the arm to message the session that spawned it, whatever its name', () => {
+    const head = 'uds:/tmp/head.sock';
+    assert.equal(sessionAddress({ CLAUDE_CODE_MESSAGING_SOCKET: '\\\\.\\pipe\\LOCAL\\cc-msg-ab' }), 'uds:\\\\.\\pipe\\LOCAL\\cc-msg-ab');
+    assert.equal(sessionAddress({}), undefined, 'not inside a Claude session: no messaging');
+    assert.ok(claudeArmNotes('x-1', head).includes('SendMessage') && claudeArmNotes('x-1', head).includes(`\`${head}\``));
+    assert.doesNotMatch(claudeArmNotes('x-1', head), /octomaxxing-head|rename/);
+    assert.doesNotMatch(claudeArmNotes('x-1', undefined), /SendMessage/);
     const t = { id: 'x-1', project: 'p', cwd: '/w', followUps: ['use blue'] } as unknown as Task;
-    assert.match(armPrompt(t, 'Title: paint', undefined, claudeArmNotes('x-1', true)), /octomaxxing-x-1[\s\S]*Title: paint/);
+    assert.match(armPrompt(t, 'Title: paint', undefined, claudeArmNotes('x-1', head)), /octomaxxing-x-1[\s\S]*Title: paint/);
     assert.match(followUpPrompt(t), /use blue[\s\S]*STATUS line/);
     const two = { ...t, followUps: ['old', 'lost one', 'newest'], followUpsSent: 1 } as Task;
     assert.match(followUpPrompt(two), /1\. lost one\n2\. newest/, 'every follow-up not yet given');
@@ -115,10 +119,11 @@ describe('Claude Code arms', () => {
     const prompt = line({ type: 'user', message: { content: 'do it' } });
     const send = (to: string) => line({ type: 'assistant', message: { content: [{ type: 'tool_use', name: 'SendMessage', input: { to } }] } });
     const result = line({ type: 'user', message: { content: [{ type: 'tool_result' }] } });
-    assert.equal(turnMessagedHead([prompt, send('octomaxxing-head'), result].join('\n')), true);
-    assert.equal(turnMessagedHead([prompt, send('octomaxxing-head [ab12]')].join('\n')), true);
-    assert.equal(turnMessagedHead([prompt, send('someone-else')].join('\n')), false);
-    assert.equal(turnMessagedHead([prompt, send('octomaxxing-head'), prompt].join('\n')), false, 'an earlier turn does not count');
+    const head = 'uds:/tmp/head.sock';
+    assert.equal(turnMessagedHead([prompt, send(head), result].join('\n'), head), true);
+    assert.equal(turnMessagedHead([prompt, send('octomaxxing-head')].join('\n'), head), false, 'only the spawning session counts');
+    assert.equal(turnMessagedHead([prompt, send(head), prompt].join('\n'), head), false, 'an earlier turn does not count');
+    assert.ok(reportReason(false, true, head).includes(`\`${head}\``));
     assert.match(reportReason(false, false), /\(1\)[\s\S]*\(2\)/);
     assert.match(reportReason(true, false), /do not send it again/);
   });
@@ -164,13 +169,13 @@ describe('Claude Code arms', () => {
       applyHook('prompt', {}, 'x-1', env);
       assert.equal(task().status, 'running');
 
-      // With a Claude head, the turn must also have messaged it.
-      recordHead('claude', true, env);
+      // Spawned by a Claude head, the turn must also have messaged it.
+      saveTask({ ...task(), headAddress: 'uds:/tmp/head.sock' }, env);
       const transcript = join(dir, 't.jsonl');
       writeFileSync(transcript, JSON.stringify({ type: 'user', message: { content: 'go' } }));
       const noMessage = JSON.parse(applyHook('stop', { last_assistant_message: 'STATUS: question - which color?', transcript_path: transcript }, 'x-1', env));
       assert.match(noMessage.reason, /SendMessage/);
-      writeFileSync(transcript, [JSON.stringify({ type: 'user', message: { content: 'go' } }), JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', name: 'SendMessage', input: { to: 'octomaxxing-head' } }] } })].join('\n'));
+      writeFileSync(transcript, [JSON.stringify({ type: 'user', message: { content: 'go' } }), JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', name: 'SendMessage', input: { to: 'uds:/tmp/head.sock' } }] } })].join('\n'));
       assert.equal(applyHook('stop', { last_assistant_message: 'STATUS: question - which color?', transcript_path: transcript }, 'x-1', env), '');
       assert.deepEqual([task().status, task().summary], ['question', 'which color?']);
       assert.match(readFileSync(join(home, 'tasks', 'x-1', 'output.log'), 'utf8'), /=== turn ended .*\n.*which color\?/);

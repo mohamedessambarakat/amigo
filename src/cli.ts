@@ -3,7 +3,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { parseArgs, type ParseArgsOptionsConfig } from 'node:util';
 import { appendFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { applyHook, attach, closeArm, headPrompt, inbox, noteHead, runHead, runTab, sendFollowUp, spawnArm, statusText, waitForArms } from './arms.ts';
+import { applyHook, attach, closeArm, headPrompt, inbox, runHead, runTab, sendFollowUp, spawnArm, statusText, waitForArms } from './arms.ts';
 import { addProject, ensureHome, loadConfig, loadProjects, pickAgent } from './config.ts';
 import { isGitRepo } from './git.ts';
 import { configPath, home } from './paths.ts';
@@ -93,7 +93,6 @@ export async function main(argv: string[], env: NodeJS.ProcessEnv = process.env)
       const { values } = parse(rest, { agent: { type: 'string' } });
       const agent = pickAgent(loadConfig(env), values.agent as string | undefined, env);
       out(headPrompt(agent, env));
-      noteHead(agent, env);
       return 0;
     }
 

@@ -29,6 +29,8 @@ export interface Task {
   worktree: string | null;
   branch: string | null;
   baseSha: string | null;
+  /** The messaging address (`uds:<socket>`) of the Claude session that spawned this arm; it gets the arm's results. */
+  headAddress?: string;
   /** Set for a reviewer: the task whose folder it reads. */
   reviewOf?: string;
   status: Status;
