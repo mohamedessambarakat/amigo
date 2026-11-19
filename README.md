@@ -11,7 +11,7 @@ Made by [essam](https://essam.pro).
 ```
 you ──▶ head ──spawn──▶ arm 1 (worktree, branch octomaxxing/<id>)
          ▲  ◀──inbox──  arm 2
-         │              arm 3 (queued until an arm is free)
+         │              arm 3 (queued until memory or its folder frees up)
          └── "fix-footer is done, 1 file changed. Commit it?"
 ```
 
