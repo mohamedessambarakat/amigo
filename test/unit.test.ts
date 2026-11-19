@@ -15,13 +15,13 @@ const tmp = tmpDir();
 after(() => cleanup(tmp));
 
 describe('config', () => {
-  it('accepts a valid config and fills in the RAM gate', () => {
+  it('accepts a valid config and fills in the memory gate', () => {
     const c = validateConfig({ agents: { a: { head: ['a', '{prompt}'], arm: ['a', '-p', '{prompt}'] } } });
     assert.deepEqual([c.armMb, c.reserveMb], [600, 2048]);
     assert.equal(pickAgent(c, undefined), 'a');
   });
 
-  it('rejects templates without {prompt}, bad RAM numbers, an unknown terminal and an unknown defaultAgent', () => {
+  it('rejects templates without {prompt}, bad memory numbers, an unknown terminal and an unknown defaultAgent', () => {
     assert.throws(() => validateConfig({ agents: { a: { head: ['a'], arm: ['a', '{prompt}'] } } }), /agents\.a\.head needs a "\{prompt\}"/);
     assert.throws(() => validateConfig({ agents: { a: { head: ['a', '{prompt}'] } } }), /agents\.a\.arm must be/);
     assert.doesNotThrow(() => validateConfig({ agents: { armonly: { arm: ['some-agent', '--message', '{prompt}'] } } }), 'arm-only agents are fine');

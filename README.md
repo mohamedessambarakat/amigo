@@ -6,7 +6,7 @@ One head, many arms. You talk to one coding agent, the **head**. It splits your 
 
 Works with any agent CLI that takes a prompt on the command line (Claude Code, Codex, Gemini CLI, Antigravity, Grok, ...), on Linux, macOS and Windows. It is a small Node.js tool with no runtime dependencies.
 
-Made by [Essam](https://essam.pro).
+Made by [essam](https://essam.pro).
 
 ```
 you ──▶ head ──spawn──▶ arm 1 (worktree, branch octomaxxing/<id>)
@@ -126,7 +126,7 @@ Flags come from each tool's documentation; check them against your installed ver
   - Every agent also has a flag that skips all checks (for example `--dangerously-skip-permissions` for Claude Code). Its docs recommend that only inside a container or VM.
 - An agent without `head` (Grok) can still be the head through its slash command.
 - Arms use the same agent as the head unless the head picks another one for a task (`--agent`). `octomaxxing head` uses `"defaultAgent"`, or the first agent listed.
-- An arm starts only while free RAM, minus `armMb` (what one arm needs, in MB), stays at or above `reserveMb`. Other tasks wait in a queue and start by themselves as RAM frees up. Only one arm runs in a folder at a time.
+- An arm starts only while free memory, minus `armMb` (what one arm needs, in MB), stays at or above `reserveMb`. Other tasks wait in a queue and start by themselves as memory frees up. Only one arm runs in a folder at a time.
 - `"terminal"` picks where arms run. `background` (the default) opens no window: a hidden console on Windows, a detached tmux session on macOS and Linux (`tmux attach -t octomaxxing-<id>` to watch one). For visible tabs instead: `warp`, `wt` (Windows Terminal), `terminal` (macOS Terminal.app) or `tmux` (a window in your tmux session). `OCTOMAXXING_TERMINAL` overrides it.
 
 Check a template without running anything: `octomaxxing spawn --project <name> --dry-run --brief-file README.md` prints the exact command.

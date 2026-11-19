@@ -38,7 +38,7 @@ for (const k of Object.keys(process.env)) if (k.toUpperCase().startsWith('OCTOMA
 
 /**
  * A home with the fake agent configured. Never the user's real ~/.octomaxxing or ~/.claude.json. Arm tabs open as
- * detached processes (OCTOMAXXING_TERMINAL=test). With arms > 0, free RAM is faked so exactly that many arms fit.
+ * detached processes (OCTOMAXXING_TERMINAL=test). With arms > 0, free memory is faked so exactly that many arms fit.
  */
 export function makeHome(arms = 0, arm: string[] = [process.execPath, fakeAgent, '{prompt}']): { dir: string; env: NodeJS.ProcessEnv } {
   const dir = tmpDir();

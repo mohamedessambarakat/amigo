@@ -191,7 +191,7 @@ export async function main(argv: string[], env: NodeJS.ProcessEnv = process.env)
       const file = values.file as string | undefined;
       const message = file && file !== '-' ? readFileSync(file, 'utf8') : words.length ? words.join(' ') : readStdin('message');
       const t = sendFollowUp(resolveId(id, env), message, env);
-      out(`${t.id} ${t.status === 'running' ? 'is running again' : t.status === 'failed' ? `could not restart: ${t.summary}` : 'will reopen with your follow-up as soon as its old tab has closed and RAM allows'}.`);
+      out(`${t.id} ${t.status === 'running' ? 'is running again' : t.status === 'failed' ? `could not restart: ${t.summary}` : 'will reopen with your follow-up as soon as its old tab has closed and memory allows'}.`);
       return 0;
     }
 

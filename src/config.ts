@@ -15,9 +15,9 @@ export interface Config {
   agents: Record<string, AgentTemplate>;
   /** Agent used when --agent is not given. Defaults to the first one in `agents`. */
   defaultAgent?: string;
-  /** RAM one arm needs, in MB. An arm starts only while free RAM minus this stays at or above reserveMb. */
+  /** Memory one arm needs, in MB. An arm starts only while free memory minus this stays at or above reserveMb. */
   armMb: number;
-  /** Free RAM, in MB, that must remain after an arm starts. */
+  /** Free memory, in MB, that must remain after an arm starts. */
   reserveMb: number;
   /** Where arms run: background (default, no window), or a visible tab in warp, wt, terminal or tmux. */
   terminal?: string;

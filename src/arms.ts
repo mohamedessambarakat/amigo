@@ -48,7 +48,7 @@ import {
 
 const readPrompt = (name: string): string => readFileSync(join(codeRoot, 'prompts', name), 'utf8').trim();
 
-/** An arm whose tab opened this recently may still be loading: it counts against free RAM before it uses any. */
+/** An arm whose tab opened this recently may still be loading: it counts against free memory before it uses any. */
 const STARTUP_MS = 60_000;
 
 const settingsFile = (id: string, env: NodeJS.ProcessEnv): string => join(taskDir(id, env), 'claude-settings.json');
@@ -159,7 +159,7 @@ export function spawnArm(input: SpawnInput, opts: { dryRun?: boolean }, env: Nod
   saveTask(task, env);
   drain(env);
   const after = requireTask(id, env);
-  const state = after.status === 'running' ? 'Started' : after.status === 'failed' ? `Failed: ${after.summary}` : 'Queued (waiting for free RAM or for its folder)';
+  const state = after.status === 'running' ? 'Started' : after.status === 'failed' ? `Failed: ${after.summary}` : 'Queued (waiting for free memory or for its folder)';
   return { task: after, text: `${state}\n${text}` };
 }
 
@@ -185,7 +185,7 @@ export function refresh(env: NodeJS.ProcessEnv = process.env): void {
 }
 
 /**
- * Start queued arms, oldest first, while free RAM allows (armMb per arm, reserveMb kept free; one arm may always run).
+ * Start queued arms, oldest first, while free memory allows (armMb per arm, reserveMb kept free; one arm may always run).
  * One arm per folder: a folder is busy while an arm runs there or still has its tab open (it may be working on a message
  * from the head), except that a reviewer may read a finished arm's folder. A task whose old tab is still open waits for it.
  */
@@ -534,12 +534,12 @@ function takeFresh(ids: string[], env: NodeJS.ProcessEnv): Task[] {
 
 /** Arms that finished a turn since the head last looked; marks them seen. */
 export function inbox(env: NodeJS.ProcessEnv = process.env): string {
-  drain(env); // the head runs inbox often: queued arms also start here as RAM frees up
+  drain(env); // the head runs inbox often: queued arms also start here as memory frees up
   const fresh = takeFresh([], env);
   return fresh.length ? describeResults(fresh) : 'Inbox empty.';
 }
 
-/** Wait until an arm (any, or one of ids) finishes a turn. Also starts queued arms as RAM frees up. */
+/** Wait until an arm (any, or one of ids) finishes a turn. Also starts queued arms as memory frees up. */
 export async function waitForArms(ids: string[], timeoutMs: number, env: NodeJS.ProcessEnv = process.env, pollMs = 2000): Promise<string> {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
@@ -579,7 +579,7 @@ export function statusText(id: string | undefined, env: NodeJS.ProcessEnv = proc
   const open = listTasks(env).filter((t) => t.status !== 'closed');
   const config = loadConfig(env);
   const running = open.filter((t) => t.status === 'running').length;
-  const head = `Arms: ${running} running, ${open.filter((t) => t.status === 'queued').length} queued. Free RAM ${freeMemMb(env)} MB (an arm starts while ${config.armMb} MB for it still leaves ${config.reserveMb} MB).`;
+  const head = `Arms: ${running} running, ${open.filter((t) => t.status === 'queued').length} queued. Free memory ${freeMemMb(env)} MB (an arm starts while ${config.armMb} MB for it still leaves ${config.reserveMb} MB).`;
   if (!open.length) return `${head} No open tasks.`;
   return [head, ...open.map((t) => `${t.id}  ${t.status.padEnd(8)}  [${t.project}] ${t.title}  (${age(t.updatedAt)})`)].join('\n');
 }

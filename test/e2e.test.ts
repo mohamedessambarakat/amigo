@@ -54,7 +54,7 @@ describe('end to end with a fake agent', () => {
     }
   });
 
-  it('queues while RAM is short and starts the next arm when one finishes', async () => {
+  it('queues while memory is short and starts the next arm when one finishes', async () => {
     const { dir, env } = makeHome(1);
     try {
       for (const name of ['one', 'two']) {

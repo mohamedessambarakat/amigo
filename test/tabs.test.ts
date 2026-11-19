@@ -212,14 +212,14 @@ describe('Claude Code arms', () => {
   });
 });
 
-describe('RAM gate and wait', () => {
+describe('memory gate and wait', () => {
   it('starts an arm only while the reserve stays free', () => {
     assert.equal(ramAllows(3000, 600, 2048, 0), true);
     assert.equal(ramAllows(3000, 600, 2048, 1), false, 'an arm still starting counts');
     assert.equal(parseVmStat('Mach Virtual Memory Statistics: (page size of 16384 bytes)\nPages free: 1000.\nPages inactive: 2000.\nPages speculative: 100.\n'), 48);
   });
 
-  it('always lets one arm run, even when RAM is below the reserve', async () => {
+  it('always lets one arm run, even when memory is below the reserve', async () => {
     const { dir, env } = makeHome();
     try {
       const low = { ...env, OCTOMAXXING_FREE_MB: '10' };
@@ -231,7 +231,7 @@ describe('RAM gate and wait', () => {
       const first = cli(low, ['spawn', '--project', 'a'], 'Title: one\nMODE:sleep').out;
       assert.match(first, /^Started/);
       const second = cli(low, ['spawn', '--project', 'b'], 'Title: two').out;
-      assert.match(second, /^Queued/, 'the second waits for RAM');
+      assert.match(second, /^Queued/, 'the second waits for memory');
       // When the first ends, nothing runs, so the second may start.
       await waitFor(/task:\s+(\S+)/.exec(second)![1]!, low, ['done']);
     } finally {
