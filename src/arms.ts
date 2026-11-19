@@ -8,7 +8,9 @@ import {
   claudeArmNotes,
   claudeArmTemplate,
   claudeHeadTemplate,
+  guessTranscriptPath,
   headSettings,
+  userStatusLine,
   forgetFolder,
   isClaude,
   ownSessionEnv,
@@ -89,10 +91,13 @@ function notesFor(project: string, env: NodeJS.ProcessEnv): string | undefined {
   return loadProjects(env).find((p) => p.name === project)?.notes;
 }
 
+/** A Claude arm's launch passes --resume <session id> rather than --session-id. */
+const resumesSession = (t: Task): boolean => t.runs > 1 && Boolean(t.sessionId);
+
 /** The command an arm's tab runs for this task (what `--dry-run` shows). */
 function armLaunch(t: Task, config: Config, prompt: string, env: NodeJS.ProcessEnv): Launch {
   const template = armTemplate(t, config);
-  const resume = t.runs > 1 && Boolean(t.sessionId);
+  const resume = resumesSession(t);
   const full = isClaude(template) ? claudeArmTemplate(template, { id: t.id, sessionId: t.sessionId ?? '<new session id>', resume, settingsFile: settingsFile(t.id, env) }) : template;
   return buildLaunch(full, { prompt, promptFile: promptFile(t.id, env) }, env);
 }
@@ -338,6 +343,17 @@ function appendLog(id: string, text: string | Buffer, env: NodeJS.ProcessEnv): v
 }
 
 async function runClaudeArm(t: Task, env: NodeJS.ProcessEnv): Promise<number> {
+  if (resumesSession(t)) {
+    // Without its transcript, claude --resume exits at once with "No conversation found": say why instead.
+    const transcript = t.transcriptPath || guessTranscriptPath(t.cwd, t.sessionId as string, env);
+    if (!existsSync(transcript)) {
+      const why = `can't resume: no transcript for session ${t.sessionId} at ${transcript}`;
+      process.stderr.write(`octomaxxing: ${why}\n`);
+      appendLog(t.id, `octomaxxing: ${why}\n`, env);
+      mutateTask(t.id, (cur) => (cur.status === 'running' ? { status: 'failed', pid: null, seen: false, summary: why } : null), env);
+      return 1;
+    }
+  }
   const launch = armLaunch(t, loadConfig(env), readFileSync(promptFile(t.id, env), 'utf8'), env);
   // Ctrl+C belongs to the session, not to this wrapper.
   process.on('SIGINT', () => {});
@@ -428,6 +444,9 @@ interface HookPayload {
  */
 export function applyHook(name: string, payload: HookPayload, id: string, env: NodeJS.ProcessEnv = process.env): string {
   const live = (s: Task['status']) => s === 'running' || FINISHED.includes(s);
+  // Kept for the resume precheck: the real transcript path beats a guessed one.
+  const transcript = payload.transcript_path;
+  if (transcript) mutateTask(id, (cur) => (cur.transcriptPath === transcript ? null : { transcriptPath: transcript }), env);
   if (name === 'prompt') {
     mutateTask(id, (cur) => (live(cur.status) && cur.status !== 'running' ? { status: 'running' } : null), env);
     return '';
@@ -573,9 +592,11 @@ export async function waitForArms(ids: string[], timeoutMs: number, env: NodeJS.
   }
 }
 
-function age(iso: string): string {
-  const s = Math.max(0, Math.round((Date.now() - Date.parse(iso)) / 1000));
-  return s < 60 ? `${s}s` : s < 3600 ? `${Math.round(s / 60)}m` : `${Math.round(s / 3600)}h`;
+/** How long ago iso was: 45s, 2m 05s, 1h 04m. */
+export function age(iso: string, now = Date.now()): string {
+  const s = Math.max(0, Math.floor((now - Date.parse(iso)) / 1000));
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return s < 60 ? `${s}s` : s < 3600 ? `${Math.floor(s / 60)}m ${pad(s % 60)}s` : `${Math.floor(s / 3600)}h ${pad(Math.floor(s / 60) % 60)}m`;
 }
 
 export function statusText(id: string | undefined, env: NodeJS.ProcessEnv = process.env): string {
@@ -633,10 +654,11 @@ export function boardText(env: NodeJS.ProcessEnv = process.env, max = 6): string
     .sort((a, b) => BOARD_ORDER.indexOf(a.status) - BOARD_ORDER.indexOf(b.status) || a.createdAt.localeCompare(b.createdAt));
   const count = (s: Task['status']) => open.filter((t) => t.status === s).length;
   const review = open.filter((t) => FINISHED.includes(t.status) && !t.seen).length;
-  const head = `🐙 ${count('running')} running · ${count('queued')} queued · ${review} new result${review === 1 ? '' : 's'}`;
+  const head = `🐙 arms: ${count('running')} running · ${count('queued')} queued · ${review} new result${review === 1 ? '' : 's'}`;
   if (!open.length) return '🐙 no arms';
-  // What you type in commands goes first: the arm's number, or the whole id for arms from before numbering.
-  const handles = open.slice(0, max).map((t) => armNumber(t.id) ?? t.id);
+  // What you type in commands goes first: the arm's number as arm3 (so it never reads as a count, and it pastes into any
+  // shell as one word, where #3 would start a comment), or the whole id for arms from before numbering.
+  const handles = open.slice(0, max).map((t) => { const n = armNumber(t.id); return n ? `arm${n}` : t.id; });
   const width = Math.max(...handles.map((h) => h.length));
   const line = (t: Task, i: number) => `${BOARD_ICONS[t.status]} ${handles[i]!.padEnd(width)}  ${t.status.padEnd(8)} ${t.title.length > 40 ? `${t.title.slice(0, 39)}…` : t.title}  [${t.project}]  ${age(t.status === 'running' ? (t.startedAt ?? t.updatedAt) : t.updatedAt)}`;
   const shown = open.slice(0, max).map(line);
@@ -699,7 +721,7 @@ export async function runHead(agentName: string | undefined, opts: { dryRun?: bo
     return 0;
   }
   writeFileSync(file, prompt);
-  if (isClaude(template)) writeJsonAtomic(headSettingsFile, headSettings());
+  if (isClaude(template)) writeJsonAtomic(headSettingsFile, headSettings(userStatusLine(env)));
   const childEnv = { ...env, OCTOMAXXING_HOME: home(env) };
   const child = spawnAgent(launch, { cwd: home(env), stdio: 'inherit', env: childEnv });
   return await new Promise((done, fail) => {

@@ -1,14 +1,15 @@
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { describe, it } from 'node:test';
 import { applyHook, armPrompt, followUpPrompt, tabEnvArgs } from '../src/arms.ts';
-import { armSettings, headSettings, claudeArmNotes, claudeArmTemplate, claudeHeadTemplate, claudeJsonPath, dropTrust, isClaude, mergeTrust, ownSessionEnv, reportReason, sessionAddress, turnMessagedHead } from '../src/claude.ts';
+import { armSettings, decodeStatusLine, guessTranscriptPath, headSettings, isBoardCommand, runUserStatusLine, statusLineShell, userStatusLine, claudeArmNotes, claudeArmTemplate, claudeHeadTemplate, claudeJsonPath, dropTrust, isClaude, mergeTrust, ownSessionEnv, reportReason, sessionAddress, turnMessagedHead } from '../src/claude.ts';
 import { parseVmStat, ramAllows } from '../src/ram.ts';
 import { descendants } from '../src/proc.ts';
 import { beat, saveTask, type Task } from '../src/tasks.ts';
 import { consoleWindowScript, planTab, selectTerminal, tabScript, warpTabConfig } from '../src/terminal.ts';
-import { cleanup, cli, makeHome, waitFor } from './helpers.ts';
+import { cleanup, cli, makeHome, tmpDir, waitFor } from './helpers.ts';
 
 const req = (platform: NodeJS.Platform) => ({
   name: 'octomaxxing-x-1',
@@ -121,6 +122,123 @@ describe('Claude Code arms', () => {
     assert.equal(status.refreshInterval, 2);
   });
 
+  it("keeps the user's own status line: read once from their settings, carried in the board's command", () => {
+    const dir = tmpDir();
+    try {
+      const file = join(dir, 'settings.json');
+      const env = { OCTOMAXXING_CLAUDE_SETTINGS: file, SHELL: '/bin/zsh' };
+      assert.equal(userStatusLine(env, 'linux'), undefined, 'no settings file');
+      writeFileSync(file, JSON.stringify({ model: 'opus' }));
+      assert.equal(userStatusLine(env, 'linux'), undefined, 'no statusLine');
+      writeFileSync(file, JSON.stringify({ statusLine: { type: 'command', command: 'node "C:/x/octomaxxing/src/cli.ts" board' } }));
+      assert.equal(userStatusLine(env, 'linux'), undefined, 'the board itself is never run inside the board');
+      writeFileSync(file, JSON.stringify({ statusLine: { type: 'command', command: 'node "$HOME/.claude/statusline.js"' } }));
+      const user = userStatusLine(env, 'linux');
+      assert.deepEqual(user, { command: 'node "$HOME/.claude/statusline.js"', shell: ['/bin/zsh', '-c'] });
+      const command = (headSettings(user) as { statusLine: { command: string } }).statusLine.command;
+      const m = /^node "[^"\\]+cli\.ts" board --user ([A-Za-z0-9_-]+)$/.exec(command);
+      assert.ok(m, `shell-safe board command: ${command}`);
+      assert.deepEqual(decodeStatusLine(m[1]!), user);
+      assert.equal(decodeStatusLine('not-json'), undefined);
+      assert.ok(isBoardCommand('octomaxxing board') && !isBoardCommand('node ~/.claude/statusline.js --board-ish'));
+      // On Windows, Git Bash next to git (as Claude Code uses), else PowerShell.
+      const gitBin = join(dir, 'Git', 'mingw64', 'bin');
+      mkdirSync(gitBin, { recursive: true });
+      writeFileSync(join(gitBin, 'git.exe'), '');
+      const win = { PATH: gitBin, PATHEXT: '.EXE' };
+      assert.deepEqual(statusLineShell(win, 'win32'), ['powershell.exe', '-NoProfile', '-Command']);
+      mkdirSync(join(dir, 'Git', 'bin'));
+      writeFileSync(join(dir, 'Git', 'bin', 'bash.exe'), '');
+      assert.deepEqual(statusLineShell(win, 'win32'), [join(dir, 'Git', 'bin', 'bash.exe'), '-c']);
+    } finally {
+      cleanup(dir);
+    }
+  });
+
+  it("runs the user's status line with Claude Code's JSON, and leaves it out when it fails or hangs", async () => {
+    const js = (code: string) => ({ command: code, shell: [process.execPath, '-e'] });
+    const echo = js("let d='';process.stdin.on('data',c=>d+=c).on('end',()=>console.log('model: '+JSON.parse(d).model.display_name))");
+    assert.equal(await runUserStatusLine(echo, '{"model":{"display_name":"Opus"}}', process.env), 'model: Opus');
+    assert.equal(await runUserStatusLine(js("console.log('half'); process.exit(3)"), '', process.env), '', 'a failing command is left out');
+    assert.equal(await runUserStatusLine({ command: 'x', shell: ['no-such-shell-xyz'] }, '', process.env), '', 'a shell that cannot start is left out');
+    const started = Date.now();
+    assert.equal(await runUserStatusLine(js('setInterval(() => {}, 1000)'), '', process.env, 500), '', 'a hanging command is left out');
+    assert.ok(Date.now() - started < 3000, 'and the board does not wait for it');
+  });
+
+  it("carries a command with quotes, $HOME and spaces through the board's command unchanged", () => {
+    const tricky = `node "C:/Program Files/my line.js" --tag 'it''s' $HOME "$HOME/a b" \`pwd\` 100% & echo "done"`;
+    const command = (headSettings({ command: tricky, shell: ['/bin/bash', '-c'] }) as { statusLine: { command: string } }).statusLine.command;
+    const encoded = / --user ([A-Za-z0-9_-]+)$/.exec(command)![1]!;
+    assert.deepEqual(decodeStatusLine(encoded), { command: tricky, shell: ['/bin/bash', '-c'] });
+  });
+
+  it('writes valid head settings with just the board when the user has no status line', () => {
+    const dir = tmpDir();
+    try {
+      const file = join(dir, 'settings.json');
+      writeFileSync(file, JSON.stringify({ model: 'opus' }));
+      const settings = JSON.parse(JSON.stringify(headSettings(userStatusLine({ OCTOMAXXING_CLAUDE_SETTINGS: file }, 'linux')))) as { crossSessionInbound: string; statusLine: { type: string; command: string } };
+      assert.equal(settings.crossSessionInbound, 'accept');
+      assert.equal(settings.statusLine.type, 'command');
+      assert.match(settings.statusLine.command, /^node "[^"\\]+cli\.ts" board$/);
+    } finally {
+      cleanup(dir);
+    }
+  });
+
+  const gitBash = process.platform === 'win32' ? statusLineShell() : [];
+  it('runs a PowerShell status line with its quotes, $HOME and spaces intact', { skip: process.platform !== 'win32' && 'Windows only' }, async () => {
+    const ps = { command: `Write-Output "a  b" '$HOME' "$HOME" 'it''s'`, shell: ['powershell.exe', '-NoProfile', '-Command'] };
+    assert.equal(await runUserStatusLine(ps, '', process.env, 10_000), `a  b\n$HOME\n${process.env.USERPROFILE}\nit's`.replace(/\n/g, '\r\n'));
+  });
+
+  it('leaves no process behind when a Git Bash status line hangs', { skip: !/bash/i.test(gitBash[0] ?? '') && 'needs Git Bash on Windows' }, async () => {
+    const line = { command: 'echo "a  b" "$HOME"', shell: gitBash };
+    assert.equal(await runUserStatusLine(line, '', process.env), `a  b ${process.env.HOME?.replace(/\\/g, '/').replace(/^([A-Za-z]):/, (_, d: string) => `/${d.toLowerCase()}`)}`, 'quotes and $HOME pass through the timeout wrapper');
+    // A sleep with a duration no one else uses, so only ours are counted.
+    const ours = () => execFileSync('powershell.exe', ['-NoProfile', '-Command', `@(Get-CimInstance Win32_Process -Filter "Name='sleep.exe'" | Where-Object { $_.CommandLine -match '47\\.31' }).Count`], { encoding: 'utf8' }).trim();
+    const before = ours();
+    const started = Date.now();
+    assert.equal(await runUserStatusLine({ command: 'sleep 47.31; echo late', shell: gitBash }, '', process.env, 1000), '');
+    assert.ok(Date.now() - started < 2500, 'the board does not wait for it');
+    await new Promise((r) => setTimeout(r, 300));
+    assert.deepEqual([before, ours()], ['0', '0'], 'sleep.exe processes before and after the timeout');
+  });
+
+  it('ignores a non-GNU timeout found first on PATH (like Windows timeout.exe)', { skip: !/bash/i.test(gitBash[0] ?? '') && 'needs Git Bash on Windows' }, async () => {
+    const dir = tmpDir();
+    try {
+      // Stands in for C:\Windows\System32\timeout.exe: same name, rejects GNU's arguments, prints nothing.
+      writeFileSync(join(dir, 'timeout'), '#!/bin/sh\necho "ERROR: Invalid syntax." >&2\nexit 1\n', { mode: 0o755 });
+      const pathKey = Object.keys(process.env).find((k) => k.toUpperCase() === 'PATH') ?? 'PATH';
+      const env = { ...process.env, [pathKey]: `${dir};${process.env[pathKey] ?? ''}` };
+      // Git\usr\bin\bash.exe (what CLAUDE_CODE_GIT_BASH_PATH may name) keeps PATH's order; Git\bin\bash.exe puts /usr/bin first.
+      const usrBash = join(dirname(dirname(gitBash[0]!)), 'usr', 'bin', 'bash.exe');
+      assert.notEqual(execFileSync(usrBash, ['-c', 'command -v timeout'], { env, encoding: 'utf8' }).trim(), '/usr/bin/timeout', 'the fake comes first on PATH');
+      assert.equal(await runUserStatusLine({ command: 'echo hi', shell: [usrBash, '-c'] }, '', env), 'hi');
+    } finally {
+      cleanup(dir);
+    }
+  });
+
+  it('prints the arm lines, then the user line; just the arms when the user line fails or would loop', () => {
+    const { dir, env } = makeHome();
+    try {
+      const old = new Date(Date.now() - 65_000).toISOString();
+      saveTask({ id: '3-tripwire', title: 'Tripwire: MVP build plan', agent: 'fake', status: 'running', createdAt: old, updatedAt: old, startedAt: old, runs: 1, followUps: [], seen: true, project: 'tripwire', cwd: '/w', repo: null, worktree: null, branch: null, baseSha: null } as Task, env);
+      const user = (code: string) => Buffer.from(JSON.stringify({ command: code, shell: [process.execPath, '-e'] })).toString('base64url');
+      const mine = user("let d='';process.stdin.on('data',c=>d+=c).on('end',()=>console.log('[mine] '+JSON.parse(d).cwd))");
+      const r = cli(env, ['board', '--user', mine], '{"cwd":"/home/me/proj"}');
+      assert.equal(r.code, 0, r.err);
+      assert.match(r.out, /^🐙 arms: 1 running · 0 queued · 0 new results\n▶ arm3  running  Tripwire: MVP build plan  \[tripwire\]  1m 0\ds\n\[mine\] \/home\/me\/proj\n$/);
+      assert.doesNotMatch(cli(env, ['board', '--user', user('process.exit(1)')]).out, /\n\n|mine/);
+      assert.equal(cli({ ...env, OCTOMAXXING_IN_BOARD: '1' }, ['board', '--user', mine], '{"cwd":"x"}').out.split('\n').length, 3, 'no user line from inside itself');
+    } finally {
+      cleanup(dir);
+    }
+  });
+
   it('tells the arm to message the session that spawned it, whatever its name', () => {
     const head = 'uds:/tmp/head.sock';
     assert.equal(sessionAddress({ CLAUDE_CODE_MESSAGING_SOCKET: '\\\\.\\pipe\\LOCAL\\cc-msg-ab' }), 'uds:\\\\.\\pipe\\LOCAL\\cc-msg-ab');
@@ -166,6 +284,46 @@ describe('Claude Code arms', () => {
     try {
       assert.throws(() => claudeJsonPath({ OCTOMAXXING_HOME: env.OCTOMAXXING_HOME }), /refusing to touch the real/);
       assert.equal(claudeJsonPath(env), env.OCTOMAXXING_CLAUDE_JSON);
+    } finally {
+      cleanup(dir);
+    }
+  });
+
+  it('refuses to --resume a session whose transcript is missing, without launching claude', () => {
+    // If the precheck let it through, this claude would fail to start and log "claude could not start" instead.
+    const missingClaude = join(tmpDir(), 'no-such-dir', 'claude');
+    const { dir, env } = makeHome(0, [missingClaude, '{prompt}']);
+    try {
+      const home = env.OCTOMAXXING_HOME as string;
+      mkdirSync(join(home, 'tasks', 'x-1'), { recursive: true });
+      writeFileSync(join(home, 'tasks', 'x-1', 'prompt.md'), 'Follow-up from the head: go on\n');
+      const transcript = join(dir, 'projects', 'gone', 'S-1.jsonl');
+      const now = new Date().toISOString();
+      saveTask({ id: 'x-1', title: 't', project: 'p', agent: 'fake', cwd: dir, repo: null, worktree: null, branch: null, baseSha: null, status: 'running', createdAt: now, updatedAt: now, runs: 2, followUps: ['go on'], followUpsSent: 0, seen: true, sessionId: 'S-1', sessionStarted: true, transcriptPath: transcript }, env);
+      const r = cli(env, ['_tab', 'x-1', '--run', '2']);
+      assert.notEqual(r.code, 0, 'the tab stays open on the error');
+      const log = readFileSync(join(home, 'tasks', 'x-1', 'output.log'), 'utf8');
+      const why = `can't resume: no transcript for session S-1 at ${transcript}`;
+      assert.ok(log.includes(`octomaxxing: ${why}`), log);
+      assert.ok(!/could not start/.test(log), 'claude was never launched');
+      const t = JSON.parse(readFileSync(join(home, 'tasks', 'x-1', 'task.json'), 'utf8')) as Task;
+      assert.deepEqual([t.status, t.summary, t.pid, t.sessionStarted], ['failed', why, null, true]);
+    } finally {
+      cleanup(dir);
+      cleanup(dirname(dirname(missingClaude)));
+    }
+  });
+
+  it('guesses the transcript path the way Claude Code names its project folders, and hooks record the real one', () => {
+    assert.equal(guessTranscriptPath('C:\\Users\\me\\my app', 'S', { CLAUDE_CONFIG_DIR: join('/c', 'cfg') }), join('/c', 'cfg', 'projects', 'C--Users-me-my-app', 'S.jsonl'));
+    const { dir, env } = makeHome();
+    try {
+      const home = env.OCTOMAXXING_HOME as string;
+      mkdirSync(join(home, 'tasks', 'x-1'), { recursive: true });
+      const now = new Date().toISOString();
+      saveTask({ id: 'x-1', title: 't', project: 'p', agent: 'claude', cwd: dir, repo: null, worktree: null, branch: null, baseSha: null, status: 'running', createdAt: now, updatedAt: now, runs: 1, followUps: [], seen: true }, env);
+      applyHook('prompt', { transcript_path: '/t/S.jsonl' }, 'x-1', env);
+      assert.equal((JSON.parse(readFileSync(join(home, 'tasks', 'x-1', 'task.json'), 'utf8')) as Task).transcriptPath, '/t/S.jsonl');
     } finally {
       cleanup(dir);
     }

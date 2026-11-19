@@ -48,6 +48,8 @@ export interface Task {
   /** Claude Code arms: the session id, resumed when a follow-up reopens the tab once the session has started. */
   sessionId?: string | null;
   sessionStarted?: boolean;
+  /** Claude Code arms: the session's transcript, as its hooks report it; a --resume needs it to exist. */
+  transcriptPath?: string | null;
   /** octomaxxing added the ~/.claude.json trust entry for cwd (removed again on close). */
   trustAdded?: boolean;
   /** Warp only: the tab config file, deleted when the arm ends. */
@@ -96,6 +98,10 @@ export function nextArmNumber(env: NodeJS.ProcessEnv = process.env): number {
  */
 export function resolveId(ref: string, env: NodeJS.ProcessEnv = process.env): string {
   const all = listTasks(env);
+  if (all.some((t) => t.id === ref)) return ref;
+  // An id from before arms were numbered (arm12-deadbeef) keeps the meaning "arm12" had then, over the arm12 shorthand.
+  const shorthand = ref && !all.some((t) => armNumber(t.id) === null && t.id.startsWith(ref));
+  if (shorthand) ref = ref.replace(/^(arm|#)(?=\d+$)/i, ''); // the board labels arms arm3 (and once #3)
   if (all.some((t) => t.id === ref)) return ref;
   const matches = /^\d+$/.test(ref) ? all.filter((t) => armNumber(t.id) === ref) : all.filter((t) => ref && t.id.startsWith(ref));
   const open = matches.filter((t) => t.status !== 'closed');

@@ -1,8 +1,11 @@
+import { spawn } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import os from 'node:os';
-import { basename, join, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
+import { resolveExecutable } from './command.ts';
 import { sleepSync, withLock, writeJsonAtomic } from './fsx.ts';
 import { cliPath, lockPath } from './paths.ts';
+import { killTree } from './proc.ts';
 
 /**
  * Claude Code arms run as interactive sessions in their tab: named octomaxxing-<id>, with hooks that record each turn's
@@ -44,6 +47,15 @@ export function ownSessionEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   return Object.fromEntries(Object.entries(env).filter(([k]) => !SESSION_VARS.has(k.toUpperCase())));
 }
 
+/**
+ * Where Claude Code keeps a session's transcript when no hook has told us: <config dir>/projects/<cwd with every
+ * character other than a letter or digit turned into "-">/<session id>.jsonl. A guess from the folders it writes
+ * (C:\Users\me\app becomes C--Users-me-app), not a documented rule; very long paths may be shortened differently.
+ */
+export function guessTranscriptPath(cwd: string, sessionId: string, env: NodeJS.ProcessEnv = process.env): string {
+  return join(env.CLAUDE_CONFIG_DIR || join(os.homedir(), '.claude'), 'projects', cwd.replace(/[^a-zA-Z0-9]/g, '-'), `${sessionId}.jsonl`);
+}
+
 /** A template whose command is Claude Code. */
 export function isClaude(template: string[]): boolean {
   return /^claude(\.(exe|cmd))?$/i.test(basename(template[0] ?? ''));
@@ -67,9 +79,108 @@ export function claudeHeadTemplate(template: string[], settingsFile: string): st
   return [cmd, '--name', HEAD_NAME, '--settings', settingsFile, ...rest];
 }
 
-/** The head's settings: accept messages from arms, and show the live board of arms as the status line. */
-export function headSettings(): Record<string, unknown> {
-  return { crossSessionInbound: 'accept', statusLine: { type: 'command', command: `node "${cliPath.replace(/\\/g, '/')}" board`, refreshInterval: 2 } };
+/** The user's own status line, kept under the board: their command and the shell to run it in (found once, at start-up). */
+export interface UserStatusLine {
+  command: string;
+  shell: string[];
+}
+
+/** ~/.claude/settings.json (or $CLAUDE_CONFIG_DIR/settings.json), or OCTOMAXXING_CLAUDE_SETTINGS. Only ever read. */
+export function claudeSettingsPath(env: NodeJS.ProcessEnv = process.env): string {
+  return env.OCTOMAXXING_CLAUDE_SETTINGS || join(env.CLAUDE_CONFIG_DIR || join(os.homedir(), '.claude'), 'settings.json');
+}
+
+/** A statusLine command that is octomaxxing's own board, which must never run inside the board. */
+export const isBoardCommand = (command: string): boolean => /(octomaxxing|cli\.ts)["']?\s+board\b/i.test(command);
+
+/**
+ * The shell Claude Code runs status lines in: Git Bash on Windows when it is installed, else PowerShell; elsewhere the
+ * user's $SHELL. Found at start-up so the board, which runs every 2s, never searches PATH.
+ */
+export function statusLineShell(env: NodeJS.ProcessEnv = process.env, platform: NodeJS.Platform = process.platform): string[] {
+  if (platform !== 'win32') return [env.SHELL || '/bin/sh', '-c'];
+  // git.exe sits in Git\cmd, Git\bin or Git\mingw64\bin; bash.exe in Git\bin.
+  const git = resolveExecutable('git', env, platform);
+  const near = git ? [dirname(dirname(git)), dirname(dirname(dirname(git)))].map((root) => join(root, 'bin', 'bash.exe')) : [];
+  const bash = [env.CLAUDE_CODE_GIT_BASH_PATH, ...near].find((p) => p && existsSync(p));
+  return bash ? [bash, '-c'] : ['powershell.exe', '-NoProfile', '-Command'];
+}
+
+/** The user's configured statusLine command, or undefined when there is none, it cannot be read, or it is the board. */
+export function userStatusLine(env: NodeJS.ProcessEnv = process.env, platform: NodeJS.Platform = process.platform): UserStatusLine | undefined {
+  let command: unknown;
+  try {
+    const settings = JSON.parse(readFileSync(claudeSettingsPath(env), 'utf8')) as { statusLine?: { type?: string; command?: unknown } };
+    if (settings.statusLine?.type === 'command') command = settings.statusLine.command;
+  } catch {
+    return undefined; // no settings file, or one being written: the head simply starts without the user's line
+  }
+  if (typeof command !== 'string' || !command.trim() || isBoardCommand(command)) return undefined;
+  return { command, shell: statusLineShell(env, platform) };
+}
+
+/** The user's line travels in the board's own command as base64url, which every shell passes through untouched. */
+export const encodeStatusLine = (line: UserStatusLine): string => Buffer.from(JSON.stringify(line)).toString('base64url');
+export function decodeStatusLine(encoded: string): UserStatusLine | undefined {
+  try {
+    const v = JSON.parse(Buffer.from(encoded, 'base64url').toString('utf8')) as UserStatusLine;
+    return typeof v.command === 'string' && Array.isArray(v.shell) && v.shell.length > 0 && v.shell.every((a) => typeof a === 'string') ? v : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Set while the user's command runs, so a board started from inside it (a loop) prints only the arms. */
+export const IN_BOARD_ENV = 'OCTOMAXXING_IN_BOARD';
+
+/**
+ * Run the user's status line with the JSON Claude Code sent the board on stdin, and give back its output, or '' when it
+ * fails, prints nothing or takes longer than timeoutMs (then its whole process tree is stopped).
+ */
+export function runUserStatusLine(line: UserStatusLine, stdin: string, env: NodeJS.ProcessEnv = process.env, timeoutMs = 1000, platform: NodeJS.Platform = process.platform): Promise<string> {
+  return new Promise((done) => {
+    const [shell, ...args] = line.shell as [string, ...string[]];
+    // Git Bash on Windows breaks the Windows parent chain when it runs a program (sleep.exe's parent is already gone), so
+    // taskkill /T misses it. GNU timeout puts the command in its own process group and kills the whole group, so it
+    // stops the clock there, and our own kill below is only the fallback.
+    // Call it by its full path: a PATH lookup can find Windows' own timeout.exe, which rejects these arguments and prints
+    // nothing. Every Git for Windows bash has /usr/bin/timeout, so the else branch only runs under some other bash; it
+    // can leave a hung command's children running and waits timeoutMs + 500 ms, which is accepted for that rare case.
+    const grouped = platform === 'win32' && /bash(\.exe)?$/i.test(shell);
+    const argv = grouped
+      ? [...args, `if [ -x /usr/bin/timeout ]; then exec /usr/bin/timeout -s KILL ${timeoutMs / 1000} "$BASH" -c "$1"; else exec "$BASH" -c "$1"; fi`, 'octomaxxing-status-line', line.command]
+      : [...args, line.command];
+    let child: ReturnType<typeof spawn>;
+    try {
+      child = spawn(shell, argv, { env: { ...env, [IN_BOARD_ENV]: '1' }, stdio: ['pipe', 'pipe', 'ignore'], windowsHide: true });
+    } catch {
+      return done('');
+    }
+    let out = '';
+    let settled = false;
+    const finish = (text: string) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      child.stdout?.destroy();
+      done(text);
+    };
+    const timer = setTimeout(() => {
+      if (child.pid) killTree(child.pid);
+      finish('');
+    }, grouped ? timeoutMs + 500 : timeoutMs);
+    child.on('error', () => finish(''));
+    child.stdout?.setEncoding('utf8').on('data', (d: string) => (out += d));
+    child.on('close', (code) => finish(code === 0 ? out.replace(/\s+$/, '') : ''));
+    child.stdin?.on('error', () => {}); // a command that never reads stdin may close it early
+    child.stdin?.end(stdin);
+  });
+}
+
+/** The head's settings: accept messages from arms, and show the live board of arms (then the user's own line) as the status line. */
+export function headSettings(user?: UserStatusLine): Record<string, unknown> {
+  const command = `node "${cliPath.replace(/\\/g, '/')}" board${user ? ` --user ${encodeStatusLine(user)}` : ''}`;
+  return { crossSessionInbound: 'accept', statusLine: { type: 'command', command, refreshInterval: 2 } };
 }
 
 /**

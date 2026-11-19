@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { after, describe, it } from 'node:test';
-import { armPrompt, boardText, greeting, headPrompt, titleOf } from '../src/arms.ts';
+import { age, armPrompt, boardText, greeting, headPrompt, titleOf } from '../src/arms.ts';
 import { INLINE_LIMIT, buildLaunch, pointerLine, quoteForCmd, resolveExecutable } from '../src/command.ts';
 import { nameFromPath, pickAgent, validateConfig, validateProjects } from '../src/config.ts';
 import { commitAll, looksSecret, porcelainPath } from '../src/git.ts';
@@ -150,15 +150,28 @@ describe('board', () => {
       task('3-gamma', 'queued');
       task('4-delta', 'closed');
       const lines = boardText(env).split('\n');
-      assert.equal(lines[0], '🐙 1 running · 1 queued · 1 new result');
-      assert.deepEqual(lines.slice(1).map((l) => l.split(/\s+/).slice(0, 2).join(' ')), ['▶ 2', '✓ 1', '… 3'], 'number first; running, then finished, then queued; closed is hidden');
-      assert.equal(lines[1], '▶ 2  running  Task 2-beta  [p]  5m');
+      assert.equal(lines[0], '🐙 arms: 1 running · 1 queued · 1 new result');
+      assert.deepEqual(lines.slice(1).map((l) => l.split(/\s+/).slice(0, 2).join(' ')), ['▶ arm2', '✓ arm1', '… arm3'], 'number first, as armN; running, then finished, then queued; closed is hidden');
+      assert.equal(lines[1], '▶ arm2  running  Task 2-beta  [p]  5m 00s');
+      assert.equal(resolveId('arm2', env), '2-beta', 'the arm2 label works as an id too');
+      assert.equal(resolveId('#2', env), '2-beta', 'and the older #2 label');
       const capped = boardText(env, 2).split('\n');
       assert.equal(capped.length, 4);
       assert.equal(capped[3], '  +1 more: octomaxxing status');
+      task('old-style-id', 'running', { startedAt: old });
+      assert.match(boardText(env), /\n▶ old-style-id  running  Task old-style-id  \[p\]  5m 00s\n/, 'ids from before numbering show as they are');
     } finally {
       cleanup(dir);
     }
+  });
+});
+
+describe('ages', () => {
+  it('shows seconds, minutes and seconds, or hours and minutes', () => {
+    const now = Date.parse('2026-01-01T12:00:00Z');
+    const at = (s: number) => age(new Date(now - s * 1000).toISOString(), now);
+    assert.deepEqual([at(0), at(45), at(59), at(60), at(125), at(3599), at(3600), at(3840), at(90_000)], ['0s', '45s', '59s', '1m 00s', '2m 05s', '59m 59s', '1h 00m', '1h 04m', '25h 00m']);
+    assert.equal(age(new Date(now + 60_000).toISOString(), now), '0s', 'a clock running behind never shows a negative age');
   });
 });
 
@@ -263,6 +276,12 @@ describe('arm numbers', () => {
       assert.equal(resolveId('2', env), '2-fix-footer', 'a number never matches a longer number');
       task('fix-loop-cd34ef56', 'queued');
       assert.throws(() => resolveId('fix-lo', env), /several arms/);
+      task('12-numbered', 'running');
+      assert.equal(resolveId('arm12', env), '12-numbered', 'arm12 is arm 12 while no old id starts with it');
+      task('arm12-deadbeef', 'done');
+      assert.equal(resolveId('arm12', env), 'arm12-deadbeef', 'an old id starting with arm12 wins over the arm12 shorthand');
+      assert.equal(resolveId('arm12-deadbeef', env), 'arm12-deadbeef');
+      assert.equal(resolveId('12', env), '12-numbered', 'the bare number still means arm 12');
     } finally {
       cleanup(dir);
     }
