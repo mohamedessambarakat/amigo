@@ -49,7 +49,7 @@ describe('terminal tabs', () => {
         'type = "terminal"',
         'directory = "C:/work/my app"',
         `commands = ["& 'C:\\\\h\\\\tasks\\\\x-1\\\\tab.cmd'; exit"]`,
-        'is_focused = false',
+        'is_focused = true',
         '',
       ].join('\n'),
     );

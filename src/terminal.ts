@@ -92,7 +92,7 @@ export function warpTabConfig(name: string, title: string, cwd: string, command:
     'type = "terminal"',
     `directory = ${tomlString(cwd.replace(/\\/g, '/'))}`,
     `commands = [${tomlString(command)}]`,
-    'is_focused = false',
+    'is_focused = true',
     '',
   ].join('\n');
 }
