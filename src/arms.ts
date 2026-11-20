@@ -25,7 +25,7 @@ import { branchName, changedFiles, commitAll, committedFiles, createWorktree, de
 import { cliPath, codeRoot, home, lockPath, taskDir, worktreesDir } from './paths.ts';
 import { killTree } from './proc.ts';
 import { freeMemMb, ramAllows } from './ram.ts';
-import { openTab, removeTabConfig, selectTerminal } from './terminal.ts';
+import { headHerdrWorkspace, herdrLabel, openTab, removeTabConfig, selectTerminal, type HerdrPlacement } from './terminal.ts';
 import {
   FINISHED,
   HEARTBEAT_MS,
@@ -229,7 +229,15 @@ export function tabEnvArgs(env: NodeJS.ProcessEnv): string[] {
     .flatMap(([k, v]) => ['--env', `${k}=${v}`]);
 }
 
-function startArm(t: Task, config: Config, env: NodeJS.ProcessEnv): boolean {
+/** An arm with a worktree gets a herdr workspace of its own; any other arm a tab beside its reviewed arm's, else the head's. */
+export function herdrPlacement(t: Task, env: NodeJS.ProcessEnv): HerdrPlacement {
+  const reviewed = t.reviewOf ? listTasks(env).find((x) => x.id === t.reviewOf)?.herdrWorkspace : null;
+  const workspaces = [reviewed, headHerdrWorkspace(env)].filter((w, i, all): w is string => Boolean(w) && all.indexOf(w) === i);
+  return { label: herdrLabel(t.id, t.title), ownWorkspace: Boolean(t.worktree), workspaces };
+}
+
+/** Start one queued arm: write its prompt, mark it running, open its tab. Exported with a runner so tests need no real terminal. */
+export function startArm(t: Task, config: Config, env: NodeJS.ProcessEnv, runner?: Parameters<typeof openTab>[2]): boolean {
   try {
     const claude = isClaude(armTemplate(t, config));
     const terminal = selectTerminal({ env, platform: process.platform });
@@ -259,17 +267,19 @@ function startArm(t: Task, config: Config, env: NodeJS.ProcessEnv): boolean {
       }),
       env,
     );
-    const { tabConfig } = openTab(terminal, {
+    const headWorkspace = terminal === 'herdr' ? headHerdrWorkspace(env) : null;
+    const { tabConfig, herdrWorkspace } = openTab(terminal, {
       name: armName(t.id),
       title: `octomaxxing: ${t.title}`,
       // The tab's shell sits in the task folder, never in the worktree, so it cannot block removing the worktree on close.
       cwd: taskDir(t.id, env),
-      argv: [process.execPath, cliPath, '_tab', t.id, '--run', String(now.runs), '--home', home(env), ...tabEnvArgs({ ...env, OCTOMAXXING_TERMINAL: terminal })],
+      argv: [process.execPath, cliPath, '_tab', t.id, '--run', String(now.runs), '--home', home(env), ...tabEnvArgs({ ...env, OCTOMAXXING_TERMINAL: terminal, ...(headWorkspace ? { OCTOMAXXING_HERDR_WORKSPACE: headWorkspace } : {}) })],
       dir: taskDir(t.id, env),
       platform: process.platform,
       env: { ...env, OCTOMAXXING_HOME: home(env) },
-    });
-    if (tabConfig) mutateTask(t.id, () => ({ tabConfig }), env);
+      ...(terminal === 'herdr' ? { herdr: herdrPlacement(t, env) } : {}),
+    }, runner);
+    if (tabConfig || herdrWorkspace) mutateTask(t.id, () => ({ tabConfig, herdrWorkspace }), env);
     return true;
   } catch (err) {
     mutateTask(t.id, (cur) => (cur.status === 'running' || cur.status === 'queued' ? { status: 'failed', seen: false, summary: `Could not start: ${(err as Error).message}` } : null), env);

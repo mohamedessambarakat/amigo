@@ -54,6 +54,8 @@ export interface Task {
   trustAdded?: boolean;
   /** Warp only: the tab config file, deleted when the arm ends. */
   tabConfig?: string | null;
+  /** herdr only: the workspace holding the arm's tab, where a reviewer's tab goes. */
+  herdrWorkspace?: string | null;
   exitCode?: number | null;
   /** The agent's STATUS line (or its last output line) from the latest run. */
   summary?: string;

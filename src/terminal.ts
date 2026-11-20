@@ -3,15 +3,15 @@ import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, posix, win32 } from 'node:path';
 import os from 'node:os';
 import { resolveExecutable } from './command.ts';
-import { run } from './proc.ts';
+import { run, type RunResult } from './proc.ts';
 
 /**
  * How an arm's tab opens. It is always the terminal the head runs in, found from the variables that terminal sets; one
  * that offers no way to open a tab gets a new console window (`window`). Nobody configures this. OCTOMAXXING_TERMINAL is
  * internal: it carries the found kind into arm tabs, and `test` there runs the tab's command as a detached process.
  */
-export type TerminalKind = 'tmux' | 'wezterm' | 'warp' | 'wt' | 'terminal' | 'window' | 'test';
-const KINDS: readonly TerminalKind[] = ['tmux', 'wezterm', 'warp', 'wt', 'terminal', 'window', 'test'];
+export type TerminalKind = 'tmux' | 'herdr' | 'wezterm' | 'warp' | 'wt' | 'terminal' | 'window' | 'test';
+const KINDS: readonly TerminalKind[] = ['tmux', 'herdr', 'wezterm', 'warp', 'wt', 'terminal', 'window', 'test'];
 
 export interface TerminalEnv {
   env: NodeJS.ProcessEnv;
@@ -23,6 +23,8 @@ export interface TerminalEnv {
 /** The terminal this process runs in. tmux goes first: it may run inside any of the others. */
 export function detectTerminal(env: NodeJS.ProcessEnv, platform: NodeJS.Platform): TerminalKind {
   if (env.TMUX) return 'tmux';
+  // A terminal started from a herdr pane inherits HERDR_PANE_ID but sets its own TERM_PROGRAM: the innermost one wins.
+  if (env.TERM_PROGRAM === 'herdr' || (env.HERDR_PANE_ID && !env.TERM_PROGRAM)) return 'herdr';
   switch (env.TERM_PROGRAM) {
     case 'WezTerm':
       return 'wezterm';
@@ -35,6 +37,9 @@ export function detectTerminal(env: NodeJS.ProcessEnv, platform: NodeJS.Platform
   if (platform === 'win32' && env.WT_SESSION) return 'wt';
   return platform === 'darwin' ? 'terminal' : 'window';
 }
+
+/** The herdr workspace the head runs in. A queued arm's tab is in a workspace of its own, so the carried value wins. */
+export const headHerdrWorkspace = (env: NodeJS.ProcessEnv): string | null => env.OCTOMAXXING_HERDR_WORKSPACE || env.HERDR_WORKSPACE_ID || null;
 
 /** The terminal found for the head (carried in OCTOMAXXING_TERMINAL), else the one this process runs in. */
 export function selectTerminal(t: TerminalEnv): TerminalKind {
@@ -57,10 +62,22 @@ export interface TabRequest {
   dir: string;
   platform: NodeJS.Platform;
   env: NodeJS.ProcessEnv;
+  /** herdr only: where the tab goes. */
+  herdr?: HerdrPlacement;
+}
+
+export interface HerdrPlacement {
+  /** The tab's name: the task id and title, shortened. */
+  label: string;
+  /** An arm with its own worktree gets a workspace of its own, which herdr closes when the arm's tab does. */
+  ownWorkspace: boolean;
+  /** Otherwise a tab in the first of these that still exists (the reviewed arm's, then the head's); none left means a new workspace. */
+  workspaces: string[];
 }
 
 export interface TabPlan {
   files: { path: string; content: string }[];
+  /** What opens the tab. Null for 'test', and for herdr, which takes several steps (see openHerdrTab). */
   command: { cmd: string; args: string[] } | null;
   /** The Warp tab config, deleted when the arm ends. */
   tabConfig: string | null;
@@ -70,6 +87,14 @@ const tomlString = (s: string): string => `"${s.replace(/\\/g, '\\\\').replace(/
 const shQuote = (s: string): string => `'${s.replace(/'/g, `'\\''`)}'`;
 const psQuote = (s: string): string => `'${s.replace(/'/g, "''")}'`;
 const asQuote = (s: string): string => s.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+
+/** "<id> · <title>", cut to about 40 characters so it fits a tab. */
+export function herdrLabel(id: string, title: string, max = 40): string {
+  const head = `${id} · `;
+  const room = Math.max(8, max - head.length);
+  const t = title.replace(/\s+/g, ' ').trim();
+  return head + (t.length > room ? `${t.slice(0, room - 1).trimEnd()}…` : t);
+}
 
 function cmdArg(arg: string): string {
   if (/["%\r\n]/.test(arg)) throw new Error(`Cannot put this in a .cmd file: ${JSON.stringify(arg)}`);
@@ -107,13 +132,17 @@ export function warpTabConfig(name: string, title: string, cwd: string, command:
   ].join('\n');
 }
 
+/** What a shell started in the tab runs: on Windows PowerShell, on macOS and Linux the login shell. `exit` closes the tab once the script is done. */
+function tabShellLine(script: string, win: boolean): string {
+  return win ? `& ${psQuote(script)}; exit` : `sh ${shQuote(script)}; exit`;
+}
+
 export function planTab(kind: TerminalKind, req: TabRequest, home: string = os.homedir()): TabPlan {
   const win = req.platform === 'win32';
   const path = win ? win32 : posix;
   const script = path.join(req.dir, win ? 'tab.cmd' : 'tab.sh');
   const files = [{ path: script, content: tabScript(req.argv, req.platform) }];
-  // Warp on Windows starts PowerShell, on macOS the login shell. `exit` closes the tab once the script is done.
-  const shellLine = win ? `& ${psQuote(script)}; exit` : `sh ${shQuote(script)}; exit`;
+  const shellLine = tabShellLine(script, win);
   switch (kind) {
     case 'warp': {
       const tabConfig = path.join(warpTabConfigDir(req.platform, req.env, home), `${req.name}.toml`);
@@ -147,11 +176,67 @@ export function planTab(kind: TerminalKind, req: TabRequest, home: string = os.h
       return { files, command: { cmd: 'tmux', args: ['new-window', '-n', req.name, '-c', req.cwd, 'sh', script] }, tabConfig: null };
     case 'test':
       return { files: [], command: null, tabConfig: null };
+    case 'herdr':
+      return { files, command: null, tabConfig: null };
   }
 }
 
-/** Write the tab's files and open it. */
-export function openTab(kind: TerminalKind, req: TabRequest): { tabConfig: string | null } {
+type Runner = (cmd: string, args: string[]) => RunResult;
+
+/** Runs herdr (HERDR_BIN_PATH, which herdr sets, else the one on PATH) and reads its JSON answer. A failure, also one herdr reports as {"error":{...}} on stdout, gives its real message. */
+function herdr(runner: Runner, env: NodeJS.ProcessEnv, args: string[]): { result: any } | { error: string } {
+  const r = runner(env.HERDR_BIN_PATH || 'herdr', args);
+  if (r.error) return { error: r.error.message };
+  let json: any = null;
+  try {
+    json = JSON.parse(r.stdout);
+  } catch {
+    // not JSON: the message below comes from the raw output
+  }
+  if (r.status !== 0 || json?.error) return { error: json?.error?.message ?? ((r.stderr || r.stdout).trim() || `exit ${r.status}`) };
+  return { result: json?.result ?? {} };
+}
+
+/**
+ * Open the arm's tab in herdr: a new workspace for an arm with its own worktree, else a tab in the first workspace that
+ * still exists (a queued arm may start after one was closed), else a new workspace. Only the last can fail the arm.
+ * herdr closes the tab when the script's shell exits, and a workspace with its last tab. Returns the workspace id.
+ */
+function openHerdrTab(req: TabRequest, shellLine: string, runner: Runner): string {
+  const place = req.herdr;
+  if (!place) throw new Error('herdr needs a placement');
+  // A success of the wrong shape counts as a failure, so the next workspace (or the clear error) follows.
+  const created = (r: ReturnType<typeof herdr>) => {
+    if (!('result' in r)) return null;
+    const [workspace, tab, pane] = [r.result.tab?.workspace_id, r.result.tab?.tab_id, r.result.root_pane?.pane_id];
+    return [workspace, tab, pane].every((id) => typeof id === 'string') ? { workspace: workspace as string, tab: tab as string, pane: pane as string } : null;
+  };
+  const call = (args: string[]) => herdr(runner, req.env, args);
+  let made: ReturnType<typeof created> = null;
+  if (!place.ownWorkspace) {
+    for (const ws of place.workspaces) {
+      made = created(call(['tab', 'create', '--workspace', ws, '--cwd', req.cwd, '--label', place.label, '--no-focus']));
+      if (made) break;
+    }
+  }
+  if (!made) {
+    const r = call(['workspace', 'create', '--cwd', req.cwd, '--label', place.label, '--no-focus']);
+    if ('error' in r) throw new Error(`Could not open a herdr workspace for the arm: ${r.error}`);
+    made = created(r);
+    if (!made) throw new Error(`Could not open a herdr workspace for the arm: unexpected answer ${JSON.stringify(r.result)}`);
+    // The workspace's first tab is named "1". The name is a nicety: a failure leaves the tab open as it is.
+    call(['tab', 'rename', made.tab, place.label]);
+  }
+  const typed = call(['pane', 'run', made.pane, shellLine]);
+  if ('error' in typed) {
+    call(['tab', 'close', made.tab]);
+    throw new Error(`Could not start the arm in its herdr tab: ${typed.error}`);
+  }
+  return made.workspace;
+}
+
+/** Write the tab's files and open it. A herdr tab also reports its workspace. */
+export function openTab(kind: TerminalKind, req: TabRequest, runner: Runner = run): { tabConfig: string | null; herdrWorkspace: string | null } {
   const plan = planTab(kind, req);
   for (const f of plan.files) {
     mkdirSync(dirname(f.path), { recursive: true });
@@ -162,14 +247,15 @@ export function openTab(kind: TerminalKind, req: TabRequest): { tabConfig: strin
     const child = spawn(cmd, args, { cwd: req.cwd, detached: true, stdio: 'ignore', windowsHide: true, env: req.env });
     child.on('error', () => {});
     child.unref();
-    return { tabConfig: null };
+    return { tabConfig: null, herdrWorkspace: null };
   }
-  const r = run(plan.command!.cmd, plan.command!.args);
+  if (kind === 'herdr') return { tabConfig: null, herdrWorkspace: openHerdrTab(req, tabShellLine(plan.files[0]!.path, req.platform === 'win32'), runner) };
+  const r = runner(plan.command!.cmd, plan.command!.args);
   if (r.error || r.status !== 0) throw new Error(`Could not open a tab for the arm: ${r.error?.message ?? ((r.stderr || r.stdout).trim() || `exit ${r.status}`)}`);
   // `wezterm cli spawn` prints the new pane's id. The title is a nicety: a failure leaves the tab open as it is.
   const pane = r.stdout.trim();
-  if (kind === 'wezterm' && /^\d+$/.test(pane)) run('wezterm', ['cli', 'set-tab-title', '--pane-id', pane, req.title]);
-  return { tabConfig: plan.tabConfig };
+  if (kind === 'wezterm' && /^\d+$/.test(pane)) runner('wezterm', ['cli', 'set-tab-title', '--pane-id', pane, req.title]);
+  return { tabConfig: plan.tabConfig, herdrWorkspace: null };
 }
 
 export function removeTabConfig(path: string | null | undefined): void {

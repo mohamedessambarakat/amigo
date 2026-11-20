@@ -1,13 +1,15 @@
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { describe, it } from 'node:test';
-import { applyHook, armPrompt, followUpPrompt, tabEnvArgs } from '../src/arms.ts';
+import { applyHook, armPrompt, followUpPrompt, herdrPlacement, startArm, tabEnvArgs } from '../src/arms.ts';
+import { loadConfig } from '../src/config.ts';
 import { armSettings, guessTranscriptPath, headSettings, claudeArmNotes, claudeArmTemplate, claudeHeadTemplate, claudeJsonPath, dropTrust, isClaude, mergeTrust, ownSessionEnv, reportReason, sessionAddress, turnMessagedHead } from '../src/claude.ts';
 import { parseVmStat, ramAllows } from '../src/ram.ts';
 import { descendants } from '../src/proc.ts';
 import { beat, saveTask, type Task } from '../src/tasks.ts';
-import { detectTerminal, planTab, selectTerminal, tabScript, warpTabConfig } from '../src/terminal.ts';
+import { detectTerminal, headHerdrWorkspace, herdrLabel, openTab, planTab, selectTerminal, tabScript, warpTabConfig, type HerdrPlacement } from '../src/terminal.ts';
+import type { RunResult } from '../src/proc.ts';
 import { cleanup, cli, makeHome, tmpDir, waitFor } from './helpers.ts';
 
 const req = (platform: NodeJS.Platform) => ({
@@ -27,6 +29,12 @@ describe('terminal tabs', () => {
     assert.equal(detectTerminal({ TERM_PROGRAM: 'WezTerm', WEZTERM_PANE: '3', WT_SESSION: 'x' }, 'win32'), 'wezterm', 'WezTerm started from Windows Terminal is still WezTerm');
     assert.equal(detectTerminal({ TERM_PROGRAM: 'WarpTerminal' }, 'win32'), 'warp');
     assert.equal(detectTerminal({ WT_SESSION: 'x' }, 'win32'), 'wt');
+    assert.equal(detectTerminal({ TERM_PROGRAM: 'herdr', HERDR_PANE_ID: 'w1:p1' }, 'win32'), 'herdr');
+    assert.equal(detectTerminal({ HERDR_PANE_ID: 'w1:p1' }, 'linux'), 'herdr', 'the pane id alone is enough');
+    assert.equal(detectTerminal({ TERM_PROGRAM: 'herdr', TMUX: '/tmp/t' }, 'linux'), 'tmux', 'tmux inside herdr opens tmux windows');
+    assert.equal(detectTerminal({ TERM_PROGRAM: 'herdr', WT_SESSION: 'x' }, 'win32'), 'herdr', 'herdr started from Windows Terminal is still herdr');
+    assert.equal(detectTerminal({ TERM_PROGRAM: 'vscode', HERDR_PANE_ID: 'w1:p1' }, 'win32'), 'window', 'a terminal started from a herdr pane keeps its own identity');
+    assert.equal(detectTerminal({ TERM_PROGRAM: 'WezTerm', HERDR_PANE_ID: 'w1:p1' }, 'linux'), 'wezterm');
     assert.equal(detectTerminal({ TERM_PROGRAM: 'Apple_Terminal' }, 'darwin'), 'terminal');
     assert.equal(detectTerminal({ TERM_PROGRAM: 'vscode' }, 'darwin'), 'terminal', 'macOS falls back to a Terminal.app window');
     assert.equal(detectTerminal({ TERM_PROGRAM: 'vscode' }, 'win32'), 'window', 'Windows falls back to a console window');
@@ -37,6 +45,7 @@ describe('terminal tabs', () => {
     assert.equal(selectTerminal({ env: {}, platform: 'linux', find: found }), 'window');
     assert.throws(() => selectTerminal({ env: {}, platform: 'linux', find: none }), /no terminal emulator found/);
     assert.equal(selectTerminal({ env: { OCTOMAXXING_TERMINAL: 'wt', TERM_PROGRAM: 'WezTerm' }, platform: 'win32', find: none }), 'wt', "an arm's tab keeps the head's terminal");
+    assert.equal(selectTerminal({ env: { OCTOMAXXING_TERMINAL: 'herdr', TERM_PROGRAM: 'herdr' }, platform: 'win32', find: none }), 'herdr');
     assert.equal(selectTerminal({ env: { OCTOMAXXING_TERMINAL: 'nonsense', TERM_PROGRAM: 'WezTerm' }, platform: 'linux', find: none }), 'wezterm', 'a bad carried value falls back to detection');
   });
 
@@ -83,7 +92,7 @@ describe('terminal tabs', () => {
     assert.throws(() => tabScript(['C:\\100%\\node.exe'], 'win32'), /\.cmd file/);
     assert.equal(tabScript(req('darwin').argv, 'darwin'), "#!/bin/sh\n'/usr/bin/node' '/oct/it'\\''s/cli.ts' '_tab' 'x-1'\n");
     const waits = /pause|Read-Host|read -r|Press Enter|any key/i;
-    for (const kind of ['tmux', 'wezterm', 'warp', 'wt', 'terminal', 'window'] as const) {
+    for (const kind of ['tmux', 'herdr', 'wezterm', 'warp', 'wt', 'terminal', 'window'] as const) {
       for (const platform of ['win32', 'darwin', 'linux'] as const) {
         const plan = planTab(kind, req(platform), platform === 'win32' ? 'C:\\Users\\u' : '/Users/u');
         for (const f of plan.files) assert.doesNotMatch(f.content, waits, `${kind}/${platform}: ${f.path}`);
@@ -94,6 +103,20 @@ describe('terminal tabs', () => {
 
   it('carries OCTOMAXXING_* settings into the tab, which does not inherit this environment', () => {
     assert.deepEqual(tabEnvArgs({ OCTOMAXXING_TERMINAL: 'wt', OCTOMAXXING_HOME: '/h', OCTOMAXXING_TASK: 'x', OCTOMAXXING_FREE_MB: '', PATH: '/bin' }), ['--env', 'OCTOMAXXING_TERMINAL=wt']);
+    assert.deepEqual(tabEnvArgs({ OCTOMAXXING_TERMINAL: 'herdr', OCTOMAXXING_HERDR_WORKSPACE: 'w1', HERDR_WORKSPACE_ID: 'w1' }), ['--env', 'OCTOMAXXING_TERMINAL=herdr', '--env', 'OCTOMAXXING_HERDR_WORKSPACE=w1']);
+  });
+
+  it("finds the head's herdr workspace, which a queued arm's own tab must not replace", () => {
+    assert.equal(headHerdrWorkspace({ HERDR_WORKSPACE_ID: 'w1' }), 'w1');
+    assert.equal(headHerdrWorkspace({ HERDR_WORKSPACE_ID: 'w7', OCTOMAXXING_HERDR_WORKSPACE: 'w1' }), 'w1', 'the carried value wins inside an arm tab');
+    assert.equal(headHerdrWorkspace({}), null);
+  });
+
+  it('labels a herdr tab with the id and a title cut to about 40 characters', () => {
+    assert.equal(herdrLabel('7-fix-footer', 'Fix the footer'), '7-fix-footer · Fix the footer');
+    const long = herdrLabel('12-fix-footer', 'Fix the broken footer link on the pricing page and the blog');
+    assert.ok(long.length <= 40 && long.startsWith('12-fix-footer · Fix the broken') && long.endsWith('…'), long);
+    assert.equal(herdrLabel('3', 'two\nlines   here'), '3 · two lines here');
   });
 
   it('opens Windows Terminal, Terminal.app and tmux tabs', () => {
@@ -103,6 +126,162 @@ describe('terminal tabs', () => {
     const term = planTab('terminal', req('darwin'));
     assert.equal(term.command?.args.at(-1), `tell application "Terminal" to do script "cd '/work/my app' && sh '/h/tasks/x-1/tab.sh'; exit"`);
     assert.deepEqual(planTab('tmux', req('linux')).command, { cmd: 'tmux', args: ['new-window', '-n', 'octomaxxing-x-1', '-c', '/work/my app', 'sh', '/h/tasks/x-1/tab.sh'] });
+  });
+});
+
+/** A herdr that answers from a list of fake workspaces, recording every call. */
+function fakeHerdr(workspaces: string[], opts: { failCreate?: string; failRun?: boolean; bin?: string; wrongShape?: string[] } = {}) {
+  const calls: string[][] = [];
+  const reply = (result: unknown): RunResult => ({ status: 0, stdout: JSON.stringify({ id: 'x', result }), stderr: '' });
+  const error = (code: string, message: string): RunResult => ({ status: 1, stdout: JSON.stringify({ error: { code, message }, id: 'x' }), stderr: '' });
+  const made = (ws: string) => ({ tab: { tab_id: `${ws}:t1`, workspace_id: ws }, root_pane: { pane_id: `${ws}:p1`, workspace_id: ws } });
+  const runner = (cmd: string, args: string[]): RunResult => {
+    assert.equal(cmd, opts.bin ?? 'herdr');
+    calls.push(args);
+    switch (`${args[0]} ${args[1]}`) {
+      case 'workspace create':
+        if (opts.failCreate) return error('internal', opts.failCreate);
+        if (opts.wrongShape?.includes('new')) return reply({ workspace: { workspace_id: 'w9' } });
+        workspaces.push('w9');
+        return reply(made('w9'));
+      case 'tab create': {
+        const ws = args[args.indexOf('--workspace') + 1] as string;
+        if (opts.wrongShape?.includes(ws)) return reply({ type: 'ok' });
+        return workspaces.includes(ws) ? reply(made(ws)) : error('workspace_not_found', `workspace ${ws} not found`);
+      }
+      case 'pane run':
+        return opts.failRun ? error('pane_not_found', `pane ${args[2]} not found`) : reply({ type: 'ok' });
+      default:
+        return reply({ type: 'ok' });
+    }
+  };
+  return { calls, runner };
+}
+
+describe('herdr tabs', () => {
+  const label = '7-fix-footer · Fix the footer';
+  /** Opens a herdr tab against a fake herdr that has these workspaces. */
+  const open = (workspaces: string[], herdr: HerdrPlacement, opts?: Parameters<typeof fakeHerdr>[1]) => {
+    const platform = process.platform; // the script is written for real, so it follows this machine's path style
+    const win = platform === 'win32';
+    const dir = tmpDir();
+    const h = fakeHerdr(workspaces, opts);
+    try {
+      const r = openTab('herdr', { ...req(platform), dir, herdr }, h.runner);
+      return { ...h, ...r, line: win ? `& '${join(dir, 'tab.cmd')}'; exit` : `sh '${join(dir, 'tab.sh')}'; exit`, cwd: req(platform).cwd, written: readdirSync(dir) };
+    } finally {
+      cleanup(dir);
+    }
+  };
+
+  it('puts an arm with a worktree in a workspace of its own, renames its tab, and runs the script there', () => {
+    const r = open(['w1'], { label, ownWorkspace: true, workspaces: ['w1'] });
+    assert.deepEqual(r.calls, [
+      ['workspace', 'create', '--cwd', r.cwd, '--label', label, '--no-focus'],
+      ['tab', 'rename', 'w9:t1', label],
+      ['pane', 'run', 'w9:p1', r.line],
+    ]);
+    assert.equal(r.herdrWorkspace, 'w9');
+    assert.deepEqual(r.written, [process.platform === 'win32' ? 'tab.cmd' : 'tab.sh'], 'the tab script is written before the pane runs it');
+  });
+
+  it("puts an arm without a worktree in the head's workspace, without renaming anything", () => {
+    const r = open(['w1'], { label, ownWorkspace: false, workspaces: ['w1'] });
+    assert.deepEqual(r.calls, [
+      ['tab', 'create', '--workspace', 'w1', '--cwd', r.cwd, '--label', label, '--no-focus'],
+      ['pane', 'run', 'w1:p1', r.line],
+    ]);
+    assert.equal(r.herdrWorkspace, 'w1');
+  });
+
+  it("puts a reviewer in the reviewed arm's workspace, else the head's, else a new one", () => {
+    const place = { label, ownWorkspace: false, workspaces: ['w4', 'w1'] };
+    assert.equal(open(['w1', 'w4'], place).herdrWorkspace, 'w4');
+    const closed = open(['w1'], place);
+    assert.equal(closed.herdrWorkspace, 'w1', 'the reviewed arm already closed its workspace');
+    assert.deepEqual(closed.calls.slice(0, 2).map((c) => c.slice(0, 4)), [['tab', 'create', '--workspace', 'w4'], ['tab', 'create', '--workspace', 'w1']]);
+    const none = open([], place);
+    assert.equal(none.herdrWorkspace, 'w9', 'both gone: a new workspace');
+    assert.deepEqual(none.calls.map((c) => c.slice(0, 2).join(' ')), ['tab create', 'tab create', 'workspace create', 'tab rename', 'pane run']);
+  });
+
+  it('treats an answer without workspace, tab and pane ids as a failure, not a tab', () => {
+    const place = { label, ownWorkspace: false, workspaces: ['w4', 'w1'] };
+    const r = open(['w4', 'w1'], place, { wrongShape: ['w4'] });
+    assert.equal(r.herdrWorkspace, 'w1', 'the next workspace is tried');
+    assert.throws(() => open(['w4'], place, { wrongShape: ['w4', 'new'] }), /Could not open a herdr workspace for the arm: unexpected answer/);
+  });
+
+  it('runs the herdr that herdr itself points to (HERDR_BIN_PATH), else the one on PATH', () => {
+    const dir = tmpDir();
+    const bin = 'C:\herdr\herdr.exe';
+    const h = fakeHerdr(['w1'], { bin });
+    try {
+      const r = openTab('herdr', { ...req(process.platform), dir, env: { HERDR_BIN_PATH: bin }, herdr: { label, ownWorkspace: false, workspaces: ['w1'] } }, h.runner);
+      assert.equal(r.herdrWorkspace, 'w1');
+      assert.equal(h.calls.length, 2);
+    } finally {
+      cleanup(dir);
+    }
+  });
+
+  it('places arms: own workspace for a worktree, else beside the reviewed arm, else the head', () => {
+    const { dir, env } = makeHome();
+    try {
+      const home = env.OCTOMAXXING_HOME as string;
+      const now = new Date().toISOString();
+      const task = (id: string, more: Partial<Task>): Task => ({ id, title: 'Fix the footer', project: 'p', agent: 'fake', cwd: dir, repo: null, worktree: null, branch: null, baseSha: null, status: 'running', createdAt: now, updatedAt: now, runs: 1, followUps: [], seen: true, ...more });
+      mkdirSync(join(home, 'tasks', '1-a'), { recursive: true });
+      saveTask(task('1-a', { herdrWorkspace: 'w4' }), env);
+      const bare = { ...env, HERDR_WORKSPACE_ID: undefined }; // this test may itself run inside herdr
+      const head = { ...env, HERDR_WORKSPACE_ID: 'w1' };
+      assert.deepEqual(herdrPlacement(task('2-b', { worktree: '/w/2-b' }), head), { label: '2-b · Fix the footer', ownWorkspace: true, workspaces: ['w1'] });
+      assert.deepEqual(herdrPlacement(task('3-c', {}), head), { label: '3-c · Fix the footer', ownWorkspace: false, workspaces: ['w1'] });
+      assert.deepEqual(herdrPlacement(task('4-d', { reviewOf: '1-a' }), head).workspaces, ['w4', 'w1']);
+      assert.deepEqual(herdrPlacement(task('5-e', { reviewOf: '1-a' }), { ...head, OCTOMAXXING_HERDR_WORKSPACE: 'w4' }).workspaces, ['w4'], 'the same workspace is tried once');
+      assert.deepEqual(herdrPlacement(task('6-f', { reviewOf: '1-a' }), bare).workspaces, ['w4'], 'no head workspace known');
+    } finally {
+      cleanup(dir);
+    }
+  });
+
+  it("starting a herdr arm carries the head's workspace into the tab and records the arm's own", () => {
+    const { dir, env } = makeHome();
+    try {
+      const home = env.OCTOMAXXING_HOME as string;
+      const now = new Date().toISOString();
+      mkdirSync(join(home, 'tasks', '7-g'), { recursive: true });
+      writeFileSync(join(home, 'tasks', '7-g', 'brief.md'), 'Title: g\n');
+      const t: Task = { id: '7-g', title: 'g', project: 'p', agent: 'fake', cwd: dir, repo: null, worktree: null, branch: null, baseSha: null, status: 'queued', createdAt: now, updatedAt: now, runs: 0, followUps: [], seen: true };
+      saveTask(t, env);
+      const bin = 'C:\herdr\herdr.exe';
+      const h = fakeHerdr(['w1'], { bin });
+      const headEnv = { ...env, OCTOMAXXING_TERMINAL: 'herdr', HERDR_WORKSPACE_ID: 'w1', HERDR_BIN_PATH: bin };
+      assert.equal(startArm(t, loadConfig(headEnv), headEnv, h.runner), true);
+      assert.deepEqual(h.calls.map((c) => c.slice(0, 2).join(' ')), ['tab create', 'pane run']);
+      const script = readFileSync(join(home, 'tasks', '7-g', process.platform === 'win32' ? 'tab.cmd' : 'tab.sh'), 'utf8');
+      assert.match(script, /OCTOMAXXING_TERMINAL=herdr/);
+      assert.match(script, /OCTOMAXXING_HERDR_WORKSPACE=w1/);
+      assert.equal((JSON.parse(readFileSync(join(home, 'tasks', '7-g', 'task.json'), 'utf8')) as Task).herdrWorkspace, 'w1');
+    } finally {
+      cleanup(dir);
+    }
+  });
+
+  it('opens a new workspace when no workspace is known', () => {
+    assert.equal(open(['w1'], { label, ownWorkspace: false, workspaces: [] }).herdrWorkspace, 'w9');
+  });
+
+  it("fails with herdr's own message when a new workspace cannot be created, or the script cannot be started", () => {
+    assert.throws(() => open([], { label, ownWorkspace: true, workspaces: [] }, { failCreate: 'no room' }), /Could not open a herdr workspace for the arm: no room/);
+    const dir = tmpDir();
+    const h = fakeHerdr(['w1'], { failRun: true });
+    try {
+      assert.throws(() => openTab('herdr', { ...req(process.platform), dir, herdr: { label, ownWorkspace: false, workspaces: ['w1'] } }, h.runner), /pane w1:p1 not found/);
+      assert.deepEqual(h.calls.at(-1), ['tab', 'close', 'w1:t1'], 'the empty tab it made is closed again');
+    } finally {
+      cleanup(dir);
+    }
   });
 });
 
