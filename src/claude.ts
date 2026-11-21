@@ -105,6 +105,8 @@ export function claudeMemberNotes(id: string, amigoAddress: string | undefined):
 
 interface TranscriptEntry {
   type?: string;
+  /** Set on entries Claude Code writes itself (delivery notices, Stop hook feedback): never a new prompt. */
+  isMeta?: boolean;
   message?: { content?: unknown };
 }
 
@@ -124,7 +126,7 @@ export function turnMessagedAmigo(jsonl: string, amigoAddress: string): boolean 
     const content = e.message?.content;
     const parts: { type?: string; name?: string; input?: { to?: unknown } }[] = Array.isArray(content) ? content : typeof content === 'string' ? [{ type: 'text' }] : [];
     if (e.type === 'assistant' && parts.some((p) => p.type === 'tool_use' && p.name === 'SendMessage' && p.input?.to === amigoAddress)) return true;
-    if (e.type === 'user' && parts.length > 0 && parts.some((p) => p.type !== 'tool_result')) return false;
+    if (e.type === 'user' && !e.isMeta && parts.length > 0 && parts.some((p) => p.type !== 'tool_result')) return false;
   }
   return false;
 }

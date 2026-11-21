@@ -327,6 +327,10 @@ describe('Claude Code squad members', () => {
     assert.equal(turnMessagedAmigo([prompt, send(head), result].join('\n'), head), true);
     assert.equal(turnMessagedAmigo([prompt, send('amigo')].join('\n'), head), false, 'only the spawning session counts');
     assert.equal(turnMessagedAmigo([prompt, send(head), prompt].join('\n'), head), false, 'an earlier turn does not count');
+    // Claude Code writes delivery notices and Stop hook feedback as user entries marked isMeta: they are not a new prompt.
+    const notice = line({ type: 'user', isMeta: true, message: { content: '[Cross-session delivery notice] Your message to another session was held by that session' } });
+    const feedback = line({ type: 'user', isMeta: true, message: { content: 'Stop hook feedback:\nBefore stopping, end your final message with one line: STATUS' } });
+    assert.equal(turnMessagedAmigo([prompt, send(head), result, notice, feedback].join('\n'), head), true, 'a delivery notice does not hide the message already sent');
     assert.ok(reportReason(false, true, head).includes(`\`${head}\``));
     assert.match(reportReason(false, false), /\(1\)[\s\S]*\(2\)/);
     assert.match(reportReason(true, false), /do not send it again/);
