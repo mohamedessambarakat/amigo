@@ -1,8 +1,10 @@
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import { join } from 'node:path';
-import { cliPath, codeRoot } from '../src/paths.ts';
+import { cliPath, codeRoot, policyPath } from '../src/paths.ts';
+import { ensureHome } from '../src/config.ts';
+import { storeApproval } from '../src/policy.ts';
 import { getTask, type Status, type Task } from '../src/tasks.ts';
 
 export const fakeAgent = join(codeRoot, 'test', 'fake-agent.mjs');
@@ -25,16 +27,16 @@ export function cleanup(dir: string): void {
 }
 
 /**
- * The environment a test starts from: this process's, without any OCTOMAXXING_* variable. Arm tabs set
+ * The environment a test starts from: this process's, without any OCTOMAXXING_* or GIT_* variable (a git hook sets GIT_DIR and friends, which would point every test git call at the hooked repo). Arm tabs set
  * OCTOMAXXING_TASK and OCTOMAXXING_HOME, so `npm test` run inside an arm would otherwise act as that arm, on its home.
  * Tests set only what they need on top.
  */
 export function cleanEnv(from: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
-  return Object.fromEntries(Object.entries(from).filter(([k]) => !k.toUpperCase().startsWith('OCTOMAXXING_')));
+  return Object.fromEntries(Object.entries(from).filter(([k]) => !/^(OCTOMAXXING_|GIT_)/.test(k.toUpperCase())));
 }
 
 // Code that falls back to process.env, git and other child processes see the clean environment too.
-for (const k of Object.keys(process.env)) if (k.toUpperCase().startsWith('OCTOMAXXING_')) delete process.env[k];
+for (const k of Object.keys(process.env)) if (/^(OCTOMAXXING_|GIT_)/.test(k.toUpperCase())) delete process.env[k];
 
 /**
  * A home with the fake agent configured. Never the user's real ~/.octomaxxing or ~/.claude.json. Arm tabs open as
@@ -82,4 +84,57 @@ export async function waitFor(id: string, env: NodeJS.ProcessEnv, statuses: Stat
     if (Date.now() > end) throw new Error(`${id} did not reach ${statuses.join('/')} (now ${t?.status})`);
     await new Promise((r) => setTimeout(r, 200));
   }
+}
+
+/** A repo with check scripts committed in it: ok.mjs passes, fail.mjs always fails, needs-follow-up.mjs passes once the fake agent handled a follow-up. */
+export function makeRepoWithChecks(dir: string): string {
+  const repo = makeRepo(dir);
+  writeFileSync(join(repo, 'ok.mjs'), '');
+  writeFileSync(join(repo, 'fail.mjs'), "console.error('ALWAYS-FAILS marker');\nprocess.exit(1);\n");
+  writeFileSync(
+    join(repo, 'needs-follow-up.mjs'),
+    "import { readFileSync } from 'node:fs';\nawait new Promise((r) => setTimeout(r, 1200));\nconst text = readFileSync('arm-output.txt', 'utf8');\nif (!text.includes('follow-up handled')) {\n  console.error('CHECK-FAIL-MARKER: the follow-up was not handled yet');\n  process.exit(1);\n}\n",
+  );
+  git(repo, 'add', '.');
+  git(repo, 'commit', '-q', '-m', 'check scripts');
+  return repo;
+}
+
+/** A bare repo to act as origin for `repo`. */
+export function addOrigin(dir: string, repo: string): string {
+  const bare = join(dir, 'origin.git');
+  mkdirSync(bare, { recursive: true });
+  git(bare, 'init', '-q', '--bare');
+  git(repo, 'remote', 'add', 'origin', bare);
+  git(repo, 'push', '-q', 'origin', 'main'); // the base of every task is on origin's default branch
+  return bare;
+}
+
+/** The environment for a fake `gh`: calls are logged to the returned file, `gh issue view` answers with `issue`. */
+export function fakeGhEnv(dir: string, issue?: object): { env: NodeJS.ProcessEnv; log: string } {
+  const script = join(codeRoot, 'test', 'fake-gh.mjs');
+  const win = process.platform === 'win32';
+  const shim = join(dir, win ? 'gh.cmd' : 'gh');
+  writeFileSync(shim, win ? `@echo off\r\n"${process.execPath}" "${script}" %*\r\n` : `#!/bin/sh\nexec "${process.execPath}" "${script}" "$@"\n`, { mode: 0o755 });
+  const log = join(dir, 'gh.log');
+  return { env: { OCTOMAXXING_GH: shim, FAKE_GH_LOG: log, ...(issue ? { FAKE_GH_ISSUE: JSON.stringify(issue) } : {}) }, log };
+}
+
+/** Every call the fake gh logged. */
+export function ghCalls(log: string): { cwd: string; args: string[]; body?: string }[] {
+  return existsSync(log)
+    ? readFileSync(log, 'utf8')
+        .split('\n')
+        .filter(Boolean)
+        .map((l) => JSON.parse(l))
+    : [];
+}
+
+/** Approve a policy that allows pull requests (what the user does by hand with approve-policy). */
+export function allowPrs(env: NodeJS.ProcessEnv, pr: 'after-human-yes' | 'also-self-approved' = 'after-human-yes'): void {
+  ensureHome(env);
+  const p = JSON.parse(readFileSync(policyPath(env), 'utf8'));
+  p.pr = pr;
+  writeFileSync(policyPath(env), JSON.stringify(p, null, 2));
+  storeApproval(env);
 }

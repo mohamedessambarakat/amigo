@@ -85,9 +85,9 @@ export function headSettings(): Record<string, unknown> {
  * Hook commands run in whatever shell Claude Code uses, so they start with a bare `node` (on PATH wherever octomaxxing
  * runs) and a quoted script path with forward slashes, which bash, cmd.exe and PowerShell all read the same way.
  */
-export function armSettings(): Record<string, unknown> {
-  const hook = (name: string) => [{ hooks: [{ type: 'command', command: `node "${cliPath.replace(/\\/g, '/')}" _hook ${name}`, timeout: 15 }] }];
-  return { crossSessionInbound: 'accept', hooks: { UserPromptSubmit: hook('prompt'), Stop: hook('stop'), StopFailure: hook('stop-failure') } };
+export function armSettings(stopTimeoutSeconds = 15): Record<string, unknown> {
+  const hook = (name: string, timeout = 15) => [{ hooks: [{ type: 'command', command: `node "${cliPath.replace(/\\/g, '/')}" _hook ${name}`, timeout }] }];
+  return { crossSessionInbound: 'accept', hooks: { UserPromptSubmit: hook('prompt'), Stop: hook('stop', Math.max(15, stopTimeoutSeconds)), StopFailure: hook('stop-failure') } };
 }
 
 /** The arm part only Claude arms get. */

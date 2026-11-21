@@ -8,13 +8,25 @@ export interface RunResult {
   error?: Error;
 }
 
-export function run(cmd: string, args: string[]): RunResult {
-  const r = spawnSync(cmd, args, { encoding: 'utf8', windowsHide: true });
+export interface RunOptions {
+  cwd?: string;
+  /** Added to this process's environment. */
+  env?: NodeJS.ProcessEnv;
+}
+
+export function run(cmd: string, args: string[], opts: RunOptions = {}): RunResult {
+  const r = spawnSync(cmd, args, {
+    encoding: 'utf8',
+    windowsHide: true,
+    maxBuffer: 64 * 1024 * 1024,
+    ...(opts.cwd ? { cwd: opts.cwd } : {}),
+    ...(opts.env ? { env: { ...process.env, ...opts.env } } : {}),
+  });
   return { status: r.status, stdout: r.stdout ?? '', stderr: r.stderr ?? '', error: r.error };
 }
 
-export function runOrThrow(cmd: string, args: string[]): string {
-  const r = run(cmd, args);
+export function runOrThrow(cmd: string, args: string[], opts: RunOptions = {}): string {
+  const r = run(cmd, args, opts);
   if (r.error) throw new Error(`${cmd} failed to start: ${r.error.message}`);
   if (r.status !== 0) throw new Error(`${cmd} ${args.join(' ')} exited ${r.status}: ${(r.stderr || r.stdout).trim()}`);
   return r.stdout;

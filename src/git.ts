@@ -1,7 +1,125 @@
-import { existsSync, rmSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
 import { sleepSync } from './fsx.ts';
-import { run, runOrThrow } from './proc.ts';
+import { home } from './paths.ts';
+import { run, runOrThrow, type RunOptions, type RunResult } from './proc.ts';
+
+const samePath = (a: string, b: string): boolean => {
+  const n = (p: string) => {
+    let r = resolve(p);
+    try {
+      r = realpathSync(r);
+    } catch {
+      // a path that does not exist is compared as written
+    }
+    r = r.replaceAll('\\', '/');
+    return process.platform === 'win32' ? r.toLowerCase() : r;
+  };
+  return n(a) === n(b);
+};
+
+/**
+ * An arm controls its worktree, including the `.git` file in it. Pointing that file at a git dir the arm made lets that
+ * dir's config (core.fsmonitor, filter.*.clean, diff.external ...) run a program the moment the head runs git there,
+ * outside the arm's sandbox. So before octomaxxing runs git in a worktree, `.git` must be a regular file naming a git dir
+ * that `git worktree add` made under the repo's own .git/worktrees, whose commondir leads back to the repo and which points
+ * back at this worktree. Throws otherwise. A "worktree" that is the repo itself (a project without worktrees) is trusted.
+ */
+export function assertWorktreeIntact(repo: string, worktree: string, adminDir?: string): void {
+  if (samePath(repo, worktree)) return;
+  const bad = (why: string) => new Error(`worktree .git was changed; refusing to run git in it (${why}): ${worktree}`);
+  const dotGit = join(worktree, '.git');
+  let isFile = false;
+  try {
+    isFile = lstatSync(dotGit).isFile();
+  } catch {
+    throw bad('.git is missing');
+  }
+  if (!isFile) throw bad('.git is not a regular file');
+  const named = /^gitdir: (.+)$/.exec(readFileSync(dotGit, 'utf8').trim());
+  if (!named) throw bad('.git does not name a git dir');
+  const gitdir = resolve(worktree, named[1] as string);
+  const common = resolve(repo, runOrThrow('git', ['-C', repo, 'rev-parse', '--git-common-dir']).trim());
+  if (!samePath(dirname(gitdir), join(common, 'worktrees'))) throw bad(`it points to ${gitdir}, not a worktree git dir of ${repo}`);
+  if (adminDir && !samePath(gitdir, adminDir)) throw bad(`it points to ${gitdir}, not to the git dir recorded for this worktree`);
+  const read = (name: string): string | null => {
+    try {
+      return readFileSync(join(gitdir, name), 'utf8').trim();
+    } catch {
+      return null;
+    }
+  };
+  const commondir = read('commondir');
+  if (commondir === null || !samePath(resolve(gitdir, commondir), common)) throw bad("its git dir does not belong to the task's repo");
+  const back = read('gitdir');
+  if (back === null || !samePath(back, dotGit)) throw bad('its git dir belongs to another worktree');
+}
+
+/** Options for every git call octomaxxing makes inside an arm's worktree: the file system monitor (a program named in config) stays off. */
+const WORKTREE_GIT = ['-c', 'core.fsmonitor=false'];
+
+/**
+ * The git dir `git worktree add` made for a worktree, found from the repo's own records (each <common>/worktrees/<name>/gitdir
+ * names the .git of its worktree). Never reads <worktree>/.git, which the arm controls.
+ */
+export function findAdminDir(repo: string, worktree: string): string {
+  const common = resolve(repo, runOrThrow('git', ['-C', repo, 'rev-parse', '--git-common-dir']).trim());
+  const root = join(common, 'worktrees');
+  let names: string[] = [];
+  try {
+    names = readdirSync(root);
+  } catch {
+    // no worktrees at all: reported below
+  }
+  for (const name of names) {
+    try {
+      if (samePath(readFileSync(join(root, name, 'gitdir'), 'utf8').trim(), join(worktree, '.git'))) return join(root, name);
+    } catch {
+      // not a worktree record
+    }
+  }
+  throw new Error(`${repo} has no git worktree record for ${worktree}`);
+}
+
+/**
+ * The arguments for one git call in an arm's worktree. The git dir is named outright (octomaxxing's own record, else the
+ * repo's), so git never reads <worktree>/.git: swapping that file between the guard and git cannot plant a config or filter.
+ * A "worktree" that is the repo itself is trusted and found the usual way.
+ */
+export function worktreeGitArgs(repo: string, worktree: string, args: string[], adminDir?: string): string[] {
+  if (samePath(repo, worktree)) return ['-C', worktree, ...WORKTREE_GIT, ...args];
+  return ['-C', worktree, `--git-dir=${adminDir ?? findAdminDir(repo, worktree)}`, `--work-tree=${worktree}`, ...WORKTREE_GIT, ...args];
+}
+
+export interface WorktreeOptions extends RunOptions {
+  /** The task's recorded git dir; found from the repo when missing (tasks made before it was recorded). */
+  gitDir?: string;
+}
+
+/** Run git in an arm's worktree, after assertWorktreeIntact (a tamper alarm). The one door for every git call there. */
+export function worktreeRun(repo: string, worktree: string, args: string[], opts: WorktreeOptions = {}): RunResult {
+  const { gitDir, ...runOpts } = opts;
+  assertWorktreeIntact(repo, worktree, gitDir);
+  return run('git', worktreeGitArgs(repo, worktree, args, gitDir), runOpts);
+}
+
+/** Like worktreeRun, but throws when git fails and returns stdout. */
+export function worktreeGit(repo: string, worktree: string, args: string[], opts: WorktreeOptions = {}): string {
+  const { gitDir, ...runOpts } = opts;
+  assertWorktreeIntact(repo, worktree, gitDir);
+  return runOrThrow('git', worktreeGitArgs(repo, worktree, args, gitDir), runOpts);
+}
+
+/**
+ * git options that switch every hook off for octomaxxing's own commit and push. The hooks folder is arm-controlled
+ * (husky: core.hooksPath=.husky), so core.hooksPath points at an empty folder octomaxxing owns; a -c option beats any
+ * repo or worktree config. Forward slashes, so the value survives Windows paths.
+ */
+export function noHooks(env: NodeJS.ProcessEnv = process.env): string[] {
+  const dir = join(home(env), 'no-hooks');
+  mkdirSync(dir, { recursive: true });
+  return ['-c', `core.hooksPath=${dir.replaceAll('\\', '/')}`];
+}
 
 export const branchName = (id: string): string => `octomaxxing/${id}`;
 
@@ -10,17 +128,17 @@ export function isGitRepo(path: string): boolean {
   return r.status === 0 && r.stdout.trim() === 'true';
 }
 
-/** New worktree on a new branch, starting from the repo's current HEAD. Returns the commit it starts from. */
-export function createWorktree(repo: string, worktree: string, branch: string): string {
-  const head = run('git', ['-C', repo, 'rev-parse', '--verify', 'HEAD']);
-  if (head.status !== 0) throw new Error(`${repo} has no commits yet, so octomaxxing cannot create a worktree for it`);
-  runOrThrow('git', ['-C', repo, 'worktree', 'add', '-q', '-b', branch, worktree, 'HEAD']);
-  return head.stdout.trim();
+/** New worktree on a new branch, starting from the repo's current HEAD, or from `from`. Returns the commit it starts from and its git dir (to be recorded on the task). */
+export function createWorktree(repo: string, worktree: string, branch: string, from = 'HEAD'): { baseSha: string; gitDir: string } {
+  const start = run('git', ['-C', repo, 'rev-parse', '--verify', `${from}^{commit}`]);
+  if (start.status !== 0) throw new Error(`${repo} has no commits yet, so octomaxxing cannot create a worktree for it`);
+  runOrThrow('git', ['-C', repo, 'worktree', 'add', '-q', '-b', branch, worktree, start.stdout.trim()]);
+  return { baseSha: start.stdout.trim(), gitDir: findAdminDir(repo, worktree) };
 }
 
 /** Changed, new and deleted files (git status --porcelain), every untracked file listed. */
-export function changedFiles(cwd: string): string[] {
-  return runOrThrow('git', ['-C', cwd, 'status', '--porcelain', '--untracked-files=all'])
+export function changedFiles(repo: string, cwd: string, gitDir?: string): string[] {
+  return worktreeGit(repo, cwd, ['status', '--porcelain', '--untracked-files=all'], { gitDir })
     .split(/\r?\n/)
     .filter((l) => l.trim() !== '');
 }
@@ -38,33 +156,43 @@ export function looksSecret(path: string): boolean {
 /**
  * Commit everything in the worktree to `branch`. Returns the short sha, or null when there was nothing to commit.
  * Refuses when the worktree is no longer on that branch (the agent switched or detached it), so nothing lands where nobody looks,
- * and when a changed file looks like it holds secrets (looksSecret).
+ * and when a changed file looks like it holds secrets (looksSecret). Hooks never run (see noHooks). With `expectedTree`
+ * (the git tree the gates checked), only exactly that work is committed: a different tree, before or after the commit, is
+ * rolled back and refused, and so is a clean worktree whose HEAD is not that tree.
  */
-export function commitAll(worktree: string, branch: string, message: string): string | null {
-  const head = run('git', ['-C', worktree, 'symbolic-ref', '-q', 'HEAD']).stdout.trim();
+export function commitAll(repo: string, worktree: string, branch: string, message: string, expectedTree?: string, env: NodeJS.ProcessEnv = process.env, gitDir?: string): string | null {
+  const wRun = (args: string[]) => worktreeRun(repo, worktree, args, { gitDir });
+  const wGit = (args: string[]) => worktreeGit(repo, worktree, args, { gitDir });
+  const head = wRun(['symbolic-ref', '-q', 'HEAD']).stdout.trim();
   if (head !== `refs/heads/${branch}`) throw new Error(`The worktree is on ${head || 'a detached HEAD'}, not ${branch}. Check it by hand: ${worktree}`);
-  const changes = changedFiles(worktree);
-  if (changes.length === 0) return null;
+  const changed = (what: string) => new Error(`The work in ${worktree} changed after it was checked (${what}), so nothing was committed. Check it again, then close again.`);
+  const changes = changedFiles(repo, worktree, gitDir);
+  if (changes.length === 0) {
+    if (expectedTree && wGit(['rev-parse', 'HEAD^{tree}']).trim() !== expectedTree) throw changed('the branch does not hold the checked work');
+    return null;
+  }
   const secrets = changes.map(porcelainPath).filter(looksSecret);
   if (secrets.length) throw new Error(`Refusing to commit files that may hold secrets: ${secrets.join(', ')}. Delete them or add them to .gitignore, then close again.`);
-  runOrThrow('git', ['-C', worktree, 'add', '-A']);
+  wGit(['add', '-A']);
+  if (expectedTree && wGit(['write-tree']).trim() !== expectedTree) throw changed('before the commit');
+  const before = wRun(['rev-parse', '-q', '--verify', 'HEAD']).stdout.trim();
   // A machine without a full git identity cannot commit: fill in only the missing part.
-  const has = (key: string) => run('git', ['-C', worktree, 'config', key]).stdout.trim() !== '';
+  const has = (key: string) => wRun(['config', key]).stdout.trim() !== '';
   const identity = [...(has('user.name') ? [] : ['-c', 'user.name=octomaxxing']), ...(has('user.email') ? [] : ['-c', 'user.email=octomaxxing@localhost'])];
-  runOrThrow('git', ['-C', worktree, ...identity, 'commit', '-q', '-m', message]);
-  return runOrThrow('git', ['-C', worktree, 'rev-parse', '--short', 'HEAD']).trim();
+  wGit([...noHooks(env), ...identity, 'commit', '-q', '-m', message]);
+  if (expectedTree && wGit(['rev-parse', 'HEAD^{tree}']).trim() !== expectedTree) {
+    if (before) wGit(['reset', '-q', '--soft', before]);
+    throw changed('by another process');
+  }
+  return wGit(['rev-parse', '--short', 'HEAD']).trim();
 }
 
-export function committedFiles(worktree: string, sha: string): string[] {
-  return runOrThrow('git', ['-C', worktree, 'show', '--name-only', '--format=', sha])
+/** The files of a commit, read from the repo (commits are shared), never by running git in an arm's worktree. */
+export function committedFiles(repo: string, sha: string): string[] {
+  return runOrThrow('git', ['-C', repo, 'show', '--name-only', '--format=', sha])
     .split(/\r?\n/)
     .filter((l) => l.trim() !== '');
 }
-
-const samePath = (a: string, b: string): boolean => {
-  const n = (p: string) => resolve(p).replaceAll('\\', '/').toLowerCase();
-  return n(a) === n(b);
-};
 
 function listWorktrees(repo: string): string[] {
   return runOrThrow('git', ['-C', repo, 'worktree', 'list', '--porcelain'])
@@ -76,6 +204,15 @@ function listWorktrees(repo: string): string[] {
 /** Remove a worktree (the branch stays). Retries because a just-stopped process can still hold files on Windows. */
 export function removeWorktree(repo: string, worktree: string): void {
   if (!existsSync(worktree)) {
+    run('git', ['-C', repo, 'worktree', 'prune']);
+    return;
+  }
+  try {
+    assertWorktreeIntact(repo, worktree);
+  } catch {
+    // A tampered .git makes `git worktree remove` fail its own validation: delete the folder and let the repo forget it.
+    // Nothing runs git inside the worktree (rmSync does not follow links).
+    rmSync(worktree, { recursive: true, force: true, maxRetries: 10, retryDelay: 300 });
     run('git', ['-C', repo, 'worktree', 'prune']);
     return;
   }
@@ -101,4 +238,46 @@ export function deleteBranchIfUnused(repo: string, branch: string, baseSha: stri
   const tip = run('git', ['-C', repo, 'rev-parse', '--verify', branch]);
   if (tip.status !== 0 || tip.stdout.trim() !== baseSha) return false;
   return run('git', ['-C', repo, 'branch', '-D', branch]).status === 0;
+}
+
+/** The full sha a branch points at, or null when it does not exist. */
+export function branchSha(repo: string, branch: string): string | null {
+  const r = run('git', ['-C', repo, 'rev-parse', '--verify', '-q', `refs/heads/${branch}`]);
+  return r.status === 0 ? r.stdout.trim() : null;
+}
+
+/** How many commits a branch has on top of the commit it started from. */
+export function commitsAhead(repo: string, branch: string, baseSha: string): number {
+  return Number(runOrThrow('git', ['-C', repo, 'rev-list', '--count', `${baseSha}..refs/heads/${branch}`]).trim());
+}
+
+/**
+ * Is this commit already on origin's default branch, as far as the last fetch knows? False too when the default branch
+ * cannot be told (origin/HEAD, else origin/main or origin/master).
+ */
+export function onOriginDefault(repo: string, sha: string): boolean {
+  const exists = (ref: string) => run('git', ['-C', repo, 'rev-parse', '-q', '--verify', ref]).status === 0;
+  const head = run('git', ['-C', repo, 'symbolic-ref', '-q', 'refs/remotes/origin/HEAD']).stdout.trim();
+  const ref = [head, 'refs/remotes/origin/main', 'refs/remotes/origin/master'].find((r) => r && exists(r));
+  return Boolean(ref) && run('git', ['-C', repo, 'merge-base', '--is-ancestor', sha, ref as string]).status === 0;
+}
+
+export function hasRemote(repo: string, remote: string): boolean {
+  return run('git', ['-C', repo, 'remote', 'get-url', remote]).status === 0;
+}
+
+/** True when a branch has an upstream or a remote-tracking branch of the same name: it may be somewhere other people see it. */
+export function branchPushed(repo: string, branch: string): boolean {
+  if (run('git', ['-C', repo, 'rev-parse', '--abbrev-ref', '-q', `${branch}@{upstream}`]).status === 0) return true;
+  return runOrThrow('git', ['-C', repo, 'branch', '-r', '--list', `*/${branch}`]).trim() !== '';
+}
+
+export function deleteBranch(repo: string, branch: string): void {
+  runOrThrow('git', ['-C', repo, 'branch', '-D', branch]);
+}
+
+/** Push one branch (never any other) to origin and make it the branch's upstream. */
+export function pushBranch(repo: string, branch: string, env: NodeJS.ProcessEnv = process.env): void {
+  if (!branch.startsWith('octomaxxing/')) throw new Error(`Refusing to push ${branch}: octomaxxing pushes only octomaxxing/<id> branches`);
+  runOrThrow('git', ['-C', repo, ...noHooks(env), 'push', '--set-upstream', 'origin', `refs/heads/${branch}:refs/heads/${branch}`]);
 }

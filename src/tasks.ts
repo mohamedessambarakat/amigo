@@ -6,15 +6,45 @@ import { lockPath, taskDir, tasksDir } from './paths.ts';
 /**
  * queued   waiting for a free arm
  * running  the agent is working
+ * verifying  the agent said done and octomaxxing is running the project's checks in its folder
  * done / blocked / question   the agent finished its turn (Claude) or run and said so (see parseStatus)
  * failed   the agent exited with an error, never started, or its tab closed mid-turn
  * closing  close is committing or cleaning up; nothing may start it again
  * closed   the head closed it (committed or discarded)
  */
-export type Status = 'queued' | 'running' | 'done' | 'blocked' | 'question' | 'failed' | 'closing' | 'closed';
+export type Status = 'queued' | 'running' | 'verifying' | 'done' | 'blocked' | 'question' | 'failed' | 'closing' | 'closed';
 
 /** Statuses where the arm is waiting for the head. */
 export const FINISHED: readonly Status[] = ['done', 'blocked', 'question', 'failed'];
+
+/** One verification command run in an arm's folder. `output` is its last lines. */
+export interface CheckResult {
+  command: string;
+  ok: boolean;
+  exitCode: number | null;
+  timedOut: boolean;
+  seconds: number;
+  output: string;
+}
+
+/** How the project's checks went when the arm last said done. 'unverified': the project has no checks. */
+export interface Verification {
+  state: 'passed' | 'failed' | 'unverified';
+  results: CheckResult[];
+  /** The folder's git tree when the checks passed (see snapshot): proof they ran on exactly this work. */
+  tree?: string;
+  at: string;
+}
+
+/** A reviewer's verdict on a task's work, and the work it saw. */
+export interface ReviewVerdict {
+  by: string;
+  verdict: 'PASS' | 'FAIL';
+  tree?: string;
+  at: string;
+  /** Why this verdict does not count (the work changed while the reviewer read it, or the same work already failed). */
+  void?: string;
+}
 
 export interface Task {
   id: string;
@@ -28,10 +58,28 @@ export interface Task {
   worktree: string | null;
   branch: string | null;
   baseSha: string | null;
+  /** The worktree's git dir under the repo (recorded when the worktree is made): git runs against it, never against <worktree>/.git. Missing on older tasks. */
+  gitDir?: string;
   /** The messaging address (`uds:<socket>`) of the Claude session that spawned this arm; it gets the arm's results. */
   headAddress?: string;
-  /** Set for a reviewer: the task whose folder it reads. */
+  /** Set for a reviewer: the task whose folder it reads, and that task's git tree when the reviewer was spawned. */
   reviewOf?: string;
+  reviewedTree?: string;
+  /** Starts only once this task (same project) is closed with a commit, from that commit. */
+  after?: string;
+  /** The GitHub issue this task came from (spawn --issue). */
+  issue?: { number: number; url: string; title: string };
+  /** Set when the task is closed with --commit: the commit its branch holds. */
+  committed?: string;
+  /** The draft pull request opened by close --pr. */
+  pr?: string;
+  verification?: Verification;
+  /** Automatic fix-it follow-ups sent for failed checks since the head last wrote to the arm. */
+  checkRetries?: number;
+  /** The latest reviewer verdict on this task's work. */
+  review?: ReviewVerdict;
+  /** Trees of this task's work that a reviewer failed: a later PASS on the same tree does not count. */
+  reviewFailedTrees?: string[];
   status: Status;
   createdAt: string;
   updatedAt: string;

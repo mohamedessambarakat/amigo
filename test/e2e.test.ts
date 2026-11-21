@@ -36,7 +36,7 @@ describe('end to end with a fake agent', () => {
       assert.match(cli(env, ['status', id]).out, /arm-output\.txt/);
 
       const review = idFrom(cli(env, ['spawn', '--review', id], 'Title: Review it\ncheck the file').out);
-      assert.equal((await waitFor(review, env, ['done', 'failed'])).summary, 'looks good');
+      assert.equal((await waitFor(review, env, ['done', 'failed'])).summary, 'PASS - looks good');
       const blocked = cli(env, ['close', id, '--commit']);
       assert.equal(blocked.code, 1);
       assert.match(blocked.err, /Close the review first/);

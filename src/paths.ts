@@ -17,3 +17,10 @@ export const tasksDir = (env: NodeJS.ProcessEnv = process.env): string => join(h
 export const taskDir = (id: string, env: NodeJS.ProcessEnv = process.env): string => join(tasksDir(env), id);
 export const worktreesDir = (env: NodeJS.ProcessEnv = process.env): string => join(home(env), 'worktrees');
 export const lockPath = (name: string, env: NodeJS.ProcessEnv = process.env): string => join(home(env), 'locks', `${name}.lock`);
+export const policyPath = (env: NodeJS.ProcessEnv = process.env): string => join(home(env), 'policy.json');
+/** The sha256 of the policy the user approved (see policy.ts). */
+export const policyApprovalPath = (env: NodeJS.ProcessEnv = process.env): string => join(home(env), 'policy.approved.json');
+/** The sha256 of each project's checks and risky globs as the user last confirmed them (see gates.ts). */
+export const gatesConfirmedPath = (env: NodeJS.ProcessEnv = process.env): string => join(home(env), 'gates.confirmed.json');
+/** One JSON line per self-approved close, PR and undo. */
+export const approvalsPath = (env: NodeJS.ProcessEnv = process.env): string => join(home(env), 'approvals.jsonl');

@@ -378,7 +378,7 @@ describe('Claude Code arms', () => {
     }
   });
 
-  it('guesses the transcript path the way Claude Code names its project folders, and hooks record the real one', () => {
+  it('guesses the transcript path the way Claude Code names its project folders, and hooks record the real one', async () => {
     assert.equal(guessTranscriptPath('C:\\Users\\me\\my app', 'S', { CLAUDE_CONFIG_DIR: join('/c', 'cfg') }), join('/c', 'cfg', 'projects', 'C--Users-me-my-app', 'S.jsonl'));
     const { dir, env } = makeHome();
     try {
@@ -386,14 +386,14 @@ describe('Claude Code arms', () => {
       mkdirSync(join(home, 'tasks', 'x-1'), { recursive: true });
       const now = new Date().toISOString();
       saveTask({ id: 'x-1', title: 't', project: 'p', agent: 'claude', cwd: dir, repo: null, worktree: null, branch: null, baseSha: null, status: 'running', createdAt: now, updatedAt: now, runs: 1, followUps: [], seen: true }, env);
-      applyHook('prompt', { transcript_path: '/t/S.jsonl' }, 'x-1', env);
+      await applyHook('prompt', { transcript_path: '/t/S.jsonl' }, 'x-1', env);
       assert.equal((JSON.parse(readFileSync(join(home, 'tasks', 'x-1', 'task.json'), 'utf8')) as Task).transcriptPath, '/t/S.jsonl');
     } finally {
       cleanup(dir);
     }
   });
 
-  it('hooks track turns: STATUS is recorded, a turn without report is sent back once', () => {
+  it('hooks track turns: STATUS is recorded, a turn without report is sent back once', async () => {
     const { dir, env } = makeHome();
     try {
       const home = env.OCTOMAXXING_HOME as string;
@@ -402,36 +402,36 @@ describe('Claude Code arms', () => {
       saveTask({ id: 'x-1', title: 't', project: 'p', agent: 'claude', cwd: dir, repo: null, worktree: null, branch: null, baseSha: null, status: 'running', createdAt: now, updatedAt: now, runs: 1, followUps: [], seen: true }, env);
       const task = () => JSON.parse(readFileSync(join(home, 'tasks', 'x-1', 'task.json'), 'utf8')) as Task;
 
-      const blocked = JSON.parse(applyHook('stop', { last_assistant_message: 'all done' }, 'x-1', env));
+      const blocked = JSON.parse(await applyHook('stop', { last_assistant_message: 'all done' }, 'x-1', env));
       assert.equal(blocked.decision, 'block');
       assert.match(blocked.reason, /STATUS/);
       assert.equal(task().status, 'running');
 
-      assert.equal(applyHook('stop', { last_assistant_message: 'all done', stop_hook_active: true }, 'x-1', env), '');
+      assert.equal(await applyHook('stop', { last_assistant_message: 'all done', stop_hook_active: true }, 'x-1', env), '');
       assert.deepEqual([task().status, task().summary, task().seen], ['done', 'all done', false]);
 
-      applyHook('prompt', {}, 'x-1', env);
+      await applyHook('prompt', {}, 'x-1', env);
       assert.equal(task().status, 'running');
 
       // Spawned by a Claude head, the turn must also have messaged it.
       saveTask({ ...task(), headAddress: 'uds:/tmp/head.sock' }, env);
       const transcript = join(dir, 't.jsonl');
       writeFileSync(transcript, JSON.stringify({ type: 'user', message: { content: 'go' } }));
-      const noMessage = JSON.parse(applyHook('stop', { last_assistant_message: 'STATUS: question - which color?', transcript_path: transcript }, 'x-1', env));
+      const noMessage = JSON.parse(await applyHook('stop', { last_assistant_message: 'STATUS: question - which color?', transcript_path: transcript }, 'x-1', env));
       assert.match(noMessage.reason, /SendMessage/);
       writeFileSync(transcript, [JSON.stringify({ type: 'user', message: { content: 'go' } }), JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', name: 'SendMessage', input: { to: 'uds:/tmp/head.sock' } }] } })].join('\n'));
-      assert.equal(applyHook('stop', { last_assistant_message: 'STATUS: question - which color?', transcript_path: transcript }, 'x-1', env), '');
+      assert.equal(await applyHook('stop', { last_assistant_message: 'STATUS: question - which color?', transcript_path: transcript }, 'x-1', env), '');
       assert.deepEqual([task().status, task().summary], ['question', 'which color?']);
       assert.match(readFileSync(join(home, 'tasks', 'x-1', 'output.log'), 'utf8'), /=== turn ended .*\n.*which color\?/);
 
       // A turn that dies on an API error must not leave the task running.
       saveTask({ ...task(), status: 'running' }, env);
-      applyHook('stop-failure', { error: 'rate_limit' }, 'x-1', env);
+      await applyHook('stop-failure', { error: 'rate_limit' }, 'x-1', env);
       assert.deepEqual([task().status, task().seen], ['blocked', false]);
       assert.match(task().summary ?? '', /rate_limit/);
 
       saveTask({ ...task(), status: 'closing' }, env);
-      applyHook('stop', { last_assistant_message: 'STATUS: done - late', stop_hook_active: true }, 'x-1', env);
+      await applyHook('stop', { last_assistant_message: 'STATUS: done - late', stop_hook_active: true }, 'x-1', env);
       assert.equal(task().status, 'closing', 'close owns the status');
     } finally {
       cleanup(dir);
