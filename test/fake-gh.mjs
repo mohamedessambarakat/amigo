@@ -1,4 +1,4 @@
-// A stand-in for the GitHub CLI, used by the tests. It logs every call (FAKE_GH_LOG) and answers the two calls octomaxxing makes.
+// A stand-in for the GitHub CLI, used by the tests. It logs every call (FAKE_GH_LOG) and answers the calls amigo makes.
 import { appendFileSync, readFileSync } from 'node:fs';
 
 const args = process.argv.slice(2);
@@ -9,6 +9,14 @@ if (process.env.FAKE_GH_LOG) appendFileSync(process.env.FAKE_GH_LOG, `${JSON.str
 
 if (args[0] === 'issue' && args[1] === 'view') {
   process.stdout.write(process.env.FAKE_GH_ISSUE ?? '{}');
+  process.exit(0);
+}
+if (args[0] === 'pr' && args[1] === 'list') {
+  console.log('FAKE-PR-LIST #1 add dark mode (open)');
+  process.exit(0);
+}
+if (args[0] === 'run' && args[1] === 'list') {
+  console.log('FAKE-RUN-LIST ci passed on main');
   process.exit(0);
 }
 if (args[0] === 'pr' && args[1] === 'create') {

@@ -5,22 +5,22 @@ import { sleepSync, withLock, writeJsonAtomic } from './fsx.ts';
 import { cliPath, lockPath } from './paths.ts';
 
 /**
- * Claude Code arms run as interactive sessions in their tab: named octomaxxing-<id>, with hooks that record each turn's
- * STATUS line, and able to message the head and be messaged by it. The head is reached by the messaging address of the
- * session that spawned the arm, so it can be named anything; HEAD_NAME is only the label `octomaxxing head` gives it.
+ * Claude Code squad members run as interactive sessions in their tab: named amigo-<id>, with hooks that record each turn's
+ * STATUS line, and able to message amigo and be messaged by it. Amigo is reached by the messaging address of the
+ * session that spawned the squad member, so it can be named anything; AMIGO_NAME is only the label `amigo` gives it.
  */
-export const HEAD_NAME = 'octomaxxing-head';
+export const AMIGO_NAME = 'amigo';
 
-/** The messaging address of the Claude session this command runs in (the head, when it runs `octomaxxing spawn`). */
+/** The messaging address of the Claude session this command runs in (amigo, when it runs `amigo spawn`). */
 export function sessionAddress(env: NodeJS.ProcessEnv): string | undefined {
   const socket = env.CLAUDE_CODE_MESSAGING_SOCKET?.trim();
   return socket ? `uds:${socket}` : undefined;
 }
-export const armName = (id: string): string => `octomaxxing-${id}`;
+export const memberName = (id: string): string => `amigo-${id}`;
 
 /**
- * Variables a running Claude session sets for the commands it runs. `octomaxxing spawn` and `send` run in the head's
- * shell, so without this every arm inherits them and starts as a child of the head's session: it then never writes its
+ * Variables a running Claude session sets for the commands it runs. `amigo spawn` and `send` run in amigo's
+ * shell, so without this every squad member inherits them and starts as a child of amigo's session: it then never writes its
  * own transcript (~/.claude/projects/<cwd>/<session id>.jsonl), and `--resume` of it fails with "No conversation found
  * with session ID". User settings such as CLAUDE_CONFIG_DIR or CLAUDE_CODE_USE_BEDROCK are kept.
  */
@@ -59,57 +59,57 @@ export function isClaude(template: string[]): boolean {
 }
 
 /**
- * The interactive arm command: the configured template without -p/--print (so its permission flags stay the user's
+ * The interactive squad member command: the configured template without -p/--print (so its permission flags stay the user's
  * choice), plus the session name, a fixed session id (resumed for follow-ups) and the hook settings.
  */
-export function claudeArmTemplate(template: string[], o: { id: string; sessionId: string; resume: boolean; settingsFile: string }): string[] {
+export function claudeMemberTemplate(template: string[], o: { id: string; sessionId: string; resume: boolean; settingsFile: string }): string[] {
   const [cmd, ...rest] = template as [string, ...string[]];
-  return [cmd, '--name', armName(o.id), o.resume ? '--resume' : '--session-id', o.sessionId, '--settings', o.settingsFile, ...rest.filter((a) => a !== '-p' && a !== '--print')];
+  return [cmd, '--name', memberName(o.id), o.resume ? '--resume' : '--session-id', o.sessionId, '--settings', o.settingsFile, ...rest.filter((a) => a !== '-p' && a !== '--print')];
 }
 
 /**
- * The head's extra flags when `octomaxxing head` starts Claude Code: its name, and its settings file (headSettings).
+ * Amigo's extra flags when `amigo` starts Claude Code: its name, and its settings file (amigoSettings).
  * The settings go in a file, not inline JSON: an npm install starts through cmd.exe on Windows, which mangles the quotes.
  */
-export function claudeHeadTemplate(template: string[], settingsFile: string): string[] {
+export function claudeAmigoTemplate(template: string[], settingsFile: string): string[] {
   const [cmd, ...rest] = template as [string, ...string[]];
-  return [cmd, '--name', HEAD_NAME, '--settings', settingsFile, ...rest];
+  return [cmd, '--name', AMIGO_NAME, '--settings', settingsFile, ...rest];
 }
 
-/** The head's settings: accept messages from arms. */
-export function headSettings(): Record<string, unknown> {
+/** Amigo's settings: accept messages from squad members. */
+export function amigoSettings(): Record<string, unknown> {
   return { crossSessionInbound: 'accept' };
 }
 
 /**
- * Hook commands run in whatever shell Claude Code uses, so they start with a bare `node` (on PATH wherever octomaxxing
+ * Hook commands run in whatever shell Claude Code uses, so they start with a bare `node` (on PATH wherever amigo
  * runs) and a quoted script path with forward slashes, which bash, cmd.exe and PowerShell all read the same way.
  */
-export function armSettings(stopTimeoutSeconds = 15): Record<string, unknown> {
+export function memberSettings(stopTimeoutSeconds = 15): Record<string, unknown> {
   const hook = (name: string, timeout = 15) => [{ hooks: [{ type: 'command', command: `node "${cliPath.replace(/\\/g, '/')}" _hook ${name}`, timeout }] }];
   return { crossSessionInbound: 'accept', hooks: { UserPromptSubmit: hook('prompt'), Stop: hook('stop', Math.max(15, stopTimeoutSeconds)), StopFailure: hook('stop-failure') } };
 }
 
-/** The arm part only Claude arms get. */
-export function claudeArmNotes(id: string, headAddress: string | undefined): string {
+/** The squad member part only Claude squad members get. */
+export function claudeMemberNotes(id: string, amigoAddress: string | undefined): string {
   const lines = [
-    `## Your session\n\nYou are the Claude Code session \`${armName(id)}\`, open in a terminal tab the user can see and type in. Your session stays open after each turn: the head or the user may send you more.`,
+    `## Your session\n\nYou are the Claude Code session \`${memberName(id)}\`, open in a terminal tab the user can see and type in. Your session stays open after each turn: amigo or the user may send you more.`,
   ];
-  if (headAddress) {
-    lines.push(`When a turn ends (done, blocked or a question), first message the head, the session that started you: ${send(headAddress)}, just carry on. Then end with your STATUS line.`);
+  if (amigoAddress) {
+    lines.push(`When a turn ends (done, blocked or a question), first message amigo, the session that started you: ${send(amigoAddress)}, just carry on. Then end with your STATUS line.`);
   }
   return lines.join('\n\n');
 }
 
-// ---------- the Stop hook's check that the arm reported to the head ----------
+// ---------- the Stop hook's check that the squad member reported to amigo ----------
 
 interface TranscriptEntry {
   type?: string;
   message?: { content?: unknown };
 }
 
-/** Did the latest turn (everything after the last real prompt) send a message to the head's address? */
-export function turnMessagedHead(jsonl: string, headAddress: string): boolean {
+/** Did the latest turn (everything after the last real prompt) send a message to amigo's address? */
+export function turnMessagedAmigo(jsonl: string, amigoAddress: string): boolean {
   const entries: TranscriptEntry[] = [];
   for (const line of jsonl.split('\n')) {
     if (!line.trim()) continue;
@@ -123,18 +123,18 @@ export function turnMessagedHead(jsonl: string, headAddress: string): boolean {
     const e = entries[i]!;
     const content = e.message?.content;
     const parts: { type?: string; name?: string; input?: { to?: unknown } }[] = Array.isArray(content) ? content : typeof content === 'string' ? [{ type: 'text' }] : [];
-    if (e.type === 'assistant' && parts.some((p) => p.type === 'tool_use' && p.name === 'SendMessage' && p.input?.to === headAddress)) return true;
+    if (e.type === 'assistant' && parts.some((p) => p.type === 'tool_use' && p.name === 'SendMessage' && p.input?.to === amigoAddress)) return true;
     if (e.type === 'user' && parts.length > 0 && parts.some((p) => p.type !== 'tool_result')) return false;
   }
   return false;
 }
 
-export function transcriptMessagedHead(path: string | undefined, headAddress: string): boolean {
+export function transcriptMessagedAmigo(path: string | undefined, amigoAddress: string): boolean {
   if (!path) return true;
   try {
-    return turnMessagedHead(readFileSync(path, 'utf8'), headAddress);
+    return turnMessagedAmigo(readFileSync(path, 'utf8'), amigoAddress);
   } catch {
-    return true; // an unreadable transcript must not trap the arm
+    return true; // an unreadable transcript must not trap the squad member
   }
 }
 
@@ -142,23 +142,23 @@ const send = (to: string): string =>
   `use the SendMessage tool (load it with ToolSearch "select:SendMessage" if needed) to send your result with \`to\` set to exactly \`${to}\`. Try it once: if that session is gone or the message was not sent`;
 const STATUS_LINE = 'end your final message with one line: STATUS: done|blocked|question - <one-line summary>';
 
-/** Why the Stop hook sends the arm back: only what its turn was missing. */
-export function reportReason(messaged: boolean, hasStatus: boolean, headAddress = ''): string {
-  if (!messaged && !hasStatus) return `Before stopping: (1) ${send(headAddress)}, just stop. (2) Then ${STATUS_LINE}.`;
-  if (!messaged) return `Before stopping, ${send(headAddress)}, just stop. Then end with your STATUS line again.`;
-  return `Before stopping, ${STATUS_LINE} (your message to the head already went out; do not send it again).`;
+/** Why the Stop hook sends the squad member back: only what its turn was missing. */
+export function reportReason(messaged: boolean, hasStatus: boolean, amigoAddress = ''): string {
+  if (!messaged && !hasStatus) return `Before stopping: (1) ${send(amigoAddress)}, just stop. (2) Then ${STATUS_LINE}.`;
+  if (!messaged) return `Before stopping, ${send(amigoAddress)}, just stop. Then end with your STATUS line again.`;
+  return `Before stopping, ${STATUS_LINE} (your message to amigo already went out; do not send it again).`;
 }
 
 // ---------- workspace trust ----------
 
 /**
- * ~/.claude.json, or OCTOMAXXING_CLAUDE_JSON. With OCTOMAXXING_HOME in the temp folder (tests) the override is required,
+ * ~/.claude.json, or AMIGO_CLAUDE_JSON. With AMIGO_HOME in the temp folder (tests) the override is required,
  * so a test can never write the user's real file.
  */
 export function claudeJsonPath(env: NodeJS.ProcessEnv = process.env): string {
-  if (env.OCTOMAXXING_CLAUDE_JSON) return env.OCTOMAXXING_CLAUDE_JSON;
-  if (env.OCTOMAXXING_HOME && resolve(env.OCTOMAXXING_HOME).toLowerCase().startsWith(resolve(os.tmpdir()).toLowerCase())) {
-    throw new Error('OCTOMAXXING_HOME is in the temp folder but OCTOMAXXING_CLAUDE_JSON is not set; refusing to touch the real ~/.claude.json');
+  if (env.AMIGO_CLAUDE_JSON) return env.AMIGO_CLAUDE_JSON;
+  if (env.AMIGO_HOME && resolve(env.AMIGO_HOME).toLowerCase().startsWith(resolve(os.tmpdir()).toLowerCase())) {
+    throw new Error('AMIGO_HOME is in the temp folder but AMIGO_CLAUDE_JSON is not set; refusing to touch the real ~/.claude.json');
   }
   return join(os.homedir(), '.claude.json');
 }
@@ -216,17 +216,37 @@ function editClaudeJson(change: (c: Record<string, unknown>) => Record<string, u
       writeJsonAtomic(file, next);
       sleepSync(200);
     }
-    if (change(readClaudeJson(file)) !== null) process.stderr.write(`octomaxxing: warning: another Claude session keeps rewriting ${file}; an arm may show the trust dialog\n`);
+    if (change(readClaudeJson(file)) !== null) process.stderr.write(`amigo: warning: another Claude session keeps rewriting ${file}; a squad member may show the trust dialog\n`);
   });
   return true;
 }
 
-/** Mark an arm's folder trusted so its session opens without the workspace trust dialog. True when octomaxxing added the trust. */
+/** Mark a squad member's folder trusted so its session opens without the workspace trust dialog. True when amigo added the trust. */
 export function trustFolder(dir: string, env: NodeJS.ProcessEnv = process.env): boolean {
   return editClaudeJson((c) => mergeTrust(c, dir), env);
 }
 
-/** Remove a closed arm's worktree entry (Claude Code also adds one for every folder it runs in). */
+/**
+ * The config with the trust entry of `from` moved to `to`, every other field of that entry kept; just trusts `to` when there
+ * is no entry for `from`. Null when nothing changes.
+ */
+export function moveTrust(config: Record<string, unknown>, from: string, to: string): Record<string, unknown> | null {
+  const projects = { ...((config.projects as Record<string, Record<string, unknown>> | undefined) ?? {}) };
+  const oldKey = Object.keys(projects).find((k) => norm(k) === norm(from));
+  if (!oldKey) return mergeTrust(config, to);
+  const entry = projects[oldKey] as Record<string, unknown>;
+  delete projects[oldKey];
+  const newKey = Object.keys(projects).find((k) => norm(k) === norm(to)) ?? trustKey(to);
+  projects[newKey] = { ...entry, ...(projects[newKey] ?? {}), hasTrustDialogAccepted: true };
+  return { ...config, projects };
+}
+
+/** A moved folder keeps its ~/.claude.json entry (trust and the rest) under its new path. */
+export function moveFolderTrust(from: string, to: string, env: NodeJS.ProcessEnv = process.env): void {
+  editClaudeJson((c) => moveTrust(c, from, to), env);
+}
+
+/** Remove a closed squad member's worktree entry (Claude Code also adds one for every folder it runs in). */
 export function forgetFolder(dir: string, env: NodeJS.ProcessEnv = process.env): void {
   editClaudeJson((c) => dropTrust(c, dir), env);
 }

@@ -2,12 +2,12 @@ import assert from 'node:assert/strict';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { describe, it } from 'node:test';
-import { briefWithIssue, stations, statusText } from '../src/arms.ts';
+import { briefWithIssue, stations, statusText } from '../src/squad.ts';
 import { checkPrTitle } from '../src/github.ts';
 import { getTask, saveTask, type Task } from '../src/tasks.ts';
 import { addOrigin, allowPrs, cleanup, cli, fakeGhEnv, ghCalls, git, idFrom, makeHome, makeRepo, waitFor } from './helpers.ts';
 
-const folderOf = (env: NodeJS.ProcessEnv, id: string, file: string): string => readFileSync(join(env.OCTOMAXXING_HOME as string, 'tasks', id, file), 'utf8');
+const folderOf = (env: NodeJS.ProcessEnv, id: string, file: string): string => readFileSync(join(env.AMIGO_HOME as string, 'tasks', id, file), 'utf8');
 
 describe('dependent tasks', () => {
   it('stays queued while the dependency is open, then starts from the dependency commit', async () => {
@@ -30,7 +30,7 @@ describe('dependent tasks', () => {
       assert.match(cli(env, ['status', second]).out, /after:\s+\S+ \(waits until it is closed with a commit\)/);
 
       assert.equal(cli(env, ['close', first, '--commit']).code, 0);
-      const committed = git(repo, 'rev-parse', `octomaxxing/${first}`).trim();
+      const committed = git(repo, 'rev-parse', `amigo/${first}`).trim();
       assert.equal(getTask(first, env)?.committed, committed);
       const done = await waitFor(second, env, ['done', 'failed']);
       assert.equal(done.status, 'done');
@@ -70,7 +70,7 @@ describe('dependent tasks', () => {
 });
 
 describe('project notes', () => {
-  it('note adds a line and the next arm prompt includes it', async () => {
+  it('note adds a line and the next squad member prompt includes it', async () => {
     const { dir, env } = makeHome();
     try {
       mkdirSync(join(dir, 'p'));
@@ -95,7 +95,7 @@ describe('project notes', () => {
 describe('issues and pull requests', () => {
   const issue = { title: 'Fix the footer link', body: 'The footer link 404s on mobile.', url: 'https://github.com/example/repo/issues/12' };
 
-  it('spawn --issue puts the issue title, body and link in the arm brief', async () => {
+  it('spawn --issue puts the issue title, body and link in the squad member brief', async () => {
     const { dir, env: base } = makeHome();
     const gh = fakeGhEnv(dir, issue);
     const env = { ...base, ...gh.env };
@@ -122,7 +122,7 @@ describe('issues and pull requests', () => {
       assert.deepEqual(getTask(id, env)?.issue, { number: 12, url: issue.url, title: issue.title });
       assert.match(cli(env, ['status', id]).out, /issue:\s+#12 https:\/\/github\.com\/example\/repo\/issues\/12/);
 
-      assert.match(cli({ ...env, OCTOMAXXING_GH: join(dir, 'missing-gh') }, ['spawn', '--project', 'repo', '--issue', '12'], 'x').err, /GitHub CLI \(gh\) is not installed/);
+      assert.match(cli({ ...env, AMIGO_GH: join(dir, 'missing-gh') }, ['spawn', '--project', 'repo', '--issue', '12'], 'x').err, /GitHub CLI \(gh\) is not installed/);
       assert.match(cli(env, ['spawn', '--project', 'repo', '--issue', 'twelve'], 'x').err, /--issue takes an issue number/);
     } finally {
       cleanup(dir);
@@ -157,22 +157,22 @@ describe('issues and pull requests', () => {
       assert.match(cli(env, ['close', id, '--pr']).err, /only make sense with --commit/);
       const closed = cli(env, ['close', id, '--commit', '--pr']);
       assert.equal(closed.code, 0, closed.err);
-      assert.match(closed.out, new RegExp(`Pushed octomaxxing/${id} to origin\\.`));
+      assert.match(closed.out, new RegExp(`Pushed amigo/${id} to origin\\.`));
       assert.match(closed.out, /Opened a draft pull request: https:\/\/github\.com\/example\/repo\/pull\/7/);
       assert.doesNotMatch(closed.out, /or pushed/);
 
-      assert.equal(git(bare, 'branch', '--list', 'octomaxxing/*').trim(), `octomaxxing/${id}`, 'only the task branch reached origin');
-      assert.equal(git(bare, 'rev-parse', `octomaxxing/${id}`).trim(), git(repo, 'rev-parse', `octomaxxing/${id}`).trim());
-      assert.match(git(repo, 'rev-parse', '--abbrev-ref', `octomaxxing/${id}@{upstream}`), new RegExp(`origin/octomaxxing/${id}`));
+      assert.equal(git(bare, 'branch', '--list', 'amigo/*').trim(), `amigo/${id}`, 'only the task branch reached origin');
+      assert.equal(git(bare, 'rev-parse', `amigo/${id}`).trim(), git(repo, 'rev-parse', `amigo/${id}`).trim());
+      assert.match(git(repo, 'rev-parse', '--abbrev-ref', `amigo/${id}@{upstream}`), new RegExp(`origin/amigo/${id}`));
 
       const create = ghCalls(gh.log).find((c) => c.args[0] === 'pr');
       assert.ok(create, 'gh pr create was called');
       const a = create.args;
       assert.deepEqual(a.slice(0, 3), ['pr', 'create', '--draft']);
-      assert.equal(a[a.indexOf('--head') + 1], `octomaxxing/${id}`);
+      assert.equal(a[a.indexOf('--head') + 1], `amigo/${id}`);
       assert.equal(a[a.indexOf('--title') + 1], 'Fix the footer link');
       assert.ok(!a.includes('--base'), 'gh uses the default branch of the repo');
-      assert.match(create.body ?? '', /^wrote arm-output\.txt\n\nCloses #12\n$/);
+      assert.match(create.body ?? '', /^wrote member-output\.txt\n\nCloses #12\n$/);
       assert.equal(getTask(id, env)?.pr, 'https://github.com/example/repo/pull/7');
       assert.match(cli(env, ['status']).out, /pull request https:\/\/github\.com\/example\/repo\/pull\/7/);
       assert.equal(git(repo, 'rev-parse', '--abbrev-ref', 'HEAD').trim(), 'main');
@@ -196,11 +196,11 @@ describe('issues and pull requests', () => {
       assert.match(noRemote.err, /has no remote named origin/);
 
       addOrigin(dir, repo);
-      const noGh = cli({ ...env, OCTOMAXXING_GH: join(dir, 'missing-gh') }, ['close', id, '--commit', '--pr']);
+      const noGh = cli({ ...env, AMIGO_GH: join(dir, 'missing-gh') }, ['close', id, '--commit', '--pr']);
       assert.equal(noGh.code, 1);
       assert.match(noGh.err, /GitHub CLI \(gh\) is not installed/);
       assert.equal(getTask(id, env)?.status, 'done', 'still open, nothing committed');
-      assert.match(cli(env, ['status', id]).out, /changed files[\s\S]*arm-output\.txt/);
+      assert.match(cli(env, ['status', id]).out, /changed files[\s\S]*member-output\.txt/);
       assert.equal(ghCalls(gh.log).length, 0);
     } finally {
       cleanup(dir);
@@ -228,12 +228,12 @@ describe('status by station', () => {
         '13-wrap': { status: 'closing', title: 'Being committed' },
       };
       for (const [id, more] of Object.entries(tasks)) {
-        mkdirSync(join(env.OCTOMAXXING_HOME as string, 'tasks', id), { recursive: true });
+        mkdirSync(join(env.AMIGO_HOME as string, 'tasks', id), { recursive: true });
         saveTask({ id, title: id, project: 'p', agent: 'fake', cwd: dir, repo: null, worktree: null, branch: null, baseSha: null, status: 'running', createdAt: now, updatedAt: now, startedAt: now, runs: 1, followUps: [], seen: true, ...more }, env);
       }
       const text = statusText(undefined, env);
       const section = (name: string, next: string) => new RegExp(`${name} \\((\\d+)\\)\\n([\\s\\S]*?)(?=\\n${next} \\(|$)`).exec(text);
-      assert.match(text, /^Arms: 3 running, 1 queued\./);
+      assert.match(text, /^Squad members: 3 running, 1 queued\./);
       assert.equal(section('queued', 'building')?.[1], '1');
       assert.match(section('queued', 'building')?.[2] ?? '', /4-wait .*waits for 2-build/);
       assert.equal(section('building', 'verifying')?.[1], '1');
@@ -293,7 +293,7 @@ describe('pull requests of dependent tasks and odd titles', () => {
       assert.equal(ghCalls(gh.log).length, 0);
 
       // Once the dependency is merged and on origin's main, the pull request carries only this task's work.
-      git(repo, 'merge', '-q', '--ff-only', `octomaxxing/${first}`);
+      git(repo, 'merge', '-q', '--ff-only', `amigo/${first}`);
       git(repo, 'push', '-q', 'origin', 'main');
       const ok = cli(env, ['close', second, '--commit', '--pr']);
       assert.equal(ok.code, 0, ok.err);

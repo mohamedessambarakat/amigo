@@ -2,19 +2,19 @@ import assert from 'node:assert/strict';
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { describe, it } from 'node:test';
-import { applyHook, armPrompt, followUpPrompt, herdrPlacement, startArm, tabEnvArgs } from '../src/arms.ts';
+import { applyHook, memberPrompt, followUpPrompt, herdrPlacement, startMember, tabEnvArgs } from '../src/squad.ts';
 import { loadConfig } from '../src/config.ts';
-import { armSettings, guessTranscriptPath, headSettings, claudeArmNotes, claudeArmTemplate, claudeHeadTemplate, claudeJsonPath, dropTrust, isClaude, mergeTrust, ownSessionEnv, reportReason, sessionAddress, turnMessagedHead } from '../src/claude.ts';
+import { memberSettings, guessTranscriptPath, amigoSettings, claudeMemberNotes, claudeMemberTemplate, claudeAmigoTemplate, claudeJsonPath, dropTrust, isClaude, mergeTrust, ownSessionEnv, reportReason, sessionAddress, turnMessagedAmigo } from '../src/claude.ts';
 import { parseVmStat, ramAllows } from '../src/ram.ts';
 import { descendants } from '../src/proc.ts';
 import { beat, saveTask, type Task } from '../src/tasks.ts';
-import { detectTerminal, headHerdrWorkspace, herdrLabel, openTab, planTab, selectTerminal, tabScript, warpTabConfig, type HerdrPlacement } from '../src/terminal.ts';
+import { detectTerminal, amigoHerdrWorkspace, herdrLabel, openTab, planTab, selectTerminal, tabScript, warpTabConfig, type HerdrPlacement } from '../src/terminal.ts';
 import type { RunResult } from '../src/proc.ts';
 import { cleanup, cli, makeHome, tmpDir, waitFor } from './helpers.ts';
 
 const req = (platform: NodeJS.Platform) => ({
-  name: 'octomaxxing-x-1',
-  title: 'octomaxxing: Fix "it"',
+  name: 'amigo-x-1',
+  title: 'amigo: Fix "it"',
   cwd: platform === 'win32' ? 'C:\\work\\my app' : '/work/my app',
   argv: platform === 'win32' ? ['C:\\Program Files\\nodejs\\node.exe', 'C:\\oct\\src\\cli.ts', '_tab', 'x-1'] : ['/usr/bin/node', "/oct/it's/cli.ts", '_tab', 'x-1'],
   dir: platform === 'win32' ? 'C:\\h\\tasks\\x-1' : '/h/tasks/x-1',
@@ -23,7 +23,7 @@ const req = (platform: NodeJS.Platform) => ({
 });
 
 describe('terminal tabs', () => {
-  it('opens arms in the terminal the head runs in', () => {
+  it('opens squad members in the terminal amigo runs in', () => {
     assert.equal(detectTerminal({ TMUX: '/tmp/tmux-1/default,1,0', TERM_PROGRAM: 'tmux' }, 'linux'), 'tmux');
     assert.equal(detectTerminal({ TMUX: '/tmp/t', TERM_PROGRAM: 'WezTerm', WEZTERM_PANE: '0' }, 'darwin'), 'tmux', 'tmux inside another terminal opens tmux windows');
     assert.equal(detectTerminal({ TERM_PROGRAM: 'WezTerm', WEZTERM_PANE: '3', WT_SESSION: 'x' }, 'win32'), 'wezterm', 'WezTerm started from Windows Terminal is still WezTerm');
@@ -44,12 +44,12 @@ describe('terminal tabs', () => {
     assert.equal(selectTerminal({ env: { TERM_PROGRAM: 'WezTerm' }, platform: 'linux', find: none }), 'wezterm');
     assert.equal(selectTerminal({ env: {}, platform: 'linux', find: found }), 'window');
     assert.throws(() => selectTerminal({ env: {}, platform: 'linux', find: none }), /no terminal emulator found/);
-    assert.equal(selectTerminal({ env: { OCTOMAXXING_TERMINAL: 'wt', TERM_PROGRAM: 'WezTerm' }, platform: 'win32', find: none }), 'wt', "an arm's tab keeps the head's terminal");
-    assert.equal(selectTerminal({ env: { OCTOMAXXING_TERMINAL: 'herdr', TERM_PROGRAM: 'herdr' }, platform: 'win32', find: none }), 'herdr');
-    assert.equal(selectTerminal({ env: { OCTOMAXXING_TERMINAL: 'nonsense', TERM_PROGRAM: 'WezTerm' }, platform: 'linux', find: none }), 'wezterm', 'a bad carried value falls back to detection');
+    assert.equal(selectTerminal({ env: { AMIGO_TERMINAL: 'wt', TERM_PROGRAM: 'WezTerm' }, platform: 'win32', find: none }), 'wt', "a squad member's tab keeps amigo's terminal");
+    assert.equal(selectTerminal({ env: { AMIGO_TERMINAL: 'herdr', TERM_PROGRAM: 'herdr' }, platform: 'win32', find: none }), 'herdr');
+    assert.equal(selectTerminal({ env: { AMIGO_TERMINAL: 'nonsense', TERM_PROGRAM: 'WezTerm' }, platform: 'linux', find: none }), 'wezterm', 'a bad carried value falls back to detection');
   });
 
-  it('opens a WezTerm tab in the head window, or a new console window elsewhere', () => {
+  it('opens a WezTerm tab in amigo window, or a new console window elsewhere', () => {
     assert.deepEqual(planTab('wezterm', req('win32')).command, { cmd: 'wezterm', args: ['cli', 'spawn', '--cwd', 'C:\\work\\my app', '--', 'cmd.exe', '/c', 'C:\\h\\tasks\\x-1\\tab.cmd'] });
     assert.deepEqual(planTab('wezterm', req('darwin')).command, { cmd: 'wezterm', args: ['cli', 'spawn', '--cwd', '/work/my app', '--', 'sh', '/h/tasks/x-1/tab.sh'] });
     const win = planTab('window', { ...req('win32'), cwd: "C:\\it's here" });
@@ -63,14 +63,14 @@ describe('terminal tabs', () => {
 
   it('writes a Warp tab config that runs the tab script and closes the tab', () => {
     const plan = planTab('warp', req('win32'), 'C:\\Users\\u');
-    assert.equal(plan.tabConfig, 'C:\\Users\\u\\AppData\\Roaming\\warp\\Warp\\data\\tab_configs\\octomaxxing-x-1.toml');
-    assert.deepEqual(plan.command, { cmd: 'powershell.exe', args: ['-NoProfile', '-Command', 'Start-Process "warp://tab_config/octomaxxing-x-1"'] });
+    assert.equal(plan.tabConfig, 'C:\\Users\\u\\AppData\\Roaming\\warp\\Warp\\data\\tab_configs\\amigo-x-1.toml');
+    assert.deepEqual(plan.command, { cmd: 'powershell.exe', args: ['-NoProfile', '-Command', 'Start-Process "warp://tab_config/amigo-x-1"'] });
     const toml = plan.files.find((f) => f.path === plan.tabConfig)!.content;
     assert.equal(
       toml,
       [
-        'name = "octomaxxing-x-1"',
-        'title = "octomaxxing: Fix \\"it\\""',
+        'name = "amigo-x-1"',
+        'title = "amigo: Fix \\"it\\""',
         '',
         '[[panes]]',
         'id = "main"',
@@ -82,8 +82,8 @@ describe('terminal tabs', () => {
       ].join('\n'),
     );
     const mac = planTab('warp', req('darwin'), '/Users/u');
-    assert.equal(mac.tabConfig, '/Users/u/.warp/tab_configs/octomaxxing-x-1.toml');
-    assert.deepEqual(mac.command, { cmd: 'open', args: ['warp://tab_config/octomaxxing-x-1'] });
+    assert.equal(mac.tabConfig, '/Users/u/.warp/tab_configs/amigo-x-1.toml');
+    assert.deepEqual(mac.command, { cmd: 'open', args: ['warp://tab_config/amigo-x-1'] });
     assert.match(warpTabConfig('n', 't', '/a', "sh '/h/tab.sh'; exit"), /commands = \["sh '\/h\/tab\.sh'; exit"\]/);
   });
 
@@ -101,15 +101,15 @@ describe('terminal tabs', () => {
     }
   });
 
-  it('carries OCTOMAXXING_* settings into the tab, which does not inherit this environment', () => {
-    assert.deepEqual(tabEnvArgs({ OCTOMAXXING_TERMINAL: 'wt', OCTOMAXXING_HOME: '/h', OCTOMAXXING_TASK: 'x', OCTOMAXXING_FREE_MB: '', PATH: '/bin' }), ['--env', 'OCTOMAXXING_TERMINAL=wt']);
-    assert.deepEqual(tabEnvArgs({ OCTOMAXXING_TERMINAL: 'herdr', OCTOMAXXING_HERDR_WORKSPACE: 'w1', HERDR_WORKSPACE_ID: 'w1' }), ['--env', 'OCTOMAXXING_TERMINAL=herdr', '--env', 'OCTOMAXXING_HERDR_WORKSPACE=w1']);
+  it('carries AMIGO_* settings into the tab, which does not inherit this environment', () => {
+    assert.deepEqual(tabEnvArgs({ AMIGO_TERMINAL: 'wt', AMIGO_HOME: '/h', AMIGO_TASK: 'x', AMIGO_FREE_MB: '', PATH: '/bin' }), ['--env', 'AMIGO_TERMINAL=wt']);
+    assert.deepEqual(tabEnvArgs({ AMIGO_TERMINAL: 'herdr', AMIGO_HERDR_WORKSPACE: 'w1', HERDR_WORKSPACE_ID: 'w1' }), ['--env', 'AMIGO_TERMINAL=herdr', '--env', 'AMIGO_HERDR_WORKSPACE=w1']);
   });
 
-  it("finds the head's herdr workspace, which a queued arm's own tab must not replace", () => {
-    assert.equal(headHerdrWorkspace({ HERDR_WORKSPACE_ID: 'w1' }), 'w1');
-    assert.equal(headHerdrWorkspace({ HERDR_WORKSPACE_ID: 'w7', OCTOMAXXING_HERDR_WORKSPACE: 'w1' }), 'w1', 'the carried value wins inside an arm tab');
-    assert.equal(headHerdrWorkspace({}), null);
+  it("finds amigo's herdr workspace, which a queued squad member's own tab must not replace", () => {
+    assert.equal(amigoHerdrWorkspace({ HERDR_WORKSPACE_ID: 'w1' }), 'w1');
+    assert.equal(amigoHerdrWorkspace({ HERDR_WORKSPACE_ID: 'w7', AMIGO_HERDR_WORKSPACE: 'w1' }), 'w1', 'the carried value wins inside a squad member tab');
+    assert.equal(amigoHerdrWorkspace({}), null);
   });
 
   it('labels a herdr tab with the id and a title cut to about 40 characters', () => {
@@ -125,7 +125,7 @@ describe('terminal tabs', () => {
     assert.throws(() => planTab('wt', { ...req('win32'), cwd: 'C:\\a;b' }), /";"/);
     const term = planTab('terminal', req('darwin'));
     assert.equal(term.command?.args.at(-1), `tell application "Terminal" to do script "cd '/work/my app' && sh '/h/tasks/x-1/tab.sh'; exit"`);
-    assert.deepEqual(planTab('tmux', req('linux')).command, { cmd: 'tmux', args: ['new-window', '-n', 'octomaxxing-x-1', '-c', '/work/my app', 'sh', '/h/tasks/x-1/tab.sh'] });
+    assert.deepEqual(planTab('tmux', req('linux')).command, { cmd: 'tmux', args: ['new-window', '-n', 'amigo-x-1', '-c', '/work/my app', 'sh', '/h/tasks/x-1/tab.sh'] });
   });
 });
 
@@ -174,7 +174,7 @@ describe('herdr tabs', () => {
     }
   };
 
-  it('puts an arm with a worktree in a workspace of its own, renames its tab, and runs the script there', () => {
+  it('puts a squad member with a worktree in a workspace of its own, renames its tab, and runs the script there', () => {
     const r = open(['w1'], { label, ownWorkspace: true, workspaces: ['w1'] });
     assert.deepEqual(r.calls, [
       ['workspace', 'create', '--cwd', r.cwd, '--label', label, '--no-focus'],
@@ -185,7 +185,7 @@ describe('herdr tabs', () => {
     assert.deepEqual(r.written, [process.platform === 'win32' ? 'tab.cmd' : 'tab.sh'], 'the tab script is written before the pane runs it');
   });
 
-  it("puts an arm without a worktree in the head's workspace, without renaming anything", () => {
+  it("puts a squad member without a worktree in amigo's workspace, without renaming anything", () => {
     const r = open(['w1'], { label, ownWorkspace: false, workspaces: ['w1'] });
     assert.deepEqual(r.calls, [
       ['tab', 'create', '--workspace', 'w1', '--cwd', r.cwd, '--label', label, '--no-focus'],
@@ -194,11 +194,11 @@ describe('herdr tabs', () => {
     assert.equal(r.herdrWorkspace, 'w1');
   });
 
-  it("puts a reviewer in the reviewed arm's workspace, else the head's, else a new one", () => {
+  it("puts a reviewer in the reviewed squad member's workspace, else amigo's, else a new one", () => {
     const place = { label, ownWorkspace: false, workspaces: ['w4', 'w1'] };
     assert.equal(open(['w1', 'w4'], place).herdrWorkspace, 'w4');
     const closed = open(['w1'], place);
-    assert.equal(closed.herdrWorkspace, 'w1', 'the reviewed arm already closed its workspace');
+    assert.equal(closed.herdrWorkspace, 'w1', 'the reviewed squad member already closed its workspace');
     assert.deepEqual(closed.calls.slice(0, 2).map((c) => c.slice(0, 4)), [['tab', 'create', '--workspace', 'w4'], ['tab', 'create', '--workspace', 'w1']]);
     const none = open([], place);
     assert.equal(none.herdrWorkspace, 'w9', 'both gone: a new workspace');
@@ -209,7 +209,7 @@ describe('herdr tabs', () => {
     const place = { label, ownWorkspace: false, workspaces: ['w4', 'w1'] };
     const r = open(['w4', 'w1'], place, { wrongShape: ['w4'] });
     assert.equal(r.herdrWorkspace, 'w1', 'the next workspace is tried');
-    assert.throws(() => open(['w4'], place, { wrongShape: ['w4', 'new'] }), /Could not open a herdr workspace for the arm: unexpected answer/);
+    assert.throws(() => open(['w4'], place, { wrongShape: ['w4', 'new'] }), /Could not open a herdr workspace for the squad member: unexpected answer/);
   });
 
   it('runs the herdr that herdr itself points to (HERDR_BIN_PATH), else the one on PATH', () => {
@@ -225,10 +225,10 @@ describe('herdr tabs', () => {
     }
   });
 
-  it('places arms: own workspace for a worktree, else beside the reviewed arm, else the head', () => {
+  it('places squad members: own workspace for a worktree, else beside the reviewed squad member, else amigo', () => {
     const { dir, env } = makeHome();
     try {
-      const home = env.OCTOMAXXING_HOME as string;
+      const home = env.AMIGO_HOME as string;
       const now = new Date().toISOString();
       const task = (id: string, more: Partial<Task>): Task => ({ id, title: 'Fix the footer', project: 'p', agent: 'fake', cwd: dir, repo: null, worktree: null, branch: null, baseSha: null, status: 'running', createdAt: now, updatedAt: now, runs: 1, followUps: [], seen: true, ...more });
       mkdirSync(join(home, 'tasks', '1-a'), { recursive: true });
@@ -238,17 +238,17 @@ describe('herdr tabs', () => {
       assert.deepEqual(herdrPlacement(task('2-b', { worktree: '/w/2-b' }), head), { label: '2-b · Fix the footer', ownWorkspace: true, workspaces: ['w1'] });
       assert.deepEqual(herdrPlacement(task('3-c', {}), head), { label: '3-c · Fix the footer', ownWorkspace: false, workspaces: ['w1'] });
       assert.deepEqual(herdrPlacement(task('4-d', { reviewOf: '1-a' }), head).workspaces, ['w4', 'w1']);
-      assert.deepEqual(herdrPlacement(task('5-e', { reviewOf: '1-a' }), { ...head, OCTOMAXXING_HERDR_WORKSPACE: 'w4' }).workspaces, ['w4'], 'the same workspace is tried once');
-      assert.deepEqual(herdrPlacement(task('6-f', { reviewOf: '1-a' }), bare).workspaces, ['w4'], 'no head workspace known');
+      assert.deepEqual(herdrPlacement(task('5-e', { reviewOf: '1-a' }), { ...head, AMIGO_HERDR_WORKSPACE: 'w4' }).workspaces, ['w4'], 'the same workspace is tried once');
+      assert.deepEqual(herdrPlacement(task('6-f', { reviewOf: '1-a' }), bare).workspaces, ['w4'], 'no amigo workspace known');
     } finally {
       cleanup(dir);
     }
   });
 
-  it("starting a herdr arm carries the head's workspace into the tab and records the arm's own", () => {
+  it("starting a herdr squad member carries amigo's workspace into the tab and records the squad member's own", () => {
     const { dir, env } = makeHome();
     try {
-      const home = env.OCTOMAXXING_HOME as string;
+      const home = env.AMIGO_HOME as string;
       const now = new Date().toISOString();
       mkdirSync(join(home, 'tasks', '7-g'), { recursive: true });
       writeFileSync(join(home, 'tasks', '7-g', 'brief.md'), 'Title: g\n');
@@ -256,12 +256,12 @@ describe('herdr tabs', () => {
       saveTask(t, env);
       const bin = 'C:\herdr\herdr.exe';
       const h = fakeHerdr(['w1'], { bin });
-      const headEnv = { ...env, OCTOMAXXING_TERMINAL: 'herdr', HERDR_WORKSPACE_ID: 'w1', HERDR_BIN_PATH: bin };
-      assert.equal(startArm(t, loadConfig(headEnv), headEnv, h.runner), true);
+      const amigoEnv = { ...env, AMIGO_TERMINAL: 'herdr', HERDR_WORKSPACE_ID: 'w1', HERDR_BIN_PATH: bin };
+      assert.equal(startMember(t, loadConfig(amigoEnv), amigoEnv, h.runner), true);
       assert.deepEqual(h.calls.map((c) => c.slice(0, 2).join(' ')), ['tab create', 'pane run']);
       const script = readFileSync(join(home, 'tasks', '7-g', process.platform === 'win32' ? 'tab.cmd' : 'tab.sh'), 'utf8');
-      assert.match(script, /OCTOMAXXING_TERMINAL=herdr/);
-      assert.match(script, /OCTOMAXXING_HERDR_WORKSPACE=w1/);
+      assert.match(script, /AMIGO_TERMINAL=herdr/);
+      assert.match(script, /AMIGO_HERDR_WORKSPACE=w1/);
       assert.equal((JSON.parse(readFileSync(join(home, 'tasks', '7-g', 'task.json'), 'utf8')) as Task).herdrWorkspace, 'w1');
     } finally {
       cleanup(dir);
@@ -273,7 +273,7 @@ describe('herdr tabs', () => {
   });
 
   it("fails with herdr's own message when a new workspace cannot be created, or the script cannot be started", () => {
-    assert.throws(() => open([], { label, ownWorkspace: true, workspaces: [] }, { failCreate: 'no room' }), /Could not open a herdr workspace for the arm: no room/);
+    assert.throws(() => open([], { label, ownWorkspace: true, workspaces: [] }, { failCreate: 'no room' }), /Could not open a herdr workspace for the squad member: no room/);
     const dir = tmpDir();
     const h = fakeHerdr(['w1'], { failRun: true });
     try {
@@ -285,69 +285,69 @@ describe('herdr tabs', () => {
   });
 });
 
-describe('Claude Code arms', () => {
-  it('recognises Claude and builds the interactive arm and head commands', () => {
+describe('Claude Code squad members', () => {
+  it('recognises Claude and builds the interactive squad member and amigo commands', () => {
     assert.deepEqual(
       ownSessionEnv({ CLAUDECODE: '1', CLAUDE_CODE_SESSION_ID: 'head', claude_code_child_session: '1', CLAUDE_CODE_MESSAGING_SOCKET: 's', CLAUDE_CONFIG_DIR: '/c', CLAUDE_CODE_USE_BEDROCK: '1', PATH: '/bin' }),
       { CLAUDE_CONFIG_DIR: '/c', CLAUDE_CODE_USE_BEDROCK: '1', PATH: '/bin' },
-      "an arm drops the head session's variables and keeps the user's settings",
+      "a squad member drops amigo session's variables and keeps the user's settings",
     );
     assert.ok(isClaude(['claude', '{prompt}']) && isClaude(['C:\\bin\\claude.exe']) && !isClaude(['codex', 'exec']));
-    const t = claudeArmTemplate(['claude', '-p', '--permission-mode', 'auto', '{prompt}'], { id: 'x-1', sessionId: 'S', resume: false, settingsFile: '/s.json' });
-    assert.deepEqual(t, ['claude', '--name', 'octomaxxing-x-1', '--session-id', 'S', '--settings', '/s.json', '--permission-mode', 'auto', '{prompt}']);
-    assert.deepEqual(claudeArmTemplate(['claude', '{prompt}'], { id: 'x-1', sessionId: 'S', resume: true, settingsFile: '/s.json' }).slice(3, 5), ['--resume', 'S']);
-    assert.deepEqual(claudeHeadTemplate(['claude', '{prompt}'], '/h.json'), ['claude', '--name', 'octomaxxing-head', '--settings', '/h.json', '{prompt}']);
-    const hooks = (armSettings() as { hooks: Record<string, [{ hooks: [{ command: string }] }]> }).hooks;
+    const t = claudeMemberTemplate(['claude', '-p', '--permission-mode', 'auto', '{prompt}'], { id: 'x-1', sessionId: 'S', resume: false, settingsFile: '/s.json' });
+    assert.deepEqual(t, ['claude', '--name', 'amigo-x-1', '--session-id', 'S', '--settings', '/s.json', '--permission-mode', 'auto', '{prompt}']);
+    assert.deepEqual(claudeMemberTemplate(['claude', '{prompt}'], { id: 'x-1', sessionId: 'S', resume: true, settingsFile: '/s.json' }).slice(3, 5), ['--resume', 'S']);
+    assert.deepEqual(claudeAmigoTemplate(['claude', '{prompt}'], '/h.json'), ['claude', '--name', 'amigo', '--settings', '/h.json', '{prompt}']);
+    const hooks = (memberSettings() as { hooks: Record<string, [{ hooks: [{ command: string }] }]> }).hooks;
     assert.match(hooks.Stop![0].hooks[0].command, /^node "[^"\\]+cli\.ts" _hook stop$/);
     assert.match(hooks.UserPromptSubmit![0].hooks[0].command, / _hook prompt$/);
-    assert.deepEqual(headSettings(), { crossSessionInbound: 'accept' }, 'the head only accepts messages: no status line of its own');
+    assert.deepEqual(amigoSettings(), { crossSessionInbound: 'accept' }, 'amigo only accepts messages: no status line of its own');
   });
 
-  it('tells the arm to message the session that spawned it, whatever its name', () => {
+  it('tells the squad member to message the session that spawned it, whatever its name', () => {
     const head = 'uds:/tmp/head.sock';
     assert.equal(sessionAddress({ CLAUDE_CODE_MESSAGING_SOCKET: '\\\\.\\pipe\\LOCAL\\cc-msg-ab' }), 'uds:\\\\.\\pipe\\LOCAL\\cc-msg-ab');
     assert.equal(sessionAddress({}), undefined, 'not inside a Claude session: no messaging');
-    assert.ok(claudeArmNotes('x-1', head).includes('SendMessage') && claudeArmNotes('x-1', head).includes(`\`${head}\``));
-    assert.doesNotMatch(claudeArmNotes('x-1', head), /octomaxxing-head|rename/);
-    assert.doesNotMatch(claudeArmNotes('x-1', undefined), /SendMessage/);
+    assert.ok(claudeMemberNotes('x-1', head).includes('SendMessage') && claudeMemberNotes('x-1', head).includes(`\`${head}\``));
+    assert.doesNotMatch(claudeMemberNotes('x-1', head), /amigo-head|rename/);
+    assert.doesNotMatch(claudeMemberNotes('x-1', undefined), /SendMessage/);
     const t = { id: 'x-1', project: 'p', cwd: '/w', followUps: ['use blue'] } as unknown as Task;
-    assert.match(armPrompt(t, 'Title: paint', undefined, claudeArmNotes('x-1', head)), /octomaxxing-x-1[\s\S]*Title: paint/);
+    assert.match(memberPrompt(t, 'Title: paint', undefined, claudeMemberNotes('x-1', head)), /amigo-x-1[\s\S]*Title: paint/);
     assert.match(followUpPrompt(t), /use blue[\s\S]*STATUS line/);
     const two = { ...t, followUps: ['old', 'lost one', 'newest'], followUpsSent: 1 } as Task;
     assert.match(followUpPrompt(two), /1\. lost one\n2\. newest/, 'every follow-up not yet given');
     assert.doesNotMatch(followUpPrompt(two), /old/);
   });
 
-  it('finds a message to the head in the latest turn only', () => {
+  it('finds a message to amigo in the latest turn only', () => {
     const line = (o: unknown) => JSON.stringify(o);
     const prompt = line({ type: 'user', message: { content: 'do it' } });
     const send = (to: string) => line({ type: 'assistant', message: { content: [{ type: 'tool_use', name: 'SendMessage', input: { to } }] } });
     const result = line({ type: 'user', message: { content: [{ type: 'tool_result' }] } });
     const head = 'uds:/tmp/head.sock';
-    assert.equal(turnMessagedHead([prompt, send(head), result].join('\n'), head), true);
-    assert.equal(turnMessagedHead([prompt, send('octomaxxing-head')].join('\n'), head), false, 'only the spawning session counts');
-    assert.equal(turnMessagedHead([prompt, send(head), prompt].join('\n'), head), false, 'an earlier turn does not count');
+    assert.equal(turnMessagedAmigo([prompt, send(head), result].join('\n'), head), true);
+    assert.equal(turnMessagedAmigo([prompt, send('amigo')].join('\n'), head), false, 'only the spawning session counts');
+    assert.equal(turnMessagedAmigo([prompt, send(head), prompt].join('\n'), head), false, 'an earlier turn does not count');
     assert.ok(reportReason(false, true, head).includes(`\`${head}\``));
     assert.match(reportReason(false, false), /\(1\)[\s\S]*\(2\)/);
     assert.match(reportReason(true, false), /do not send it again/);
   });
 
   it('marks folders trusted without touching anything else, and removes the entry again', () => {
-    const config = { theme: 'dark', projects: { 'C:/Other': { x: 1 }, 'c:/work/arm': { allowedTools: ['a'] } } };
-    const next = mergeTrust(config, 'C:\\work\\arm') as typeof config & { projects: Record<string, Record<string, unknown>> };
-    assert.deepEqual(next.projects['c:/work/arm'], { allowedTools: ['a'], hasTrustDialogAccepted: true });
+    const config = { theme: 'dark', projects: { 'C:/Other': { x: 1 }, 'c:/work/squad member': { allowedTools: ['a'] } } };
+    const next = mergeTrust(config, 'C:\\work\\squad member') as typeof config & { projects: Record<string, Record<string, unknown>> };
+    assert.deepEqual(next.projects['c:/work/squad member'], { allowedTools: ['a'], hasTrustDialogAccepted: true });
     assert.equal(next.theme, 'dark');
-    assert.equal(mergeTrust(next, 'C:/work/arm'), null, 'already trusted');
+    assert.equal(mergeTrust(next, 'C:/work/squad member'), null, 'already trusted');
     assert.deepEqual(mergeTrust({}, '/home/u/w/')?.projects, { '/home/u/w': { allowedTools: [], hasTrustDialogAccepted: true } });
-    assert.deepEqual(Object.keys((dropTrust(next, 'C:/work/arm') as typeof config).projects), ['C:/Other']);
+    assert.deepEqual(Object.keys((dropTrust(next, 'C:/work/squad member') as typeof config).projects), ['C:/Other']);
     assert.equal(dropTrust(next, '/nope'), null);
   });
 
   it('never writes the real ~/.claude.json from a test home', () => {
     const { dir, env } = makeHome();
     try {
-      assert.throws(() => claudeJsonPath({ OCTOMAXXING_HOME: env.OCTOMAXXING_HOME }), /refusing to touch the real/);
-      assert.equal(claudeJsonPath(env), env.OCTOMAXXING_CLAUDE_JSON);
+      assert.throws(() => claudeJsonPath({ AMIGO_HOME: env.AMIGO_HOME }), /refusing to touch the real/);
+      assert.equal(claudeJsonPath(env), env.AMIGO_CLAUDE_JSON);
     } finally {
       cleanup(dir);
     }
@@ -358,9 +358,9 @@ describe('Claude Code arms', () => {
     const missingClaude = join(tmpDir(), 'no-such-dir', 'claude');
     const { dir, env } = makeHome(0, [missingClaude, '{prompt}']);
     try {
-      const home = env.OCTOMAXXING_HOME as string;
+      const home = env.AMIGO_HOME as string;
       mkdirSync(join(home, 'tasks', 'x-1'), { recursive: true });
-      writeFileSync(join(home, 'tasks', 'x-1', 'prompt.md'), 'Follow-up from the head: go on\n');
+      writeFileSync(join(home, 'tasks', 'x-1', 'prompt.md'), 'Follow-up from amigo: go on\n');
       const transcript = join(dir, 'projects', 'gone', 'S-1.jsonl');
       const now = new Date().toISOString();
       saveTask({ id: 'x-1', title: 't', project: 'p', agent: 'fake', cwd: dir, repo: null, worktree: null, branch: null, baseSha: null, status: 'running', createdAt: now, updatedAt: now, runs: 2, followUps: ['go on'], followUpsSent: 0, seen: true, sessionId: 'S-1', sessionStarted: true, transcriptPath: transcript }, env);
@@ -368,7 +368,7 @@ describe('Claude Code arms', () => {
       assert.notEqual(r.code, 0, 'the tab stays open on the error');
       const log = readFileSync(join(home, 'tasks', 'x-1', 'output.log'), 'utf8');
       const why = `can't resume: no transcript for session S-1 at ${transcript}`;
-      assert.ok(log.includes(`octomaxxing: ${why}`), log);
+      assert.ok(log.includes(`amigo: ${why}`), log);
       assert.ok(!/could not start/.test(log), 'claude was never launched');
       const t = JSON.parse(readFileSync(join(home, 'tasks', 'x-1', 'task.json'), 'utf8')) as Task;
       assert.deepEqual([t.status, t.summary, t.pid, t.sessionStarted], ['failed', why, null, true]);
@@ -382,7 +382,7 @@ describe('Claude Code arms', () => {
     assert.equal(guessTranscriptPath('C:\\Users\\me\\my app', 'S', { CLAUDE_CONFIG_DIR: join('/c', 'cfg') }), join('/c', 'cfg', 'projects', 'C--Users-me-my-app', 'S.jsonl'));
     const { dir, env } = makeHome();
     try {
-      const home = env.OCTOMAXXING_HOME as string;
+      const home = env.AMIGO_HOME as string;
       mkdirSync(join(home, 'tasks', 'x-1'), { recursive: true });
       const now = new Date().toISOString();
       saveTask({ id: 'x-1', title: 't', project: 'p', agent: 'claude', cwd: dir, repo: null, worktree: null, branch: null, baseSha: null, status: 'running', createdAt: now, updatedAt: now, runs: 1, followUps: [], seen: true }, env);
@@ -396,7 +396,7 @@ describe('Claude Code arms', () => {
   it('hooks track turns: STATUS is recorded, a turn without report is sent back once', async () => {
     const { dir, env } = makeHome();
     try {
-      const home = env.OCTOMAXXING_HOME as string;
+      const home = env.AMIGO_HOME as string;
       mkdirSync(join(home, 'tasks', 'x-1'), { recursive: true });
       const now = new Date().toISOString();
       saveTask({ id: 'x-1', title: 't', project: 'p', agent: 'claude', cwd: dir, repo: null, worktree: null, branch: null, baseSha: null, status: 'running', createdAt: now, updatedAt: now, runs: 1, followUps: [], seen: true }, env);
@@ -413,8 +413,8 @@ describe('Claude Code arms', () => {
       await applyHook('prompt', {}, 'x-1', env);
       assert.equal(task().status, 'running');
 
-      // Spawned by a Claude head, the turn must also have messaged it.
-      saveTask({ ...task(), headAddress: 'uds:/tmp/head.sock' }, env);
+      // Spawned by a Claude amigo, the turn must also have messaged it.
+      saveTask({ ...task(), amigoAddress: 'uds:/tmp/head.sock' }, env);
       const transcript = join(dir, 't.jsonl');
       writeFileSync(transcript, JSON.stringify({ type: 'user', message: { content: 'go' } }));
       const noMessage = JSON.parse(await applyHook('stop', { last_assistant_message: 'STATUS: question - which color?', transcript_path: transcript }, 'x-1', env));
@@ -440,17 +440,17 @@ describe('Claude Code arms', () => {
 });
 
 describe('memory gate and wait', () => {
-  it('starts an arm only while the reserve stays free', () => {
+  it('starts a squad member only while the reserve stays free', () => {
     assert.equal(ramAllows(3000, 600, 2048, 0), true);
-    assert.equal(ramAllows(3000, 600, 2048, 1), false, 'an arm still starting counts');
+    assert.equal(ramAllows(3000, 600, 2048, 1), false, 'a squad member still starting counts');
     assert.equal(parseVmStat('Mach Virtual Memory Statistics: (page size of 16384 bytes)\nPages free: 1000.\nPages inactive: 2000.\nPages speculative: 100.\n'), 48);
   });
 
-  it('always lets one arm run, even when memory is below the reserve', async () => {
+  it('always lets one squad member run, even when memory is below the reserve', async () => {
     const { dir, env } = makeHome();
     try {
-      const low = { ...env, OCTOMAXXING_FREE_MB: '10' };
-      writeFileSync(join(env.OCTOMAXXING_HOME as string, 'config.json'), readFileSync(join(env.OCTOMAXXING_HOME as string, 'config.json'), 'utf8').replace('"armMb":0', '"armMb":600').replace('"reserveMb":0', '"reserveMb":2048'));
+      const low = { ...env, AMIGO_FREE_MB: '10' };
+      writeFileSync(join(env.AMIGO_HOME as string, 'config.json'), readFileSync(join(env.AMIGO_HOME as string, 'config.json'), 'utf8').replace('"memberMb":0', '"memberMb":600').replace('"reserveMb":0', '"reserveMb":2048'));
       for (const p of ['a', 'b']) {
         mkdirSync(join(dir, p));
         cli(low, ['add', join(dir, p)]);
@@ -469,7 +469,7 @@ describe('memory gate and wait', () => {
   it('a tab for an old run, or a second tab for the same run, starts nothing', () => {
     const { dir, env } = makeHome();
     try {
-      const home = env.OCTOMAXXING_HOME as string;
+      const home = env.AMIGO_HOME as string;
       mkdirSync(join(home, 'tasks', 'x-1'), { recursive: true });
       const now = new Date().toISOString();
       saveTask({ id: 'x-1', title: 't', project: 'p', agent: 'fake', cwd: dir, repo: null, worktree: null, branch: null, baseSha: null, status: 'running', createdAt: now, updatedAt: now, runs: 2, followUps: [], seen: true }, env);
@@ -486,7 +486,7 @@ describe('memory gate and wait', () => {
     assert.deepEqual(descendants(10, '  10  1\n 11 10\n 12 11\n 13 1\n 14 10\n'), [11, 14, 12]);
   });
 
-  it('wait returns when an arm finishes and says so when nothing is open', async () => {
+  it('wait returns when a squad member finishes and says so when nothing is open', async () => {
     const { dir, env } = makeHome();
     try {
       const folder = join(dir, 'p');
@@ -496,7 +496,7 @@ describe('memory gate and wait', () => {
       const out = cli(env, ['spawn', '--project', 'p'], 'Title: write').out;
       const id = /task:\s+(\S+)/.exec(out)![1]!;
       const waited = cli(env, ['wait', id, '--timeout-min', '1']);
-      assert.match(waited.out, new RegExp(`${id}  done[\\s\\S]*wrote arm-output\\.txt`));
+      assert.match(waited.out, new RegExp(`${id}  done[\\s\\S]*wrote member-output\\.txt`));
       assert.equal((await waitFor(id, env, ['done'])).seen, true);
       assert.match(cli(env, ['inbox']).out, /Inbox empty/, 'wait marks results seen');
     } finally {

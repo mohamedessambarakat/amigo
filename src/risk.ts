@@ -3,7 +3,7 @@ import os from 'node:os';
 import { join } from 'node:path';
 import { looksSecret, worktreeGit } from './git.ts';
 
-/** One file an arm changed, measured against the commit its worktree started from. */
+/** One file a squad member changed, measured against the commit its worktree started from. */
 export interface Change {
   path: string;
   added: number;
@@ -105,11 +105,11 @@ export interface Snapshot {
 }
 
 /**
- * What an arm's folder holds now compared with the commit it started from, committed or not, untracked files included
- * (what `close --commit` would commit). Done in a throw-away index, so the arm's own index is never touched.
+ * What a squad member's folder holds now compared with the commit it started from, committed or not, untracked files included
+ * (what `close --commit` would commit). Done in a throw-away index, so the squad member's own index is never touched.
  */
 export function snapshot(repo: string, cwd: string, baseSha: string, gitDir?: string): Snapshot {
-  const index = join(os.tmpdir(), `octomaxxing-index-${process.pid}-${Math.random().toString(36).slice(2, 8)}`);
+  const index = join(os.tmpdir(), `amigo-index-${process.pid}-${Math.random().toString(36).slice(2, 8)}`);
   const git = (...args: string[]) => worktreeGit(repo, cwd, args, { env: { GIT_INDEX_FILE: index }, gitDir });
   try {
     git('read-tree', baseSha);

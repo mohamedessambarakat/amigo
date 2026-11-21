@@ -9,11 +9,11 @@ import { getTask, type Status, type Task } from '../src/tasks.ts';
 
 export const fakeAgent = join(codeRoot, 'test', 'fake-agent.mjs');
 
-export function tmpDir(prefix = 'octomaxxing-test-'): string {
+export function tmpDir(prefix = 'amigo-test-'): string {
   return realpathSync(mkdtempSync(join(os.tmpdir(), prefix)));
 }
 
-/** An arm's tab process can still be finishing (and holding the folder on Windows) just after its task reports. */
+/** A squad member's tab process can still be finishing (and holding the folder on Windows) just after its task reports. */
 export function cleanup(dir: string): void {
   for (let waited = 0; ; waited += 250) {
     try {
@@ -27,27 +27,33 @@ export function cleanup(dir: string): void {
 }
 
 /**
- * The environment a test starts from: this process's, without any OCTOMAXXING_* or GIT_* variable (a git hook sets GIT_DIR and friends, which would point every test git call at the hooked repo). Arm tabs set
- * OCTOMAXXING_TASK and OCTOMAXXING_HOME, so `npm test` run inside an arm would otherwise act as that arm, on its home.
+ * The environment a test starts from: this process's, without any AMIGO_* or GIT_* variable (a git hook sets GIT_DIR and friends, which would point every test git call at the hooked repo). Squad member tabs set
+ * AMIGO_TASK and AMIGO_HOME, so `npm test` run inside a squad member would otherwise act as that squad member, on its home.
  * Tests set only what they need on top.
  */
 export function cleanEnv(from: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
-  return Object.fromEntries(Object.entries(from).filter(([k]) => !/^(OCTOMAXXING_|GIT_)/.test(k.toUpperCase())));
+  return Object.fromEntries(Object.entries(from).filter(([k]) => !/^(AMIGO_|GIT_)/.test(k.toUpperCase())));
 }
 
 // Code that falls back to process.env, git and other child processes see the clean environment too.
-for (const k of Object.keys(process.env)) if (/^(OCTOMAXXING_|GIT_)/.test(k.toUpperCase())) delete process.env[k];
+for (const k of Object.keys(process.env)) if (/^(AMIGO_|GIT_)/.test(k.toUpperCase())) delete process.env[k];
+
+// Code that falls back to process.env (a function called without an env) must never reach the real ~/.amigo or ~/.claude.json: point it at a throwaway home.
+const strayHome = mkdtempSync(join(os.tmpdir(), 'amigo-stray-home-'));
+process.env.AMIGO_HOME = strayHome;
+process.env.AMIGO_CLAUDE_JSON = join(strayHome, 'claude.json');
+process.on('exit', () => rmSync(strayHome, { recursive: true, force: true }));
 
 /**
- * A home with the fake agent configured. Never the user's real ~/.octomaxxing or ~/.claude.json. Arm tabs open as
- * detached processes (OCTOMAXXING_TERMINAL=test). With arms > 0, free memory is faked so exactly that many arms fit.
+ * A home with the fake agent configured. Never the user's real ~/.amigo or ~/.claude.json. Squad member tabs open as
+ * detached processes (AMIGO_TERMINAL=test). With members > 0, free memory is faked so exactly that many squad members fit.
  */
-export function makeHome(arms = 0, arm: string[] = [process.execPath, fakeAgent, '{prompt}']): { dir: string; env: NodeJS.ProcessEnv } {
+export function makeHome(members = 0, member: string[] = [process.execPath, fakeAgent, '{prompt}']): { dir: string; env: NodeJS.ProcessEnv } {
   const dir = tmpDir();
   const home = join(dir, 'home');
   mkdirSync(home, { recursive: true });
-  writeFileSync(join(home, 'config.json'), JSON.stringify({ agents: { fake: { head: [process.execPath, fakeAgent, '{prompt}'], arm } }, armMb: arms ? 100 : 0, reserveMb: 0 }));
-  const env: NodeJS.ProcessEnv = { ...cleanEnv(), OCTOMAXXING_HOME: home, OCTOMAXXING_TERMINAL: 'test', OCTOMAXXING_CLAUDE_JSON: join(dir, 'claude.json'), OCTOMAXXING_FREE_MB: String(arms ? arms * 100 + 50 : 4096) };
+  writeFileSync(join(home, 'config.json'), JSON.stringify({ agents: { fake: { amigo: [process.execPath, fakeAgent, '{prompt}'], member } }, memberMb: members ? 100 : 0, reserveMb: 0 }));
+  const env: NodeJS.ProcessEnv = { ...cleanEnv(), AMIGO_HOME: home, AMIGO_TERMINAL: 'test', AMIGO_CLAUDE_JSON: join(dir, 'claude.json'), AMIGO_FREE_MB: String(members ? members * 100 + 50 : 4096) };
   return { dir, env };
 }
 
@@ -93,7 +99,7 @@ export function makeRepoWithChecks(dir: string): string {
   writeFileSync(join(repo, 'fail.mjs'), "console.error('ALWAYS-FAILS marker');\nprocess.exit(1);\n");
   writeFileSync(
     join(repo, 'needs-follow-up.mjs'),
-    "import { readFileSync } from 'node:fs';\nawait new Promise((r) => setTimeout(r, 1200));\nconst text = readFileSync('arm-output.txt', 'utf8');\nif (!text.includes('follow-up handled')) {\n  console.error('CHECK-FAIL-MARKER: the follow-up was not handled yet');\n  process.exit(1);\n}\n",
+    "import { readFileSync } from 'node:fs';\nawait new Promise((r) => setTimeout(r, 1200));\nconst text = readFileSync('member-output.txt', 'utf8');\nif (!text.includes('follow-up handled')) {\n  console.error('CHECK-FAIL-MARKER: the follow-up was not handled yet');\n  process.exit(1);\n}\n",
   );
   git(repo, 'add', '.');
   git(repo, 'commit', '-q', '-m', 'check scripts');
@@ -117,7 +123,7 @@ export function fakeGhEnv(dir: string, issue?: object): { env: NodeJS.ProcessEnv
   const shim = join(dir, win ? 'gh.cmd' : 'gh');
   writeFileSync(shim, win ? `@echo off\r\n"${process.execPath}" "${script}" %*\r\n` : `#!/bin/sh\nexec "${process.execPath}" "${script}" "$@"\n`, { mode: 0o755 });
   const log = join(dir, 'gh.log');
-  return { env: { OCTOMAXXING_GH: shim, FAKE_GH_LOG: log, ...(issue ? { FAKE_GH_ISSUE: JSON.stringify(issue) } : {}) }, log };
+  return { env: { AMIGO_GH: shim, FAKE_GH_LOG: log, ...(issue ? { FAKE_GH_ISSUE: JSON.stringify(issue) } : {}) }, log };
 }
 
 /** Every call the fake gh logged. */

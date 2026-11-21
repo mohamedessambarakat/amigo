@@ -33,7 +33,7 @@ export function runOrThrow(cmd: string, args: string[], opts: RunOptions = {}): 
 }
 
 /**
- * Stop an arm's agent and everything it started. Call it only while the arm's tab is known to be alive (fresh heartbeat),
+ * Stop a squad member's agent and everything it started. Call it only while the squad member's tab is known to be alive (fresh heartbeat),
  * so a recycled pid is never hit. On Windows taskkill /T walks the tree; elsewhere the tree comes from `ps` (the agent
  * shares its tab's process group, so signalling a group would also hit the tab's shell).
  */

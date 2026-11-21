@@ -1,13 +1,13 @@
-import { existsSync, writeFileSync } from 'node:fs';
+import { existsSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { logApproval } from './approvals.ts';
-import { drain } from './arms.ts';
+import { drain } from './squad.ts';
 import { forgetFolder } from './claude.ts';
 import { loadProjects } from './config.ts';
 import { gatesConfirmed, reviewProblem, selfApproval } from './gates.ts';
 import { branchSha, changedFiles, commitAll, commitsAhead, committedFiles, deleteBranchIfUnused, hasRemote, onOriginDefault, pushBranch, removeWorktree } from './git.ts';
 import { checkPrTitle, openDraftPr, requireGh } from './github.ts';
-import { taskDir } from './paths.ts';
+import { scratchDir, taskDir } from './paths.ts';
 import { policyState } from './policy.ts';
 import { killTree } from './proc.ts';
 import { assessChanges, snapshot } from './risk.ts';
@@ -38,7 +38,7 @@ function commitGate(t: Task, opts: CloseOptions, env: NodeJS.ProcessEnv): Gate {
   if (opts.pr) {
     const policy = policyState(env);
     if (!policy.approved) throw new Error(`--pr needs an approved policy that allows pull requests, and ${policy.problem}. Ask the user, or close without --pr.`);
-    if (policy.policy?.pr === 'never') throw new Error(`The approved policy does not allow pull requests ("pr": "never" in ${policy.file}). Close without --pr, or ask the user to change it and run octomaxxing approve-policy.`);
+    if (policy.policy?.pr === 'never') throw new Error(`The approved policy does not allow pull requests ("pr": "never" in ${policy.file}). Close without --pr, or ask the user to change it and run amigo approve-policy.`);
     if (!t.repo || !t.branch) throw new Error(`Task ${t.id} has no git branch, so there is nothing to open a pull request for`);
     if (!hasRemote(t.repo, 'origin')) throw new Error(`${t.repo} has no remote named origin to push ${t.branch} to. Close without --pr, or add the remote.`);
     checkPrTitle(t.title, requireGh(env));
@@ -68,7 +68,7 @@ function commitGate(t: Task, opts: CloseOptions, env: NodeJS.ProcessEnv): Gate {
 function openPullRequest(t: Task, env: NodeJS.ProcessEnv): { lines: string[]; url?: string } {
   if (t.pr) return { lines: [`The pull request is already open: ${t.pr}`], url: t.pr };
   if (!t.repo || !t.branch || !t.baseSha || commitsAhead(t.repo, t.branch, t.baseSha) === 0) return { lines: ['Nothing was committed, so no pull request was opened.'] };
-  pushBranch(t.repo, t.branch, env);
+  pushBranch(t.repo, t.branch, env, t.id);
   const body = [t.summary || t.title, ...(t.issue ? [`Closes #${t.issue.number}`] : [])].join('\n\n') + '\n';
   const bodyFile = join(taskDir(t.id, env), 'pr-body.md');
   writeFileSync(bodyFile, body);
@@ -78,10 +78,10 @@ function openPullRequest(t: Task, env: NodeJS.ProcessEnv): { lines: string[]; ur
 }
 
 /**
- * Close an arm: stop its session, optionally commit its work to its branch (and open a draft pull request for it), then
- * remove its worktree. Never merges, and pushes only its own octomaxxing/<id> branch, only with --pr.
+ * Close a squad member: stop its session, optionally commit its work to its branch (and open a draft pull request for it), then
+ * remove its worktree. Never merges, and pushes only its own amigo/<id> branch, only with --pr.
  */
-export function closeArm(id: string, opts: CloseOptions, env: NodeJS.ProcessEnv = process.env): string[] {
+export function closeMember(id: string, opts: CloseOptions, env: NodeJS.ProcessEnv = process.env): string[] {
   const reviewers = listTasks(env).filter((r) => r.reviewOf === id && r.status !== 'closed');
   if (reviewers.length) throw new Error(`Close the review first: ${reviewers.map((r) => r.id).join(', ')}`);
   if ((opts.pr || opts.self) && !opts.commit) throw new Error('--pr and --self only make sense with --commit');
@@ -110,8 +110,8 @@ export function closeArm(id: string, opts: CloseOptions, env: NodeJS.ProcessEnv 
           const sha = commitAll(t.repo, t.worktree, t.branch, opts.message?.trim() || t.title, gate.tree, env, t.gitDir);
           out.push(sha ? `Committed ${sha} to branch ${t.branch}:` : 'Nothing to commit.', ...(sha ? committedFiles(t.repo, sha).map((f) => `  ${f}`) : []));
           if (sha && selfReasons) {
-            logApproval({ event: 'approve', id, project: t.project, branch: t.branch, sha: branchSha(t.repo, t.branch) as string, reasons: selfReasons, undo: `octomaxxing undo ${id}` }, env);
-            out.push(`Self-approved under the policy (logged in approvals.jsonl). Undo: octomaxxing undo ${id}`);
+            logApproval({ event: 'approve', id, project: t.project, branch: t.branch, sha: branchSha(t.repo, t.branch) as string, reasons: selfReasons, undo: `amigo undo ${id}` }, env);
+            out.push(`Self-approved under the policy (logged in approvals.jsonl). Undo: amigo undo ${id}`);
           }
           if (opts.pr) {
             const pr = openPullRequest(t, env);
@@ -127,10 +127,16 @@ export function closeArm(id: string, opts: CloseOptions, env: NodeJS.ProcessEnv 
       removeWorktree(t.repo, t.worktree);
       if (deleteBranchIfUnused(t.repo, t.branch, t.baseSha)) out.push(`Removed the unused branch ${t.branch}.`);
       else if (branchSha(t.repo, t.branch)) out.push(`Branch ${t.branch} kept. Nothing was merged${opts.pr ? '' : ' or pushed'}.`);
+    } else if (t.scratch && !t.reviewOf && t.briefing && t.cwd === scratchDir(t.id, env)) {
+      // The briefing's own squad member leaves nothing worth keeping; every other scratch member keeps its folder.
+      rmSync(t.cwd, { recursive: true, force: true, maxRetries: 10, retryDelay: 300 });
+      out.push("Removed the briefing squad member's scratch folder.");
+    } else if (t.scratch && !t.reviewOf) {
+      out.push(`Kept the scratch folder (nothing was committed, it is not git): ${t.cwd}`);
     } else if (opts.commit) {
-      out.push('This arm worked in place (not a git worktree), so there is nothing to commit.');
+      out.push('This squad member worked in place (not a git worktree), so there is nothing to commit.');
     }
-    // Claude Code adds an entry for every folder a session ran in: drop the arm's worktree, and a folder only we trusted.
+    // Claude Code adds an entry for every folder a session ran in: drop the squad member's worktree, and a folder only we trusted.
     for (const dir of [t.worktree, t.trustAdded && !t.worktree ? t.cwd : null]) {
       if (!dir) continue;
       try {

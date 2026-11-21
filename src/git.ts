@@ -1,6 +1,7 @@
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { sleepSync } from './fsx.ts';
+import { legacyBranchName } from './legacy.ts';
 import { home } from './paths.ts';
 import { run, runOrThrow, type RunOptions, type RunResult } from './proc.ts';
 
@@ -19,9 +20,9 @@ const samePath = (a: string, b: string): boolean => {
 };
 
 /**
- * An arm controls its worktree, including the `.git` file in it. Pointing that file at a git dir the arm made lets that
- * dir's config (core.fsmonitor, filter.*.clean, diff.external ...) run a program the moment the head runs git there,
- * outside the arm's sandbox. So before octomaxxing runs git in a worktree, `.git` must be a regular file naming a git dir
+ * A squad member controls its worktree, including the `.git` file in it. Pointing that file at a git dir the squad member made lets that
+ * dir's config (core.fsmonitor, filter.*.clean, diff.external ...) run a program the moment amigo runs git there,
+ * outside the squad member's sandbox. So before amigo runs git in a worktree, `.git` must be a regular file naming a git dir
  * that `git worktree add` made under the repo's own .git/worktrees, whose commondir leads back to the repo and which points
  * back at this worktree. Throws otherwise. A "worktree" that is the repo itself (a project without worktrees) is trusted.
  */
@@ -55,12 +56,12 @@ export function assertWorktreeIntact(repo: string, worktree: string, adminDir?: 
   if (back === null || !samePath(back, dotGit)) throw bad('its git dir belongs to another worktree');
 }
 
-/** Options for every git call octomaxxing makes inside an arm's worktree: the file system monitor (a program named in config) stays off. */
+/** Options for every git call amigo makes inside a squad member's worktree: the file system monitor (a program named in config) stays off. */
 const WORKTREE_GIT = ['-c', 'core.fsmonitor=false'];
 
 /**
  * The git dir `git worktree add` made for a worktree, found from the repo's own records (each <common>/worktrees/<name>/gitdir
- * names the .git of its worktree). Never reads <worktree>/.git, which the arm controls.
+ * names the .git of its worktree). Never reads <worktree>/.git, which the squad member controls.
  */
 export function findAdminDir(repo: string, worktree: string): string {
   const common = resolve(repo, runOrThrow('git', ['-C', repo, 'rev-parse', '--git-common-dir']).trim());
@@ -82,7 +83,7 @@ export function findAdminDir(repo: string, worktree: string): string {
 }
 
 /**
- * The arguments for one git call in an arm's worktree. The git dir is named outright (octomaxxing's own record, else the
+ * The arguments for one git call in a squad member's worktree. The git dir is named outright (amigo's own record, else the
  * repo's), so git never reads <worktree>/.git: swapping that file between the guard and git cannot plant a config or filter.
  * A "worktree" that is the repo itself is trusted and found the usual way.
  */
@@ -96,7 +97,7 @@ export interface WorktreeOptions extends RunOptions {
   gitDir?: string;
 }
 
-/** Run git in an arm's worktree, after assertWorktreeIntact (a tamper alarm). The one door for every git call there. */
+/** Run git in a squad member's worktree, after assertWorktreeIntact (a tamper alarm). The one door for every git call there. */
 export function worktreeRun(repo: string, worktree: string, args: string[], opts: WorktreeOptions = {}): RunResult {
   const { gitDir, ...runOpts } = opts;
   assertWorktreeIntact(repo, worktree, gitDir);
@@ -111,8 +112,8 @@ export function worktreeGit(repo: string, worktree: string, args: string[], opts
 }
 
 /**
- * git options that switch every hook off for octomaxxing's own commit and push. The hooks folder is arm-controlled
- * (husky: core.hooksPath=.husky), so core.hooksPath points at an empty folder octomaxxing owns; a -c option beats any
+ * git options that switch every hook off for amigo's own commit and push. The hooks folder is member-controlled
+ * (husky: core.hooksPath=.husky), so core.hooksPath points at an empty folder amigo owns; a -c option beats any
  * repo or worktree config. Forward slashes, so the value survives Windows paths.
  */
 export function noHooks(env: NodeJS.ProcessEnv = process.env): string[] {
@@ -121,7 +122,7 @@ export function noHooks(env: NodeJS.ProcessEnv = process.env): string[] {
   return ['-c', `core.hooksPath=${dir.replaceAll('\\', '/')}`];
 }
 
-export const branchName = (id: string): string => `octomaxxing/${id}`;
+export const branchName = (id: string): string => `amigo/${id}`;
 
 export function isGitRepo(path: string): boolean {
   const r = run('git', ['-C', path, 'rev-parse', '--is-inside-work-tree']);
@@ -131,7 +132,7 @@ export function isGitRepo(path: string): boolean {
 /** New worktree on a new branch, starting from the repo's current HEAD, or from `from`. Returns the commit it starts from and its git dir (to be recorded on the task). */
 export function createWorktree(repo: string, worktree: string, branch: string, from = 'HEAD'): { baseSha: string; gitDir: string } {
   const start = run('git', ['-C', repo, 'rev-parse', '--verify', `${from}^{commit}`]);
-  if (start.status !== 0) throw new Error(`${repo} has no commits yet, so octomaxxing cannot create a worktree for it`);
+  if (start.status !== 0) throw new Error(`${repo} has no commits yet, so amigo cannot create a worktree for it`);
   runOrThrow('git', ['-C', repo, 'worktree', 'add', '-q', '-b', branch, worktree, start.stdout.trim()]);
   return { baseSha: start.stdout.trim(), gitDir: findAdminDir(repo, worktree) };
 }
@@ -178,7 +179,7 @@ export function commitAll(repo: string, worktree: string, branch: string, messag
   const before = wRun(['rev-parse', '-q', '--verify', 'HEAD']).stdout.trim();
   // A machine without a full git identity cannot commit: fill in only the missing part.
   const has = (key: string) => wRun(['config', key]).stdout.trim() !== '';
-  const identity = [...(has('user.name') ? [] : ['-c', 'user.name=octomaxxing']), ...(has('user.email') ? [] : ['-c', 'user.email=octomaxxing@localhost'])];
+  const identity = [...(has('user.name') ? [] : ['-c', 'user.name=amigo']), ...(has('user.email') ? [] : ['-c', 'user.email=amigo@localhost'])];
   wGit([...noHooks(env), ...identity, 'commit', '-q', '-m', message]);
   if (expectedTree && wGit(['rev-parse', 'HEAD^{tree}']).trim() !== expectedTree) {
     if (before) wGit(['reset', '-q', '--soft', before]);
@@ -187,7 +188,7 @@ export function commitAll(repo: string, worktree: string, branch: string, messag
   return wGit(['rev-parse', '--short', 'HEAD']).trim();
 }
 
-/** The files of a commit, read from the repo (commits are shared), never by running git in an arm's worktree. */
+/** The files of a commit, read from the repo (commits are shared), never by running git in a squad member's worktree. */
 export function committedFiles(repo: string, sha: string): string[] {
   return runOrThrow('git', ['-C', repo, 'show', '--name-only', '--format=', sha])
     .split(/\r?\n/)
@@ -276,8 +277,12 @@ export function deleteBranch(repo: string, branch: string): void {
   runOrThrow('git', ['-C', repo, 'branch', '-D', branch]);
 }
 
-/** Push one branch (never any other) to origin and make it the branch's upstream. */
-export function pushBranch(repo: string, branch: string, env: NodeJS.ProcessEnv = process.env): void {
-  if (!branch.startsWith('octomaxxing/')) throw new Error(`Refusing to push ${branch}: octomaxxing pushes only octomaxxing/<id> branches`);
+/**
+ * Push one branch (never any other) to origin and make it the branch's upstream. With the task's id, only that task's own
+ * branch goes: amigo/<id>, or the branch a migrated task made before the rename. Without one, any amigo/ branch.
+ */
+export function pushBranch(repo: string, branch: string, env: NodeJS.ProcessEnv = process.env, taskId?: string): void {
+  const ok = taskId ? branch === branchName(taskId) || branch === legacyBranchName(taskId) : branch.startsWith('amigo/');
+  if (!ok) throw new Error(`Refusing to push ${branch}: amigo pushes only the amigo/<id> branch of a task, and only its own`);
   runOrThrow('git', ['-C', repo, ...noHooks(env), 'push', '--set-upstream', 'origin', `refs/heads/${branch}:refs/heads/${branch}`]);
 }

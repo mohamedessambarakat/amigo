@@ -12,9 +12,9 @@ describe('end to end with a fake agent', () => {
     try {
       const repo = makeRepo(join(dir, 'my app'));
       assert.equal(cli(env, ['add', repo]).code, 0);
-      assert.match(cli(env, ['projects']).out, /my-app .*git, worktree per arm/);
+      assert.match(cli(env, ['projects']).out, /my-app .*git, worktree per squad member/);
 
-      const spawned = cli(env, ['spawn', '--project', 'my-app'], 'Title: Write the file\nMODE:question\nDone when: arm-output.txt exists');
+      const spawned = cli(env, ['spawn', '--project', 'my-app'], 'Title: Write the file\nMODE:question\nDone when: member-output.txt exists');
       assert.equal(spawned.code, 0, spawned.err);
       const id = idFrom(spawned.out);
       const asked = await waitFor(id, env, ['question', 'done', 'failed']);
@@ -31,9 +31,9 @@ describe('end to end with a fake agent', () => {
       assert.equal(done.status, 'done');
       assert.equal(done.runs, 2);
       const wt = done.worktree as string;
-      assert.equal(readFileSync(join(wt, 'arm-output.txt'), 'utf8'), 'follow-up handled\n');
-      assert.ok(!existsSync(join(repo, 'arm-output.txt')), 'the main checkout is untouched');
-      assert.match(cli(env, ['status', id]).out, /arm-output\.txt/);
+      assert.equal(readFileSync(join(wt, 'member-output.txt'), 'utf8'), 'follow-up handled\n');
+      assert.ok(!existsSync(join(repo, 'member-output.txt')), 'the main checkout is untouched');
+      assert.match(cli(env, ['status', id]).out, /member-output\.txt/);
 
       const review = idFrom(cli(env, ['spawn', '--review', id], 'Title: Review it\ncheck the file').out);
       assert.equal((await waitFor(review, env, ['done', 'failed'])).summary, 'PASS - looks good');
@@ -42,19 +42,19 @@ describe('end to end with a fake agent', () => {
       assert.match(blocked.err, /Close the review first/);
       assert.equal(cli(env, ['close', review]).code, 0);
 
-      const closed = cli(env, ['close', id, '--commit', '-m', 'add arm output']);
+      const closed = cli(env, ['close', id, '--commit', '-m', 'add squad member output']);
       assert.equal(closed.code, 0, closed.err);
-      assert.match(closed.out, /Committed \w+ to branch octomaxxing\//);
+      assert.match(closed.out, /Committed \w+ to branch amigo\//);
       assert.ok(!existsSync(wt), 'worktree removed');
-      assert.equal(git(repo, 'log', '-1', '--format=%s', `octomaxxing/${id}`).trim(), 'add arm output');
-      assert.equal(git(repo, 'show', '--name-only', '--format=', `octomaxxing/${id}`).trim(), 'arm-output.txt');
+      assert.equal(git(repo, 'log', '-1', '--format=%s', `amigo/${id}`).trim(), 'add squad member output');
+      assert.equal(git(repo, 'show', '--name-only', '--format=', `amigo/${id}`).trim(), 'member-output.txt');
       assert.equal(git(repo, 'rev-parse', '--abbrev-ref', 'HEAD').trim(), 'main', 'nothing merged');
     } finally {
       cleanup(dir);
     }
   });
 
-  it('queues while memory is short and starts the next arm when one finishes', async () => {
+  it('queues while memory is short and starts the next squad member when one finishes', async () => {
     const { dir, env } = makeHome(1);
     try {
       for (const name of ['one', 'two']) {
@@ -68,14 +68,14 @@ describe('end to end with a fake agent', () => {
       assert.equal(getTask(b, env)?.status, 'queued');
       await waitFor(a, env, ['done']);
       await waitFor(b, env, ['done']);
-      assert.ok(existsSync(join(dir, 'one', 'arm-output.txt')), 'non-git projects are worked on in place');
+      assert.ok(existsSync(join(dir, 'one', 'member-output.txt')), 'non-git projects are worked on in place');
       assert.match(cli(env, ['close', a, '--commit']).out, /in place/);
     } finally {
       cleanup(dir);
     }
   });
 
-  it('runs one arm at a time in a non-git folder', async () => {
+  it('runs one squad member at a time in a non-git folder', async () => {
     const { dir, env } = makeHome();
     try {
       const folder = join(dir, 'shared');
@@ -83,7 +83,7 @@ describe('end to end with a fake agent', () => {
       cli(env, ['add', folder]);
       const a = idFrom(cli(env, ['spawn', '--project', 'shared'], 'Title: one\nMODE:sleep').out);
       const b = idFrom(cli(env, ['spawn', '--project', 'shared'], 'Title: two').out);
-      assert.equal(getTask(b, env)?.status, 'queued', 'waits although arms are free');
+      assert.equal(getTask(b, env)?.status, 'queued', 'waits although squad members are free');
       await waitFor(a, env, ['done']);
       await waitFor(b, env, ['done']);
     } finally {
@@ -101,7 +101,7 @@ describe('end to end with a fake agent', () => {
       assert.equal(failed.status, 'failed');
       assert.equal(failed.exitCode, 3);
       assert.equal(cli(env, ['close', bad]).code, 0);
-      assert.equal(git(repo, 'branch', '--list', `octomaxxing/${bad}`).trim(), '', 'a branch with no commits is removed');
+      assert.equal(git(repo, 'branch', '--list', `amigo/${bad}`).trim(), '', 'a branch with no commits is removed');
 
       const good = idFrom(cli(env, ['spawn', '--project', 'repo'], 'Title: write').out);
       await waitFor(good, env, ['done']);
@@ -115,7 +115,7 @@ describe('end to end with a fake agent', () => {
     }
   });
 
-  it('refuses to commit when the arm left its branch, and keeps the work', async () => {
+  it('refuses to commit when the squad member left its branch, and keeps the work', async () => {
     const { dir, env } = makeHome();
     try {
       const repo = makeRepo(join(dir, 'repo'));
@@ -124,15 +124,15 @@ describe('end to end with a fake agent', () => {
       const t = await waitFor(id, env, ['done', 'failed']);
       const r = cli(env, ['close', id, '--commit']);
       assert.equal(r.code, 1);
-      assert.match(r.err, /refs\/heads\/elsewhere, not octomaxxing\//);
+      assert.match(r.err, /refs\/heads\/elsewhere, not amigo\//);
       assert.equal(getTask(id, env)?.status, 'done');
-      assert.ok(existsSync(join(t.worktree as string, 'arm-output.txt')), 'the work is still there');
+      assert.ok(existsSync(join(t.worktree as string, 'member-output.txt')), 'the work is still there');
     } finally {
       cleanup(dir);
     }
   });
 
-  it('arms cannot manage tasks; the head brief carries the agent and the greeting', async () => {
+  it('squad members cannot manage tasks; amigo brief carries the agent and the briefing', async () => {
     const { dir, env } = makeHome();
     try {
       const folder = join(dir, 'p');
@@ -140,12 +140,12 @@ describe('end to end with a fake agent', () => {
       cli(env, ['add', folder]);
       const id = idFrom(cli({ ...env, CLI_PATH: cliPath }, ['spawn', '--project', 'p'], 'Title: sneaky\nMODE:manage').out);
       const summary = (await waitFor(id, env, ['done'])).summary ?? '';
-      assert.match(summary, /manage exit 1: octomaxxing: You are running inside arm/);
+      assert.match(summary, /manage exit 1: amigo: You are running inside squad member/);
       assert.match(summary, /inbox exit 1/);
       const brief = cli(env, ['brief', '--agent', 'fake']);
       assert.equal(brief.code, 0, brief.err);
       assert.match(brief.out, /You run as the "fake" agent\. Pass `--agent fake`/);
-      assert.match(brief.out, /🐙 .+\n1 project · 0 arms running · inbox: \S+/);
+      assert.match(brief.out, /## Briefing[\s\S]*1 project registered\./);
     } finally {
       cleanup(dir);
     }
@@ -160,32 +160,32 @@ describe('end to end with a fake agent', () => {
       assert.equal(r.code, 0, r.err);
       assert.match(r.out, /DRY RUN[\s\S]*new worktree[\s\S]*fake-agent\.mjs/);
       assert.ok(!existsSync(join(home(env), 'tasks')) || readdirSync(join(home(env), 'tasks')).length === 0);
-      assert.match(cli(env, ['head', '--dry-run']).out, /would start the head \(fake\)/);
+      assert.match(cli(env, ['--dry-run']).out, /would start amigo \(fake\)/);
     } finally {
       cleanup(dir);
     }
   });
 
-  it('runs from inside an arm: OCTOMAXXING_* in the parent environment do not leak into a test', async () => {
+  it('runs from inside a squad member: AMIGO_* in the parent environment do not leak into a test', async () => {
     const outside = tmpDir();
-    const arm = { OCTOMAXXING_TASK: 'x-1', OCTOMAXXING_HOME: join(outside, 'arm-home'), OCTOMAXXING_TERMINAL: 'wt', OCTOMAXXING_FREE_MB: '1' };
-    const saved = Object.fromEntries(Object.keys(arm).map((k) => [k, process.env[k]]));
-    Object.assign(process.env, arm);
+    const member = { AMIGO_TASK: 'x-1', AMIGO_HOME: join(outside, 'member-home'), AMIGO_TERMINAL: 'wt', AMIGO_FREE_MB: '1' };
+    const saved = Object.fromEntries(Object.keys(member).map((k) => [k, process.env[k]]));
+    Object.assign(process.env, member);
     const { dir, env } = makeHome();
     for (const [k, v] of Object.entries(saved)) {
       if (v === undefined) delete process.env[k];
       else process.env[k] = v;
     }
     try {
-      assert.equal(env.OCTOMAXXING_TASK, undefined);
-      assert.equal(env.OCTOMAXXING_TERMINAL, 'test');
+      assert.equal(env.AMIGO_TASK, undefined);
+      assert.equal(env.AMIGO_TERMINAL, 'test');
       const folder = join(dir, 'p');
       mkdirSync(folder);
       assert.equal(cli(env, ['add', folder]).code, 0);
       const r = cli(env, ['spawn', '--project', 'p'], 'Title: inside');
       assert.equal(r.code, 0, r.err);
       await waitFor(idFrom(r.out), env, ['done']);
-      assert.ok(!existsSync(arm.OCTOMAXXING_HOME), "the arm's home is never touched");
+      assert.ok(!existsSync(member.AMIGO_HOME), "the squad member's home is never touched");
     } finally {
       cleanup(dir);
       cleanup(outside);
@@ -195,14 +195,16 @@ describe('end to end with a fake agent', () => {
   it('first run creates the home folder and says what to do next', () => {
     const { dir, env } = makeHome();
     try {
-      const fresh = { ...env, OCTOMAXXING_HOME: join(dir, 'fresh') };
-      const r = cli(fresh, ['help']);
+      const fresh = { ...env, AMIGO_HOME: join(dir, 'fresh') };
+      const help = cli(fresh, ['help']);
+      assert.match(help.out, /No agent configured yet/);
+      assert.ok(!existsSync(join(dir, 'fresh')), 'help never creates the data folder: that could pre-empt the one-time migration');
+      const r = cli(fresh, ['projects']);
       assert.match(r.err, /Created .*fresh/);
-      assert.match(r.out, /No agent configured yet/);
       assert.ok(existsSync(join(dir, 'fresh', 'config.json')) && existsSync(join(dir, 'fresh', 'projects.json')));
       assert.match(cli(fresh, ['spawn', '--project', 'x'], 'Title: t').err, /No agent configured yet/);
 
-      const untouched = { ...env, OCTOMAXXING_HOME: join(dir, 'never'), HOME: join(dir, 'user'), USERPROFILE: join(dir, 'user') };
+      const untouched = { ...env, AMIGO_HOME: join(dir, 'never'), HOME: join(dir, 'user'), USERPROFILE: join(dir, 'user') };
       assert.match(cli(untouched, ['install-skill', '--remove']).out, /Nothing to remove/);
       assert.ok(!existsSync(join(dir, 'never')), 'removing skills never creates the data folder');
     } finally {
@@ -210,13 +212,13 @@ describe('end to end with a fake agent', () => {
     }
   });
 
-  it('runs the head with the greeting in its prompt', () => {
+  it('bare amigo starts the session with the briefing in its prompt', () => {
     const { dir, env } = makeHome();
     try {
-      writeFileSync(join(home(env), 'config.json'), JSON.stringify({ agents: { fake: { head: [process.execPath, fakeAgent, 'MODE:head {prompt}'], arm: [process.execPath, fakeAgent, '{prompt}'] } } }));
-      const r = cli(env, ['head']);
+      writeFileSync(join(home(env), 'config.json'), JSON.stringify({ agents: { fake: { amigo: [process.execPath, fakeAgent, 'MODE:amigo {prompt}'], member: [process.execPath, fakeAgent, '{prompt}'] } } }));
+      const r = cli(env, []);
       assert.equal(r.code, 0, r.err);
-      assert.match(r.out, /🐙 .+\n0 projects · 0 arms running · inbox: empty/);
+      assert.match(r.out, /0 projects registered\.\nNothing finished, nothing waiting on you, nothing open\./);
     } finally {
       cleanup(dir);
     }
@@ -226,38 +228,38 @@ describe('end to end with a fake agent', () => {
     const { dir, env } = makeHome();
     const shim = join(dir, 'agent.cmd');
     writeFileSync(shim, `@echo off\r\n"${process.execPath}" "${fakeAgent}" %*\r\n`);
-    writeFileSync(join(home(env), 'config.json'), JSON.stringify({ agents: { fake: { arm: [shim, '{prompt}'] } } }));
+    writeFileSync(join(home(env), 'config.json'), JSON.stringify({ agents: { fake: { member: [shim, '{prompt}'] } } }));
     try {
       const folder = join(dir, 'p');
       mkdirSync(folder);
       cli(env, ['add', folder]);
       const id = idFrom(cli(env, ['spawn', '--project', 'p'], 'Title: via cmd\nquotes " and 100% are fine here').out);
       assert.equal((await waitFor(id, env, ['done', 'failed'])).status, 'done');
-      assert.equal(readFileSync(join(folder, 'arm-output.txt'), 'utf8'), 'pointer=true\n');
+      assert.equal(readFileSync(join(folder, 'member-output.txt'), 'utf8'), 'pointer=true\n');
     } finally {
       cleanup(dir);
     }
   });
 
-  it("starts a Claude arm as its own session and keeps a failed launch's stderr in output.log", async () => {
+  it("starts a Claude squad member as its own session and keeps a failed launch's stderr in output.log", async () => {
     const { dir, env } = makeHome();
     const fakeClaude = join(codeRoot, 'test', 'fake-claude.mjs');
     const win = process.platform === 'win32';
     const shim = join(dir, win ? 'claude.cmd' : 'claude');
     writeFileSync(shim, win ? `@echo off\r\n"${process.execPath}" "${fakeClaude}" %*\r\n` : `#!/bin/sh\nexec "${process.execPath}" "${fakeClaude}" "$@"\n`, { mode: 0o755 });
-    writeFileSync(join(home(env), 'config.json'), JSON.stringify({ agents: { claude: { arm: [shim, '{prompt}'] } } }));
+    writeFileSync(join(home(env), 'config.json'), JSON.stringify({ agents: { claude: { member: [shim, '{prompt}'] } } }));
     try {
       const folder = join(dir, 'p');
       mkdirSync(folder);
       cli(env, ['add', folder]);
-      // spawn runs in the head's shell, which carries the head session's variables.
+      // spawn runs in amigo's shell, which carries amigo session's variables.
       const id = idFrom(cli({ ...env, CLAUDE_CODE_SESSION_ID: 'head-session', CLAUDECODE: '1' }, ['spawn', '--project', 'p'], 'Title: resume').out);
       const t = await waitFor(id, env, ['failed', 'done']);
       assert.equal(t.status, 'failed');
       assert.match(t.summary ?? '', /^The session ended in the middle of a turn \(exit 1\): No conversation found with session ID: [0-9a-f-]{36}$/);
       const log = readFileSync(join(home(env), 'tasks', id, 'output.log'), 'utf8');
       assert.match(log, /No conversation found with session ID/);
-      assert.doesNotMatch(log, /inherited/, 'the arm does not inherit the head session');
+      assert.doesNotMatch(log, /inherited/, 'the squad member does not inherit amigo session');
     } finally {
       cleanup(dir);
     }

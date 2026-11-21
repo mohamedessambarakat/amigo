@@ -4,20 +4,20 @@ import { readJson, withLock, writeJsonAtomic } from './fsx.ts';
 import { lockPath, taskDir, tasksDir } from './paths.ts';
 
 /**
- * queued   waiting for a free arm
+ * queued   waiting for a free squad member
  * running  the agent is working
- * verifying  the agent said done and octomaxxing is running the project's checks in its folder
+ * verifying  the agent said done and amigo is running the project's checks in its folder
  * done / blocked / question   the agent finished its turn (Claude) or run and said so (see parseStatus)
  * failed   the agent exited with an error, never started, or its tab closed mid-turn
  * closing  close is committing or cleaning up; nothing may start it again
- * closed   the head closed it (committed or discarded)
+ * closed   amigo closed it (committed or discarded)
  */
 export type Status = 'queued' | 'running' | 'verifying' | 'done' | 'blocked' | 'question' | 'failed' | 'closing' | 'closed';
 
-/** Statuses where the arm is waiting for the head. */
+/** Statuses where the squad member is waiting for amigo. */
 export const FINISHED: readonly Status[] = ['done', 'blocked', 'question', 'failed'];
 
-/** One verification command run in an arm's folder. `output` is its last lines. */
+/** One verification command run in a squad member's folder. `output` is its last lines. */
 export interface CheckResult {
   command: string;
   ok: boolean;
@@ -27,7 +27,7 @@ export interface CheckResult {
   output: string;
 }
 
-/** How the project's checks went when the arm last said done. 'unverified': the project has no checks. */
+/** How the project's checks went when the squad member last said done. 'unverified': the project has no checks. */
 export interface Verification {
   state: 'passed' | 'failed' | 'unverified';
   results: CheckResult[];
@@ -60,8 +60,12 @@ export interface Task {
   baseSha: string | null;
   /** The worktree's git dir under the repo (recorded when the worktree is made): git runs against it, never against <worktree>/.git. Missing on older tasks. */
   gitDir?: string;
-  /** The messaging address (`uds:<socket>`) of the Claude session that spawned this arm; it gets the arm's results. */
-  headAddress?: string;
+  /** The messaging address (`uds:<socket>`) of the Claude session that spawned this squad member; it gets the squad member's results. */
+  amigoAddress?: string;
+  /** A scratch task (spawn --scratch): works in its own folder under the home, not a project and not git. */
+  scratch?: boolean;
+  /** The startup briefing's own squad member (see briefing.ts): one open at a time, and its scratch folder goes when it is closed. */
+  briefing?: boolean;
   /** Set for a reviewer: the task whose folder it reads, and that task's git tree when the reviewer was spawned. */
   reviewOf?: string;
   reviewedTree?: string;
@@ -74,7 +78,7 @@ export interface Task {
   /** The draft pull request opened by close --pr. */
   pr?: string;
   verification?: Verification;
-  /** Automatic fix-it follow-ups sent for failed checks since the head last wrote to the arm. */
+  /** Automatic fix-it follow-ups sent for failed checks since amigo last wrote to the squad member. */
   checkRetries?: number;
   /** The latest reviewer verdict on this task's work. */
   review?: ReviewVerdict;
@@ -85,29 +89,29 @@ export interface Task {
   updatedAt: string;
   /** How many times the agent was started (1 + follow-ups). */
   runs: number;
-  /** Follow-up messages from the head, oldest first. */
+  /** Follow-up messages from amigo, oldest first. */
   followUps: string[];
-  /** How many follow-ups the arm has been given (a resumed Claude session gets only the rest). */
+  /** How many follow-ups the squad member has been given (a resumed Claude session gets only the rest). */
   followUpsSent?: number;
-  /** The agent process in the arm's tab. */
+  /** The agent process in the squad member's tab. */
   pid?: number | null;
-  /** When the arm's tab was last opened. */
+  /** When the squad member's tab was last opened. */
   startedAt?: string | null;
-  /** Claude Code arms: the session id, resumed when a follow-up reopens the tab once the session has started. */
+  /** Claude Code squad members: the session id, resumed when a follow-up reopens the tab once the session has started. */
   sessionId?: string | null;
   sessionStarted?: boolean;
-  /** Claude Code arms: the session's transcript, as its hooks report it; a --resume needs it to exist. */
+  /** Claude Code squad members: the session's transcript, as its hooks report it; a --resume needs it to exist. */
   transcriptPath?: string | null;
-  /** octomaxxing added the ~/.claude.json trust entry for cwd (removed again on close). */
+  /** amigo added the ~/.claude.json trust entry for cwd (removed again on close). */
   trustAdded?: boolean;
-  /** Warp only: the tab config file, deleted when the arm ends. */
+  /** Warp only: the tab config file, deleted when the squad member ends. */
   tabConfig?: string | null;
-  /** herdr only: the workspace holding the arm's tab, where a reviewer's tab goes. */
+  /** herdr only: the workspace holding the squad member's tab, where a reviewer's tab goes. */
   herdrWorkspace?: string | null;
   exitCode?: number | null;
   /** The agent's STATUS line (or its last output line) from the latest run. */
   summary?: string;
-  /** False until the head has seen this result in `inbox`. */
+  /** False until amigo has seen this result in `inbox`. */
   seen: boolean;
 }
 
@@ -117,7 +121,7 @@ export function assertValidId(id: string): void {
   if (!ID_RE.test(id)) throw new Error(`Invalid task id "${id}"`);
 }
 
-/** A new id: the arm's number, then a few words of its title (`7-fix-footer`). The number alone is enough in every command. */
+/** A new id: the squad member's number, then a few words of its title (`7-fix-footer`). The number alone is enough in every command. */
 export function newId(title: string, n: number): string {
   const words = title.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
   let slug = (words[0] ?? '').slice(0, 16);
@@ -131,34 +135,34 @@ export function newId(title: string, n: number): string {
 const NUMBER_RE = /^(\d+)(?:-|$)/;
 
 /** The number an id starts with (`7` for `7-fix-footer`); ids from before numbering have none. */
-export function armNumber(id: string): string | null {
+export function memberNumber(id: string): string | null {
   return NUMBER_RE.exec(id)?.[1] ?? null;
 }
 
-/** One more than the highest arm number used so far, closed arms included: a number is never reused. */
-export function nextArmNumber(env: NodeJS.ProcessEnv = process.env): number {
+/** One more than the highest squad member number used so far, closed squad members included: a number is never reused. */
+export function nextMemberNumber(env: NodeJS.ProcessEnv = process.env): number {
   const dir = tasksDir(env);
-  const used = existsSync(dir) ? readdirSync(dir).map((d) => Number(armNumber(d) ?? 0)) : [];
+  const used = existsSync(dir) ? readdirSync(dir).map((d) => Number(memberNumber(d) ?? 0)) : [];
   return Math.max(0, ...used) + 1;
 }
 
 /**
- * The task a person means: its exact id, its number (`7`), or the start of its id. When several match, the one arm that
+ * The task a person means: its exact id, its number (`7`), or the start of its id. When several match, the one squad member that
  * is still open wins.
  */
 export function resolveId(ref: string, env: NodeJS.ProcessEnv = process.env): string {
   const all = listTasks(env);
   if (all.some((t) => t.id === ref)) return ref;
-  // An id from before arms were numbered (arm12-deadbeef) keeps the meaning "arm12" had then, over the arm12 shorthand.
-  const shorthand = ref && !all.some((t) => armNumber(t.id) === null && t.id.startsWith(ref));
-  if (shorthand) ref = ref.replace(/^(arm|#)(?=\d+$)/i, ''); // arm3 and #3 mean arm 3 too
+  // `arm3` and `#3` still mean task 3 (an old habit). An id from before numbering that starts with such a word (arm12-deadbeef) wins over the shorthand.
+  const shorthand = ref && !all.some((t) => memberNumber(t.id) === null && t.id.startsWith(ref));
+  if (shorthand) ref = ref.replace(/^(arm|#)(?=\d+$)/i, '');
   if (all.some((t) => t.id === ref)) return ref;
-  const matches = /^\d+$/.test(ref) ? all.filter((t) => armNumber(t.id) === ref) : all.filter((t) => ref && t.id.startsWith(ref));
+  const matches = /^\d+$/.test(ref) ? all.filter((t) => memberNumber(t.id) === ref) : all.filter((t) => ref && t.id.startsWith(ref));
   const open = matches.filter((t) => t.status !== 'closed');
   const pick = matches.length === 1 ? matches : open;
   if (pick.length === 1) return pick[0]!.id;
-  if (!matches.length) throw new Error(`No arm matches "${ref}" (see octomaxxing status)`);
-  throw new Error(`"${ref}" matches several arms: ${(open.length ? open : matches).map((t) => t.id).join(', ')}`);
+  if (!matches.length) throw new Error(`No squad member matches "${ref}" (see amigo status)`);
+  throw new Error(`"${ref}" matches several squad members: ${(open.length ? open : matches).map((t) => t.id).join(', ')}`);
 }
 
 export const taskFile = (id: string, env: NodeJS.ProcessEnv = process.env): string => join(taskDir(id, env), 'task.json');
@@ -181,7 +185,7 @@ export function claimTaskDir(id: string, env: NodeJS.ProcessEnv = process.env): 
 
 export const HEARTBEAT_MS = 5_000;
 
-/** The arm's tab touches this file while it is open; pids alone are not trusted (they get reused after a reboot). */
+/** The squad member's tab touches this file while it is open; pids alone are not trusted (they get reused after a reboot). */
 export function beat(id: string, env: NodeJS.ProcessEnv = process.env): void {
   writeFileSync(heartbeatFile(id, env), String(Date.now()));
 }
@@ -206,7 +210,7 @@ export function getTask(id: string, env: NodeJS.ProcessEnv = process.env): Task 
 
 export function requireTask(id: string, env: NodeJS.ProcessEnv = process.env): Task {
   const t = getTask(id, env);
-  if (!t) throw new Error(`No task "${id}" (see octomaxxing status)`);
+  if (!t) throw new Error(`No task "${id}" (see amigo status)`);
   return t;
 }
 

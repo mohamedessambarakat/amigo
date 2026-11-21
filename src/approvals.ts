@@ -25,7 +25,7 @@ export function logApproval(record: Omit<ApprovalRecord, 'time'>, env: NodeJS.Pr
 }
 
 /** Every readable line of approvals.jsonl. A damaged line is skipped with a warning, so one bad line cannot lock out every undo. */
-export function readApprovals(env: NodeJS.ProcessEnv = process.env, warn: (message: string) => void = (m) => process.stderr.write(`octomaxxing: ${m}\n`)): ApprovalRecord[] {
+export function readApprovals(env: NodeJS.ProcessEnv = process.env, warn: (message: string) => void = (m) => process.stderr.write(`amigo: ${m}\n`)): ApprovalRecord[] {
   if (!existsSync(approvalsPath(env))) return [];
   const records: ApprovalRecord[] = [];
   readFileSync(approvalsPath(env), 'utf8')
@@ -52,7 +52,7 @@ export function undoSelfApproved(id: string, env: NodeJS.ProcessEnv = process.en
   const tip = branchSha(t.repo, t.branch);
   if (!tip) throw new Error(`Branch ${t.branch} no longer exists in ${t.repo}.`);
   if (branchPushed(t.repo, t.branch)) {
-    throw new Error(`Branch ${t.branch} was pushed (or has an upstream), so other people may have it: octomaxxing will not delete it. Undo it by hand: close the pull request and delete the remote branch, then the local one.`);
+    throw new Error(`Branch ${t.branch} was pushed (or has an upstream), so other people may have it: amigo will not delete it. Undo it by hand: close the pull request and delete the remote branch, then the local one.`);
   }
   if (tip !== approval.sha) throw new Error(`Branch ${t.branch} moved since it was approved (approved ${approval.sha?.slice(0, 8)}, now ${tip.slice(0, 8)}). Check it by hand in ${t.repo}.`);
   deleteBranch(t.repo, t.branch);

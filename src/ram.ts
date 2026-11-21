@@ -10,9 +10,9 @@ export function parseVmStat(out: string): number | null {
   return Math.floor((total * size) / 1024 / 1024);
 }
 
-/** Free memory in MB. OCTOMAXXING_FREE_MB overrides the measurement. */
+/** Free memory in MB. AMIGO_FREE_MB overrides the measurement. */
 export function freeMemMb(env: NodeJS.ProcessEnv = process.env, platform: NodeJS.Platform = process.platform): number {
-  if (env.OCTOMAXXING_FREE_MB !== undefined && env.OCTOMAXXING_FREE_MB !== '') return Number(env.OCTOMAXXING_FREE_MB);
+  if (env.AMIGO_FREE_MB !== undefined && env.AMIGO_FREE_MB !== '') return Number(env.AMIGO_FREE_MB);
   if (platform === 'darwin') {
     const r = run('vm_stat', []);
     const mb = r.status === 0 ? parseVmStat(r.stdout) : null;
@@ -21,7 +21,7 @@ export function freeMemMb(env: NodeJS.ProcessEnv = process.env, platform: NodeJS
   return Math.floor(os.freemem() / 1024 / 1024);
 }
 
-/** Start one more arm only if free memory, minus this arm and the arms still starting up, stays at or above the reserve. */
-export function ramAllows(freeMb: number, armMb: number, reserveMb: number, starting: number): boolean {
-  return freeMb - (starting + 1) * armMb >= reserveMb;
+/** Start one more squad member only if free memory, minus this squad member and the squad members still starting up, stays at or above the reserve. */
+export function ramAllows(freeMb: number, memberMb: number, reserveMb: number, starting: number): boolean {
+  return freeMb - (starting + 1) * memberMb >= reserveMb;
 }

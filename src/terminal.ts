@@ -6,9 +6,9 @@ import { resolveExecutable } from './command.ts';
 import { run, type RunResult } from './proc.ts';
 
 /**
- * How an arm's tab opens. It is always the terminal the head runs in, found from the variables that terminal sets; one
- * that offers no way to open a tab gets a new console window (`window`). Nobody configures this. OCTOMAXXING_TERMINAL is
- * internal: it carries the found kind into arm tabs, and `test` there runs the tab's command as a detached process.
+ * How a squad member's tab opens. It is always the terminal amigo runs in, found from the variables that terminal sets; one
+ * that offers no way to open a tab gets a new console window (`window`). Nobody configures this. AMIGO_TERMINAL is
+ * internal: it carries the found kind into squad member tabs, and `test` there runs the tab's command as a detached process.
  */
 export type TerminalKind = 'tmux' | 'herdr' | 'wezterm' | 'warp' | 'wt' | 'terminal' | 'window' | 'test';
 const KINDS: readonly TerminalKind[] = ['tmux', 'herdr', 'wezterm', 'warp', 'wt', 'terminal', 'window', 'test'];
@@ -38,21 +38,21 @@ export function detectTerminal(env: NodeJS.ProcessEnv, platform: NodeJS.Platform
   return platform === 'darwin' ? 'terminal' : 'window';
 }
 
-/** The herdr workspace the head runs in. A queued arm's tab is in a workspace of its own, so the carried value wins. */
-export const headHerdrWorkspace = (env: NodeJS.ProcessEnv): string | null => env.OCTOMAXXING_HERDR_WORKSPACE || env.HERDR_WORKSPACE_ID || null;
+/** The herdr workspace amigo runs in. A queued squad member's tab is in a workspace of its own, so the carried value wins. */
+export const amigoHerdrWorkspace = (env: NodeJS.ProcessEnv): string | null => env.AMIGO_HERDR_WORKSPACE || env.HERDR_WORKSPACE_ID || null;
 
-/** The terminal found for the head (carried in OCTOMAXXING_TERMINAL), else the one this process runs in. */
+/** The terminal found for amigo (carried in AMIGO_TERMINAL), else the one this process runs in. */
 export function selectTerminal(t: TerminalEnv): TerminalKind {
-  const carried = t.env.OCTOMAXXING_TERMINAL as TerminalKind | undefined;
+  const carried = t.env.AMIGO_TERMINAL as TerminalKind | undefined;
   const kind = carried && KINDS.includes(carried) ? carried : detectTerminal(t.env, t.platform);
   if (kind === 'window' && t.platform === 'linux' && !(t.find ?? ((c) => resolveExecutable(c, t.env, t.platform)))('x-terminal-emulator')) {
-    throw new Error('octomaxxing cannot open a tab or a window from this terminal: no terminal emulator found (x-terminal-emulator)');
+    throw new Error('amigo cannot open a tab or a window from this terminal: no terminal emulator found (x-terminal-emulator)');
   }
   return kind;
 }
 
 export interface TabRequest {
-  /** Tab name, octomaxxing-<id>. */
+  /** Tab name, amigo-<id>. */
   name: string;
   title: string;
   cwd: string;
@@ -69,9 +69,9 @@ export interface TabRequest {
 export interface HerdrPlacement {
   /** The tab's name: the task id and title, shortened. */
   label: string;
-  /** An arm with its own worktree gets a workspace of its own, which herdr closes when the arm's tab does. */
+  /** A squad member with its own worktree gets a workspace of its own, which herdr closes when the squad member's tab does. */
   ownWorkspace: boolean;
-  /** Otherwise a tab in the first of these that still exists (the reviewed arm's, then the head's); none left means a new workspace. */
+  /** Otherwise a tab in the first of these that still exists (the reviewed squad member's, then amigo's); none left means a new workspace. */
   workspaces: string[];
 }
 
@@ -79,7 +79,7 @@ export interface TabPlan {
   files: { path: string; content: string }[];
   /** What opens the tab. Null for 'test', and for herdr, which takes several steps (see openHerdrTab). */
   command: { cmd: string; args: string[] } | null;
-  /** The Warp tab config, deleted when the arm ends. */
+  /** The Warp tab config, deleted when the squad member ends. */
   tabConfig: string | null;
 }
 
@@ -102,8 +102,8 @@ function cmdArg(arg: string): string {
 }
 
 /**
- * The tab runs a small script, so no terminal has to parse the command line itself. The tab always closes when the arm
- * ends, error or not: nothing waits for a key. Errors stay visible in `octomaxxing status`, `inbox` and `attach`.
+ * The tab runs a small script, so no terminal has to parse the command line itself. The tab always closes when the squad member
+ * ends, error or not: nothing waits for a key. Errors stay visible in `amigo status`, `inbox` and `attach`.
  */
 export function tabScript(argv: string[], platform: NodeJS.Platform): string {
   // The file is UTF-8; without chcp, cmd.exe reads it in the OEM code page and mangles non-ASCII paths.
@@ -152,13 +152,13 @@ export function planTab(kind: TerminalKind, req: TabRequest, home: string = os.h
       return { files, command, tabConfig };
     }
     case 'wt': {
-      // `;` separates wt subcommands, so it cannot appear in an argument. `-w 0` is the window the head runs in.
+      // `;` separates wt subcommands, so it cannot appear in an argument. `-w 0` is the window amigo runs in.
       if ([req.cwd, script].some((s) => s.includes(';'))) throw new Error('This terminal cannot open a tab in a path that contains ";"');
       const title = req.title.replace(/;/g, ',');
       return { files, command: { cmd: 'wt.exe', args: ['-w', '0', 'new-tab', '--title', title, '--suppressApplicationTitle', '--startingDirectory', req.cwd, 'cmd', '/c', script] }, tabConfig: null };
     }
     case 'wezterm':
-      // A new tab in the window of the pane the head runs in (WEZTERM_PANE); openTab then names it.
+      // A new tab in the window of the pane amigo runs in (WEZTERM_PANE); openTab then names it.
       return { files, command: { cmd: 'wezterm', args: ['cli', 'spawn', '--cwd', req.cwd, '--', ...(win ? ['cmd.exe', '/c', script] : ['sh', script])] }, tabConfig: null };
     case 'window': {
       if (win) {
@@ -198,8 +198,8 @@ function herdr(runner: Runner, env: NodeJS.ProcessEnv, args: string[]): { result
 }
 
 /**
- * Open the arm's tab in herdr: a new workspace for an arm with its own worktree, else a tab in the first workspace that
- * still exists (a queued arm may start after one was closed), else a new workspace. Only the last can fail the arm.
+ * Open the squad member's tab in herdr: a new workspace for a squad member with its own worktree, else a tab in the first workspace that
+ * still exists (a queued squad member may start after one was closed), else a new workspace. Only the last can fail the squad member.
  * herdr closes the tab when the script's shell exits, and a workspace with its last tab. Returns the workspace id.
  */
 function openHerdrTab(req: TabRequest, shellLine: string, runner: Runner): string {
@@ -221,16 +221,16 @@ function openHerdrTab(req: TabRequest, shellLine: string, runner: Runner): strin
   }
   if (!made) {
     const r = call(['workspace', 'create', '--cwd', req.cwd, '--label', place.label, '--no-focus']);
-    if ('error' in r) throw new Error(`Could not open a herdr workspace for the arm: ${r.error}`);
+    if ('error' in r) throw new Error(`Could not open a herdr workspace for the squad member: ${r.error}`);
     made = created(r);
-    if (!made) throw new Error(`Could not open a herdr workspace for the arm: unexpected answer ${JSON.stringify(r.result)}`);
+    if (!made) throw new Error(`Could not open a herdr workspace for the squad member: unexpected answer ${JSON.stringify(r.result)}`);
     // The workspace's first tab is named "1". The name is a nicety: a failure leaves the tab open as it is.
     call(['tab', 'rename', made.tab, place.label]);
   }
   const typed = call(['pane', 'run', made.pane, shellLine]);
   if ('error' in typed) {
     call(['tab', 'close', made.tab]);
-    throw new Error(`Could not start the arm in its herdr tab: ${typed.error}`);
+    throw new Error(`Could not start the squad member in its herdr tab: ${typed.error}`);
   }
   return made.workspace;
 }
@@ -251,7 +251,7 @@ export function openTab(kind: TerminalKind, req: TabRequest, runner: Runner = ru
   }
   if (kind === 'herdr') return { tabConfig: null, herdrWorkspace: openHerdrTab(req, tabShellLine(plan.files[0]!.path, req.platform === 'win32'), runner) };
   const r = runner(plan.command!.cmd, plan.command!.args);
-  if (r.error || r.status !== 0) throw new Error(`Could not open a tab for the arm: ${r.error?.message ?? ((r.stderr || r.stdout).trim() || `exit ${r.status}`)}`);
+  if (r.error || r.status !== 0) throw new Error(`Could not open a tab for the squad member: ${r.error?.message ?? ((r.stderr || r.stdout).trim() || `exit ${r.status}`)}`);
   // `wezterm cli spawn` prints the new pane's id. The title is a nicety: a failure leaves the tab open as it is.
   const pane = r.stdout.trim();
   if (kind === 'wezterm' && /^\d+$/.test(pane)) runner('wezterm', ['cli', 'set-tab-title', '--pane-id', pane, req.title]);

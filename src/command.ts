@@ -1,5 +1,5 @@
 import { statSync } from 'node:fs';
-import { delimiter, extname, isAbsolute, join } from 'node:path';
+import { delimiter, extname, isAbsolute, join, resolve } from 'node:path';
 
 /** Prompts longer than this go through a file, well under the Windows command-line limit (32k chars). */
 export const INLINE_LIMIT = 24_000;
@@ -25,14 +25,22 @@ const isFile = (p: string): boolean => {
   }
 };
 
-/** Find a command the way a shell would: an explicit path, or the first match on PATH (with PATHEXT on Windows). */
+/**
+ * Find a command the way a shell would: an explicit path, or the first match on PATH (with PATHEXT on Windows). The answer is
+ * always an absolute path, and a relative PATH entry (".", "bin") is skipped: it would mean the current folder, which may be a
+ * repository that ships its own program under that name.
+ */
 export function resolveExecutable(cmd: string, env: NodeJS.ProcessEnv = process.env, platform: NodeJS.Platform = process.platform): string | null {
   const win = platform === 'win32';
   const exts = win ? (env.PATHEXT ?? '.COM;.EXE;.BAT;.CMD').split(';').filter(Boolean) : [''];
   const hasExt = (p: string) => exts.some((e) => e !== '' && extname(p).toUpperCase() === e.toUpperCase());
   const candidates = (base: string): string[] => (!win ? [base] : hasExt(base) ? [base] : exts.map((e) => base + e));
-  if (isAbsolute(cmd) || cmd.includes('/') || (win && cmd.includes('\\'))) return candidates(cmd).find(isFile) ?? null;
+  if (isAbsolute(cmd) || cmd.includes('/') || (win && cmd.includes('\\'))) {
+    const found = candidates(cmd).find(isFile);
+    return found ? resolve(found) : null;
+  }
   for (const dir of envPath(env).split(win ? ';' : delimiter).filter(Boolean)) {
+    if (!isAbsolute(dir)) continue;
     for (const c of candidates(join(dir, cmd))) if (isFile(c)) return c;
   }
   return null;

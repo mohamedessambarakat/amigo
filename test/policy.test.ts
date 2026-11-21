@@ -25,7 +25,7 @@ const setPolicy = (env: NodeJS.ProcessEnv, change: (policy: Record<string, any>)
   writeFileSync(policyPath(env), JSON.stringify(p, null, 2));
 };
 
-/** A project with a passing check and one finished arm that only wrote a docs file: everything but the policy is in order. */
+/** A project with a passing check and one finished squad member that only wrote a docs file: everything but the policy is in order. */
 async function finishedDocsTask(dir: string, env: NodeJS.ProcessEnv, extra = ''): Promise<{ repo: string; id: string }> {
   const repo = makeRepoWithChecks(join(dir, 'repo'));
   assert.equal(cli(env, ['add', repo, '--check', 'node ok.mjs']).code, 0);
@@ -95,21 +95,21 @@ describe('approval policy', () => {
       const r = cli(env, ['close', id, '--commit', '--self']);
       assert.equal(r.code, 0, r.err);
       assert.match(r.out, /Self-approved under the policy/);
-      assert.match(git(repo, 'branch', '--list', `octomaxxing/${id}`), /octomaxxing\//);
+      assert.match(git(repo, 'branch', '--list', `amigo/${id}`), /amigo\//);
 
       const [approve] = lines(env);
       assert.equal(approve?.event, 'approve');
       assert.equal(approve?.id, id);
       assert.equal(approve?.project, 'repo');
-      assert.equal(approve?.branch, `octomaxxing/${id}`);
-      assert.equal(approve?.sha, git(repo, 'rev-parse', `octomaxxing/${id}`).trim());
-      assert.equal(approve?.undo, `octomaxxing undo ${id}`);
+      assert.equal(approve?.branch, `amigo/${id}`);
+      assert.equal(approve?.sha, git(repo, 'rev-parse', `amigo/${id}`).trim());
+      assert.equal(approve?.undo, `amigo undo ${id}`);
       assert.match((approve?.reasons as string[]).join(' | '), /checks configured and all passed.*only docs and tests changed/);
       assert.match(JSON.stringify(approve), /"time":"\d{4}-/);
 
       const undone = cli(env, ['undo', id]);
       assert.equal(undone.code, 0, undone.err);
-      assert.equal(git(repo, 'branch', '--list', `octomaxxing/${id}`).trim(), '', 'the branch is gone');
+      assert.equal(git(repo, 'branch', '--list', `amigo/${id}`).trim(), '', 'the branch is gone');
       assert.equal(lines(env).at(-1)?.event, 'undo');
       assert.match(cli(env, ['undo', id]).err, /already undone/);
     } finally {
@@ -124,15 +124,15 @@ describe('approval policy', () => {
       addOrigin(dir, repo);
       storeApproval(env);
       assert.equal(cli(env, ['close', id, '--commit', '--self']).code, 0);
-      const tip = git(repo, 'rev-parse', `octomaxxing/${id}`).trim();
-      git(repo, 'update-ref', `refs/heads/octomaxxing/${id}`, 'HEAD');
+      const tip = git(repo, 'rev-parse', `amigo/${id}`).trim();
+      git(repo, 'update-ref', `refs/heads/amigo/${id}`, 'HEAD');
       assert.match(cli(env, ['undo', id]).err, /moved since it was approved/);
-      git(repo, 'update-ref', `refs/heads/octomaxxing/${id}`, tip);
-      git(repo, 'push', '-q', '-u', 'origin', `octomaxxing/${id}`);
+      git(repo, 'update-ref', `refs/heads/amigo/${id}`, tip);
+      git(repo, 'push', '-q', '-u', 'origin', `amigo/${id}`);
       const r = cli(env, ['undo', id]);
       assert.equal(r.code, 1);
       assert.match(r.err, /was pushed \(or has an upstream\)/);
-      assert.match(git(repo, 'branch', '--list', `octomaxxing/${id}`), /octomaxxing\//, 'still there');
+      assert.match(git(repo, 'branch', '--list', `amigo/${id}`), /amigo\//, 'still there');
       assert.equal(lines(env).length, 1, 'a refused undo is not logged as one');
 
       const other = idFrom(cli(env, ['spawn', '--project', 'repo'], 'Title: Not self-approved').out);
@@ -206,7 +206,7 @@ describe('approval policy', () => {
       const ok = cli(env, ['close', id, '--commit', '--self', '--pr']);
       assert.equal(ok.code, 0, ok.err);
       assert.match(ok.out, /Opened a draft pull request: https:\/\/github\.com\/example\/repo\/pull\/7/);
-      assert.match(git(bare, 'branch', '--list'), new RegExp(`octomaxxing/${id}`));
+      assert.match(git(bare, 'branch', '--list'), new RegExp(`amigo/${id}`));
       assert.deepEqual(
         lines(env).map((l) => l.event),
         ['approve', 'pr'],
@@ -246,7 +246,7 @@ describe('approval policy', () => {
       storeApproval(env);
       const changed = cli(env, ['add', repo, '--check', 'node fail.mjs']);
       assert.equal(changed.code, 0, changed.err);
-      assert.match(changed.out, /not confirmed by you yet, so close --self refuses for repo\. To confirm, run in a terminal: octomaxxing confirm-gates repo/);
+      assert.match(changed.out, /not confirmed by you yet, so close --self refuses for repo\. To confirm, run in a terminal: amigo confirm-gates repo/);
       const r = cli(env, ['close', id, '--commit', '--self']);
       assert.equal(r.code, 1);
       assert.match(r.err, /the project's checks or risky paths were not confirmed by the user/);
@@ -261,7 +261,7 @@ describe('approval policy', () => {
       // Loosening the risky globs by editing projects.json by hand is caught the same way.
       assert.equal(cli(env, ['add', repo, '--check', 'node ok.mjs', '--risky', 'src/**']).code, 0);
       confirmGates('repo', env);
-      const file = join(env.OCTOMAXXING_HOME as string, 'projects.json');
+      const file = join(env.AMIGO_HOME as string, 'projects.json');
       const projects = JSON.parse(readFileSync(file, 'utf8'));
       delete projects.projects[0].risky;
       writeFileSync(file, JSON.stringify(projects));
@@ -320,11 +320,11 @@ describe('approval policy', () => {
       writeFileSync(script, '#!/bin/sh\ncat\n[ -z "$GIT_INDEX_FILE" ] && echo sneaky\nexit 0\n');
       git(repo, 'config', 'filter.sneak.clean', `sh "${script.replaceAll('\\', '/')}"`);
       writeFileSync(join(repo, '.git', 'info', 'attributes'), 'notes.md filter=sneak\n');
-      const before = git(repo, 'rev-parse', `octomaxxing/${id}`).trim();
+      const before = git(repo, 'rev-parse', `amigo/${id}`).trim();
       const r = cli(env, ['close', id, '--commit', '--self']);
       assert.equal(r.code, 1);
       assert.match(r.err, /changed after it was checked \(before the commit\), so nothing was committed/);
-      assert.equal(git(repo, 'rev-parse', `octomaxxing/${id}`).trim(), before, 'nothing was committed');
+      assert.equal(git(repo, 'rev-parse', `amigo/${id}`).trim(), before, 'nothing was committed');
       assert.equal(getTask(id, env)?.status, 'done');
       assert.equal(lines(env).length, 0, 'not logged as approved');
     } finally {
@@ -332,7 +332,7 @@ describe('approval policy', () => {
     }
   });
 
-  it('an arm-edited .husky hook (core.hooksPath=.husky) never runs at close or push, and .husky/ is needs-you', () => {
+  it('a member-edited .husky hook (core.hooksPath=.husky) never runs at close or push, and .husky/ is needs-you', () => {
     const { dir, env } = makeHome();
     try {
       const repo = makeRepo(join(dir, 'repo'));
@@ -343,8 +343,8 @@ describe('approval policy', () => {
       git(repo, 'commit', '-q', '-m', 'husky');
       git(repo, 'config', 'core.hooksPath', '.husky');
       const base = git(repo, 'rev-parse', 'HEAD').trim();
-      git(repo, 'checkout', '-q', '-b', 'octomaxxing/t-1');
-      // What the arm wrote: hooks that run with the head's permissions and would push past every gate.
+      git(repo, 'checkout', '-q', '-b', 'amigo/t-1');
+      // What the squad member wrote: hooks that run with amigo's permissions and would push past every gate.
       const marker = (name: string) => join(dir, name).replaceAll('\\', '/');
       writeFileSync(join(repo, '.husky', 'pre-commit'), `#!/bin/sh\necho ran > "${marker('commit-hook-ran')}"\n`);
       writeFileSync(join(repo, '.husky', 'pre-push'), `#!/bin/sh\necho ran > "${marker('push-hook-ran')}"\n`);
@@ -353,11 +353,11 @@ describe('approval policy', () => {
       assert.equal(assessChanges(snap.changes).level, 'needs-you');
       assert.match(assessChanges(snap.changes).reasons.join(' '), /touches \.husky\/pre-commit \(git hooks or tooling\)/);
 
-      assert.ok(commitAll(repo, repo, 'octomaxxing/t-1', 'x', snap.tree, env));
+      assert.ok(commitAll(repo, repo, 'amigo/t-1', 'x', snap.tree, env));
       assert.equal(existsSync(join(dir, 'commit-hook-ran')), false, 'the pre-commit hook did not run');
-      pushBranch(repo, 'octomaxxing/t-1', env);
+      pushBranch(repo, 'amigo/t-1', env);
       assert.equal(existsSync(join(dir, 'push-hook-ran')), false, 'the pre-push hook did not run');
-      assert.match(git(repo, 'ls-remote', 'origin', 'refs/heads/octomaxxing/t-1'), /refs\/heads\/octomaxxing\/t-1/, 'the push itself worked');
+      assert.match(git(repo, 'ls-remote', 'origin', 'refs/heads/amigo/t-1'), /refs\/heads\/amigo\/t-1/, 'the push itself worked');
 
       // Control: a plain git commit does run the hook, so the checks above prove something.
       writeFileSync(join(repo, 'more.txt'), 'x\n');
@@ -425,7 +425,7 @@ describe('approval policy', () => {
       const undone = cli(env, ['undo', id]);
       assert.equal(undone.code, 0, undone.err);
       assert.match(undone.err, /warning: line 1 of .*approvals\.jsonl is not valid JSON and was skipped/);
-      assert.equal(git(repo, 'branch', '--list', `octomaxxing/${id}`).trim(), '');
+      assert.equal(git(repo, 'branch', '--list', `amigo/${id}`).trim(), '');
     } finally {
       cleanup(dir);
     }
@@ -447,7 +447,7 @@ describe('approval policy', () => {
       const globs = ['*.md', 'docs', 'test'];
       const only = (...paths: string[]) => docsOrTestsOnly(paths.map((path) => ({ path, added: 1, removed: 0, deleted: false })), globs);
       assert.ok(only('README.md', 'docs/a.md', 'test/x.ts'));
-      for (const p of ['CLAUDE.md', 'sub/AGENTS.md', 'skills/x/SKILL.md', 'prompts/head.md', '.claude/settings.json', '.github/PULL_REQUEST_TEMPLATE.md']) assert.equal(only(p), false, p);
+      for (const p of ['CLAUDE.md', 'sub/AGENTS.md', 'skills/x/SKILL.md', 'prompts/amigo.md', '.claude/settings.json', '.github/PULL_REQUEST_TEMPLATE.md']) assert.equal(only(p), false, p);
     } finally {
       cleanup(dir);
     }
@@ -458,7 +458,7 @@ describe('approval policy', () => {
       const { repo, id } = await finishedDocsTask(dir, env);
       const worktree = getTask(id, env)?.worktree as string;
       const fwd = (p: string) => p.replaceAll('\\', '/');
-      // What a hostile arm can do from inside its worktree: point .git at a git dir of its own whose config names a program.
+      // What a hostile squad member can do from inside its worktree: point .git at a git dir of its own whose config names a program.
       const marker = join(dir, 'fsmonitor-ran.txt');
       const script = join(dir, 'fsmonitor.sh');
       writeFileSync(script, `#!/bin/sh
@@ -483,7 +483,7 @@ echo ran > "${fwd(marker)}"
       assert.match(close.err, refused);
       assert.equal(existsSync(marker), false, 'the planted fsmonitor program never ran');
       assert.equal(getTask(id, env)?.status, 'done', 'nothing was closed or committed');
-      assert.equal(git(repo, 'rev-list', '--count', `HEAD..octomaxxing/${id}`).trim(), '0', 'no commit landed on the branch');
+      assert.equal(git(repo, 'rev-list', '--count', `HEAD..amigo/${id}`).trim(), '0', 'no commit landed on the branch');
 
       // A discard needs no git in the worktree, so it still cleans up.
       const forced = cli(env, ['close', id, '--force']);
@@ -503,7 +503,7 @@ echo ran > "${fwd(marker)}"
       const worktree = task.worktree as string;
       const fwd = (p: string) => p.replaceAll('\\', '/');
       assert.equal(task.gitDir, findAdminDir(repo, worktree), 'the git dir is recorded when the worktree is made');
-      // The state an arm can leave in the gap between the guard and git: .git redirected to a git dir whose config has a clean filter.
+      // The state a squad member can leave in the gap between the guard and git: .git redirected to a git dir whose config has a clean filter.
       const marker = join(dir, 'filter-ran.txt');
       const script = join(dir, 'filter.sh');
       writeFileSync(script, `#!/bin/sh\ncat\necho ran > "${fwd(marker)}"\n`);
@@ -513,7 +513,7 @@ echo ran > "${fwd(marker)}"
       git(dir, 'config', '-f', join(evil, 'config'), 'core.worktree', fwd(worktree));
       git(dir, 'config', '-f', join(evil, 'config'), 'filter.evil.clean', `sh "${fwd(script)}"`);
       writeFileSync(join(worktree, '.gitattributes'), '* filter=evil\n');
-      writeFileSync(join(worktree, 'a.txt'), 'changed by the arm\n');
+      writeFileSync(join(worktree, 'a.txt'), 'changed by the squad member\n');
       rmSync(join(worktree, '.git'), { force: true }); // git marks it hidden on Windows, which blocks writing over it
       writeFileSync(join(worktree, '.git'), `gitdir: ${fwd(evil)}\n`);
 
@@ -549,15 +549,15 @@ echo ran > "${fwd(marker)}"
       mkdirSync(folder);
       writeFileSync(join(folder, 'a.txt'), 'hello\n');
       assert.equal(cli(env, ['add', folder]).code, 0);
-      assert.equal(JSON.parse(readFileSync(join(env.OCTOMAXXING_HOME as string, 'projects.json'), 'utf8')).projects[0].wasGit, false);
-      // What an arm working in place can do: turn the folder into a repo.
+      assert.equal(JSON.parse(readFileSync(join(env.AMIGO_HOME as string, 'projects.json'), 'utf8')).projects[0].wasGit, false);
+      // What a squad member working in place can do: turn the folder into a repo.
       git(folder, 'init', '-q', '-b', 'main');
       git(folder, 'add', '.');
       git(folder, 'commit', '-q', '-m', 'init');
       const refused = cli(env, ['spawn', '--project', 'plain'], 'Title: x');
       assert.equal(refused.code, 1);
       assert.match(refused.err, /was not a git repo when you added it, but .* is one now/);
-      assert.equal(existsSync(join(env.OCTOMAXXING_HOME as string, 'worktrees')), false, 'no worktree was created');
+      assert.equal(existsSync(join(env.AMIGO_HOME as string, 'worktrees')), false, 'no worktree was created');
       assert.equal(cli(env, ['spawn', '--project', 'plain', '--dry-run'], 'Title: x').code, 1, 'a dry run refuses too');
       assert.equal(cli(env, ['add', folder]).code, 0, 'the user adds it again');
       assert.equal(cli(env, ['spawn', '--project', 'plain', '--dry-run'], 'Title: x').code, 0);

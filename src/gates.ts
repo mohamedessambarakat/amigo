@@ -24,7 +24,7 @@ export function treeOf(t: Task): string | undefined {
 }
 
 /**
- * A reviewer arm is about to say done with this summary: record its verdict on the task it reviewed, with the work it
+ * A reviewer squad member is about to say done with this summary: record its verdict on the task it reviewed, with the work it
  * saw. Done before the reviewer's status changes, so whoever hears "done" finds the verdict in place. The verdict does not
  * count when the work changed while the reviewer read it, and a PASS never overrides a FAIL of the same work.
  */
@@ -56,19 +56,25 @@ export function reviewPassed(t: Task, snap: Snapshot): boolean {
 export function reviewProblem(t: Task, snap: Snapshot, risk: Risk): string | null {
   if (risk.level === 'small') return null;
   const r = t.review;
-  const need = `Spawn a reviewer (octomaxxing spawn --review ${t.id}), and close --commit once it says PASS.`;
+  const need = `Spawn a reviewer (amigo spawn --review ${t.id}), and close --commit once it says PASS.`;
   const head = `${t.id} is ${describeRisk(risk)}, so it needs a reviewer's PASS before close --commit.`;
   if (!r) return `${head} No reviewer has judged it yet. ${need}`;
-  if (r.verdict === 'FAIL') return `${head} Reviewer ${r.by} said FAIL: fix the findings (octomaxxing send ${t.id}), then review again. ${need}`;
+  if (r.verdict === 'FAIL') return `${head} Reviewer ${r.by} said FAIL: fix the findings (amigo send ${t.id}), then review again. ${need}`;
   if (r.void) return `${head} Reviewer ${r.by}'s PASS does not count: ${r.void}. ${need}`;
   if (r.tree !== snap.tree) return `${head} Its work changed since reviewer ${r.by} passed it. ${need}`;
   return null;
 }
 
-/** What a project's checks and risky globs hash to: the gates a self-approval rests on. */
-export const gatesHash = (p: Pick<Project, 'checks' | 'risky'>): string => createHash('sha256').update(JSON.stringify({ checks: p.checks ?? [], risky: p.risky ?? [] })).digest('hex');
+/**
+ * What a project's checks, risky globs, live commands and watch items hash to: the gates a self-approval rests on, and what the
+ * startup briefing may run or hand to an agent. Live and watch count only when set, so a project without them keeps its old hash.
+ */
+export const gatesHash = (p: Pick<Project, 'checks' | 'risky' | 'live' | 'watch'>): string =>
+  createHash('sha256')
+    .update(JSON.stringify({ checks: p.checks ?? [], risky: p.risky ?? [], ...(p.live?.length ? { live: p.live } : {}), ...(p.watch?.length ? { watch: p.watch } : {}) }))
+    .digest('hex');
 
-/** Have the project's checks and risky globs, as they are now, been confirmed by the user (see confirmGates)? */
+/** Have the project's checks, risky globs, live commands and watch items, as they are now, been confirmed by the user (see confirmGates)? */
 export function gatesConfirmed(p: Project, env: NodeJS.ProcessEnv): boolean {
   return readJson<Record<string, { sha256?: string }>>(gatesConfirmedPath(env), {})[p.name]?.sha256 === gatesHash(p);
 }
@@ -88,13 +94,13 @@ export function selfApproval(t: Task, snap: Snapshot, risk: Risk, policy: Policy
   const need = (ok: boolean, good: string, bad: string) => (ok ? reasons.push(good) : problems.push(bad));
   need(policy.approved, 'the user approved the policy', `the policy is not approved: ${policy.problem}`);
   need(Boolean(t.worktree && t.repo), 'git repo', 'the project is not a git repo, so there is no branch to approve');
-  need(gatesOk, "the user confirmed the project's checks and risky paths", `the project's checks or risky paths were not confirmed by the user (they ran: octomaxxing confirm-gates ${t.project}, in a terminal)`);
+  need(gatesOk, "the user confirmed the project's checks and risky paths", `the project's checks or risky paths were not confirmed by the user (they ran: amigo confirm-gates ${t.project}, in a terminal)`);
   const v = t.verification;
   need(v?.state === 'passed' && v.results.length > 0, 'checks configured and all passed', v?.state === 'unverified' ? 'the project has no checks configured' : `the checks have not all passed (${v ? v.state : 'not run'})`);
   const current = project?.checks ?? [];
   need(v?.state !== 'passed' || (v.results.length === current.length && v.results.every((r, i) => r.command === current[i])), "the checks that passed are the project's current checks", "the project's checks changed after these results were recorded");
   need(v?.state !== 'passed' || (v.tree !== undefined && v.tree === snap.tree), 'the checks ran on exactly this work', 'the work changed after the checks passed');
-  need(t.status === 'done', 'the arm reported done', `the arm is ${t.status}, not done`);
+  need(t.status === 'done', 'the squad member reported done', `the squad member is ${t.status}, not done`);
   need(risk.level === 'small', `risk small (${risk.files} files, ${risk.lines} lines, no risky paths, no deletions)`, `risk is ${describeRisk(risk)}`);
   const globs = policy.policy?.selfApproval.docsAndTestsGlobs ?? [];
   const docsOnly = docsOrTestsOnly(snap.changes, globs);

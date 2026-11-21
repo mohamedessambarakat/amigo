@@ -3,18 +3,18 @@ import { randomUUID } from 'node:crypto';
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
-  armName,
-  armSettings,
-  claudeArmNotes,
-  claudeArmTemplate,
-  claudeHeadTemplate,
+  memberName,
+  memberSettings,
+  claudeMemberNotes,
+  claudeMemberTemplate,
+  claudeAmigoTemplate,
   guessTranscriptPath,
-  headSettings,
+  amigoSettings,
   isClaude,
   ownSessionEnv,
   reportReason,
   sessionAddress,
-  transcriptMessagedHead,
+  transcriptMessagedAmigo,
   trustFolder,
 } from './claude.ts';
 import { buildLaunch, describeLaunch, type Launch } from './command.ts';
@@ -23,11 +23,12 @@ import { withLock, writeJsonAtomic } from './fsx.ts';
 import { recordVerdict, reviewPassed, treeOf } from './gates.ts';
 import { branchName, changedFiles, createWorktree, isGitRepo } from './git.ts';
 import { fetchIssue, type Issue } from './github.ts';
-import { cliPath, codeRoot, home, lockPath, taskDir, worktreesDir } from './paths.ts';
+import { cliPath, codeRoot, home, lockPath, scratchDir, taskDir, worktreesDir } from './paths.ts';
+import { noticesPending, takeNotices, type Notice } from './notices.ts';
 import { killTree } from './proc.ts';
 import { freeMemMb, ramAllows } from './ram.ts';
 import { assessChanges, describeRisk, snapshot } from './risk.ts';
-import { headHerdrWorkspace, herdrLabel, openTab, removeTabConfig, selectTerminal, type HerdrPlacement } from './terminal.ts';
+import { amigoHerdrWorkspace, herdrLabel, openTab, removeTabConfig, selectTerminal, type HerdrPlacement } from './terminal.ts';
 import {
   FINISHED,
   HEARTBEAT_MS,
@@ -40,7 +41,7 @@ import {
   logFile,
   mutateTask,
   newId,
-  nextArmNumber,
+  nextMemberNumber,
   parseStatus,
   promptFile,
   requireTask,
@@ -52,20 +53,20 @@ import { checksFor, describeVerification, verifyDone } from './verify.ts';
 
 const readPrompt = (name: string): string => readFileSync(join(codeRoot, 'prompts', name), 'utf8').trim();
 
-/** An arm whose tab opened this recently may still be loading: it counts against free memory before it uses any. */
+/** A squad member whose tab opened this recently may still be loading: it counts against free memory before it uses any. */
 const STARTUP_MS = 60_000;
 
 const settingsFile = (id: string, env: NodeJS.ProcessEnv): string => join(taskDir(id, env), 'claude-settings.json');
 
-function armTemplate(t: Pick<Task, 'agent'>, config: Config): string[] {
-  const template = config.agents[t.agent]?.arm;
+function memberTemplate(t: Pick<Task, 'agent'>, config: Config): string[] {
+  const template = config.agents[t.agent]?.member;
   if (!template) throw new Error(`Agent "${t.agent}" is no longer in config.json`);
   return template;
 }
 
-/** Everything an arm gets for its first run: the arm rules, the project notes, the brief and any follow-ups. */
-export function armPrompt(t: Task, brief: string, notes: string | undefined, claudeNotes?: string): string {
-  const parts = [readPrompt('arm.md'), `## Your task\n\nTask id: ${t.id}\nProject: ${t.project}\nWorking directory: ${t.cwd}`];
+/** Everything a squad member gets for its first run: the squad member rules, the project notes, the brief and any follow-ups. */
+export function memberPrompt(t: Task, brief: string, notes: string | undefined, claudeNotes?: string): string {
+  const parts = [readPrompt('member.md'), `## Your task\n\nTask id: ${t.id}\nProject: ${t.project}\nWorking directory: ${t.cwd}`];
   if (claudeNotes) parts.push(claudeNotes);
   if (t.reviewOf) {
     parts.push(
@@ -76,7 +77,7 @@ export function armPrompt(t: Task, brief: string, notes: string | undefined, cla
   parts.push(`## Brief\n\n${brief.trim()}`);
   if (t.followUps.length) {
     if (t.summary) parts.push(`## Your previous run ended with\n\n${t.summary}`);
-    parts.push(`## Follow-ups from the head (newest last)\n\n${t.followUps.map((m, i) => `${i + 1}. ${m.trim()}`).join('\n')}`);
+    parts.push(`## Follow-ups from amigo (newest last)\n\n${t.followUps.map((m, i) => `${i + 1}. ${m.trim()}`).join('\n')}`);
   }
   return parts.join('\n\n') + '\n';
 }
@@ -85,27 +86,31 @@ export function armPrompt(t: Task, brief: string, notes: string | undefined, cla
 export function followUpPrompt(t: Task): string {
   const pending = t.followUps.slice(t.followUpsSent ?? 0).map((m) => m.trim());
   const body = pending.length === 1 ? pending[0] : pending.map((m, i) => `${i + 1}. ${m}`).join('\n');
-  return `Follow-up from the head:\n\n${body}\n\nWhen this turn ends, report as before and end with your STATUS line.\n`;
+  return `Follow-up from amigo:\n\n${body}\n\nWhen this turn ends, report as before and end with your STATUS line.\n`;
 }
 
-function notesFor(project: string, env: NodeJS.ProcessEnv): string | undefined {
-  return loadProjects(env).find((p) => p.name === project)?.notes;
+function notesFor(t: Pick<Task, 'project' | 'scratch'>, env: NodeJS.ProcessEnv): string | undefined {
+  return t.scratch ? undefined : loadProjects(env).find((p) => p.name === t.project)?.notes;
 }
 
-/** A Claude arm's launch passes --resume <session id> rather than --session-id. */
+/** A Claude squad member's launch passes --resume <session id> rather than --session-id. */
 const resumesSession = (t: Task): boolean => t.runs > 1 && Boolean(t.sessionId);
 
-/** The command an arm's tab runs for this task (what `--dry-run` shows). */
-function armLaunch(t: Task, config: Config, prompt: string, env: NodeJS.ProcessEnv): Launch {
-  const template = armTemplate(t, config);
+/** The command a squad member's tab runs for this task (what `--dry-run` shows). */
+function memberLaunch(t: Task, config: Config, prompt: string, env: NodeJS.ProcessEnv): Launch {
+  const template = memberTemplate(t, config);
   const resume = resumesSession(t);
-  const full = isClaude(template) ? claudeArmTemplate(template, { id: t.id, sessionId: t.sessionId ?? '<new session id>', resume, settingsFile: settingsFile(t.id, env) }) : template;
+  const full = isClaude(template) ? claudeMemberTemplate(template, { id: t.id, sessionId: t.sessionId ?? '<new session id>', resume, settingsFile: settingsFile(t.id, env) }) : template;
   return buildLaunch(full, { prompt, promptFile: promptFile(t.id, env) }, env);
 }
 
 export interface SpawnInput {
   project?: string;
   review?: string;
+  /** A scratch squad member: its own folder under the home, no project, no git. */
+  scratch?: boolean;
+  /** The briefing's squad member (scratch only): see Task.briefing. */
+  briefing?: boolean;
   title?: string;
   agent?: string;
   brief: string;
@@ -138,9 +143,10 @@ export function briefWithIssue(brief: string, issue: Issue): string {
   ].join('\n\n');
 }
 
-/** Plan a new arm. With dryRun, nothing is written: the plan is returned as text, which also proves the agent can be found. */
-export function spawnArm(input: SpawnInput, opts: { dryRun?: boolean }, env: NodeJS.ProcessEnv = process.env): { task: Task; text: string } {
+/** Plan a new squad member. With dryRun, nothing is written: the plan is returned as text, which also proves the agent can be found. */
+export function spawnMember(input: SpawnInput, opts: { dryRun?: boolean }, env: NodeJS.ProcessEnv = process.env): { task: Task; text: string } {
   let dependency: Task | undefined;
+  if (input.scratch && (input.project || input.review || input.after || input.issue !== undefined)) throw new Error('--scratch stands alone: it works in a folder of its own, so it takes no --project, --review, --after or --issue');
   if (input.after) {
     if (input.review) throw new Error('--after works for a new task, not a review');
     dependency = requireTask(input.after, env);
@@ -154,30 +160,30 @@ export function spawnArm(input: SpawnInput, opts: { dryRun?: boolean }, env: Nod
     if (!input.project) throw new Error('--issue needs --project <name>');
     const project = findProject(loadProjects(env), input.project);
     if (!existsSync(project.path)) throw new Error(`Project folder ${project.path} does not exist`);
-    // gh reads the folder's git config, so a folder an arm turned into a repo is refused before gh runs there.
+    // gh reads the folder's git config, so a folder a squad member turned into a repo is refused before gh runs there.
     checkGitState(project, !opts.dryRun, env);
     issue = fetchIssue(input.issue, project.path, env);
     // The task is named after the issue unless the brief names it: the issue's title stays out of the brief's own first line.
     input = { ...input, brief: briefWithIssue(input.brief, issue), title: input.title ?? (/^title:/i.test(input.brief.trim()) ? undefined : issue.title) };
   }
   if (!input.brief.trim()) throw new Error('The brief is empty');
-  if (!input.project === !input.review) throw new Error('Give either --project <name> or --review <task-id>');
+  if (!input.scratch && !input.project === !input.review) throw new Error('Give either --project <name>, --review <task-id> or --scratch');
   const config = loadConfig(env);
   const agent = pickAgent(config, input.agent, env);
   // Fails early, before any folder is made, when no tab can be opened from this terminal.
   selectTerminal({ env, platform: process.platform });
   const title = input.title?.trim() || titleOf(input.brief);
-  let id = newId(title, nextArmNumber(env));
+  let id = newId(title, nextMemberNumber(env));
   if (!opts.dryRun) {
     // Two spawns at once can pick the same number: the folder decides, the loser takes the next one.
     for (let i = 0; !claimTaskDir(id, env); i++) {
       if (i >= 20) throw new Error('Could not find a free task id');
-      id = newId(title, nextArmNumber(env));
+      id = newId(title, nextMemberNumber(env));
     }
   }
   const now = new Date().toISOString();
-  const headAddress = sessionAddress(env);
-  const base = { id, title, agent, status: 'queued' as const, createdAt: now, updatedAt: now, runs: 0, followUps: [], seen: true, ...(headAddress ? { headAddress } : {}) };
+  const amigoAddress = sessionAddress(env);
+  const base = { id, title, agent, status: 'queued' as const, createdAt: now, updatedAt: now, runs: 0, followUps: [], seen: true, ...(amigoAddress ? { amigoAddress } : {}) };
 
   let task: Task;
   if (input.review) {
@@ -185,7 +191,9 @@ export function spawnArm(input: SpawnInput, opts: { dryRun?: boolean }, env: Nod
     if (parent.status === 'closed' || parent.status === 'closing') throw new Error(`Task ${parent.id} is ${parent.status}; there is nothing left to review`);
     // The work the reviewer is about to read: its verdict counts only if the work is still this when it finishes (see recordVerdict).
     const reviewedTree = treeOf(parent);
-    task = { ...base, project: parent.project, cwd: parent.cwd, repo: null, worktree: null, branch: null, baseSha: null, reviewOf: parent.id, ...(reviewedTree ? { reviewedTree } : {}) };
+    task = { ...base, project: parent.project, ...(parent.scratch ? { scratch: true } : {}), cwd: parent.cwd, repo: null, worktree: null, branch: null, baseSha: null, reviewOf: parent.id, ...(reviewedTree ? { reviewedTree } : {}) };
+  } else if (input.scratch) {
+    task = { ...base, project: 'scratch', scratch: true, ...(input.briefing ? { briefing: true } : {}), cwd: scratchDir(id, env), repo: null, worktree: null, branch: null, baseSha: null };
   } else {
     const project = findProject(loadProjects(env), input.project as string);
     if (!existsSync(project.path)) throw new Error(`Project folder ${project.path} does not exist`);
@@ -199,14 +207,15 @@ export function spawnArm(input: SpawnInput, opts: { dryRun?: boolean }, env: Nod
     }
   }
 
-  const launch = armLaunch(task, config, armPrompt(task, input.brief, notesFor(task.project, env)), env);
+  const launch = memberLaunch(task, config, memberPrompt(task, input.brief, notesFor(task, env)), env);
   if (issue) task.issue = { number: issue.number, url: issue.url, title: issue.title };
-  const where = task.worktree ? `new worktree ${task.worktree} on branch ${task.branch} (from ${task.after ? `${task.after}'s commit, once it is closed with one` : task.repo})` : `${task.cwd} (in place${task.reviewOf ? `, reviewing ${task.reviewOf}` : ''})`;
-  const text = [`task:    ${id}  "${title}"`, `folder:  ${where}`, `agent:   ${agent} (in a new tab, as ${armName(id)})`, `command: ${describeLaunch(launch)}`].join('\n');
+  const where = task.worktree ? `new worktree ${task.worktree} on branch ${task.branch} (from ${task.after ? `${task.after}'s commit, once it is closed with one` : task.repo})` : `${task.cwd} (${task.scratch && !task.reviewOf ? 'scratch folder, not git' : 'in place'}${task.reviewOf ? `, reviewing ${task.reviewOf}` : ''})`;
+  const text = [`task:    ${id}  "${title}"`, `folder:  ${where}`, `agent:   ${agent} (in a new tab, as ${memberName(id)})`, `command: ${describeLaunch(launch)}`].join('\n');
   if (opts.dryRun) return { task, text: `DRY RUN, nothing was started.\n${text}` };
 
+  if (task.scratch && !task.reviewOf) mkdirSync(task.cwd, { recursive: true });
   writeFileSync(briefFile(id, env), input.brief.trim() + '\n');
-  // A task that follows another gets its worktree from the other's commit, when it starts (see startArm).
+  // A task that follows another gets its worktree from the other's commit, when it starts (see startMember).
   if (task.worktree && task.repo && task.branch && !task.after) {
     mkdirSync(worktreesDir(env), { recursive: true });
     Object.assign(task, createWorktree(task.repo, task.worktree, task.branch));
@@ -226,10 +235,10 @@ export function spawnArm(input: SpawnInput, opts: { dryRun?: boolean }, env: Nod
 const MIN_CHECK_ALLOWANCE = 10;
 export const stopHookSeconds = (checks: number, checkTimeoutMin: number): number => Math.max(checks, MIN_CHECK_ALLOWANCE) * checkTimeoutMin * 60 + 60;
 
-const TAB_LOST = 'The arm stopped without reporting: its tab closed or never opened (see octomaxxing attach).';
+const TAB_LOST = 'The squad member stopped without reporting: its tab closed or never opened (see amigo attach).';
 
 /**
- * Mark arms whose tab is gone in the middle of a turn (closed, crashed, reboot, or it never opened) as failed. The pid
+ * Mark squad members whose tab is gone in the middle of a turn (closed, crashed, reboot, or it never opened) as failed. The pid
  * is kept: a tab that was only asleep beats again and puts its task back to running (see runTab).
  */
 export function refresh(env: NodeJS.ProcessEnv = process.env): void {
@@ -265,9 +274,9 @@ function dependencyState(t: Task, all: Task[]): { state: 'wait' } | { state: 'go
 }
 
 /**
- * Start queued arms, oldest first, while free memory allows (armMb per arm, reserveMb kept free; one arm may always run).
- * One arm per folder: a folder is busy while an arm runs there or still has its tab open (it may be working on a message
- * from the head), except that a reviewer may read a finished arm's folder. A task whose old tab is still open waits for it.
+ * Start queued squad members, oldest first, while free memory allows (memberMb per squad member, reserveMb kept free; one squad member may always run).
+ * One squad member per folder: a folder is busy while a squad member runs there or still has its tab open (it may be working on a message
+ * from amigo), except that a reviewer may read a finished squad member's folder. A task whose old tab is still open waits for it.
  */
 export function drain(env: NodeJS.ProcessEnv = process.env): string[] {
   return withLock(lockPath('queue', env), () => {
@@ -288,8 +297,8 @@ export function drain(env: NodeJS.ProcessEnv = process.env): string[] {
       }
       if (busy.has(t.cwd) || (open.has(t.cwd) && !t.reviewOf) || runnerAlive(t.id, env)) continue;
       free ??= freeMemMb(env);
-      if ((running.length > 0 || started.length > 0) && !ramAllows(free, config.armMb, config.reserveMb, starting)) break;
-      if (startArm(t, config, env)) {
+      if ((running.length > 0 || started.length > 0) && !ramAllows(free, config.memberMb, config.reserveMb, starting)) break;
+      if (startMember(t, config, env)) {
         started.push(t.id);
         busy.add(t.cwd);
         starting++;
@@ -300,24 +309,24 @@ export function drain(env: NodeJS.ProcessEnv = process.env): string[] {
 }
 
 /**
- * A tab starts with the terminal's environment, not this process's, but its end starts the next queued arm: so the
- * OCTOMAXXING_* settings travel with it as arguments, with the terminal found for the head, so queued arms open there too.
+ * A tab starts with the terminal's environment, not this process's, but its end starts the next queued squad member: so the
+ * AMIGO_* settings travel with it as arguments, with the terminal found for amigo, so queued squad members open there too.
  */
 export function tabEnvArgs(env: NodeJS.ProcessEnv): string[] {
   return Object.entries(env)
-    .filter(([k, v]) => k.startsWith('OCTOMAXXING_') && k !== 'OCTOMAXXING_HOME' && k !== 'OCTOMAXXING_TASK' && v)
+    .filter(([k, v]) => k.startsWith('AMIGO_') && k !== 'AMIGO_HOME' && k !== 'AMIGO_TASK' && v)
     .flatMap(([k, v]) => ['--env', `${k}=${v}`]);
 }
 
-/** An arm with a worktree gets a herdr workspace of its own; any other arm a tab beside its reviewed arm's, else the head's. */
+/** A squad member with a worktree gets a herdr workspace of its own; any other squad member a tab beside its reviewed squad member's, else amigo's. */
 export function herdrPlacement(t: Task, env: NodeJS.ProcessEnv): HerdrPlacement {
   const reviewed = t.reviewOf ? listTasks(env).find((x) => x.id === t.reviewOf)?.herdrWorkspace : null;
-  const workspaces = [reviewed, headHerdrWorkspace(env)].filter((w, i, all): w is string => Boolean(w) && all.indexOf(w) === i);
+  const workspaces = [reviewed, amigoHerdrWorkspace(env)].filter((w, i, all): w is string => Boolean(w) && all.indexOf(w) === i);
   return { label: herdrLabel(t.id, t.title), ownWorkspace: Boolean(t.worktree), workspaces };
 }
 
-/** Start one queued arm: write its prompt, mark it running, open its tab. Exported with a runner so tests need no real terminal. */
-export function startArm(t: Task, config: Config, env: NodeJS.ProcessEnv, runner?: Parameters<typeof openTab>[2]): boolean {
+/** Start one queued squad member: write its prompt, mark it running, open its tab. Exported with a runner so tests need no real terminal. */
+export function startMember(t: Task, config: Config, env: NodeJS.ProcessEnv, runner?: Parameters<typeof openTab>[2]): boolean {
   try {
     if (t.after && t.worktree && t.repo && t.branch && !t.baseSha) {
       // The task follows another one: its worktree starts from the commit that one was closed with.
@@ -327,18 +336,18 @@ export function startArm(t: Task, config: Config, env: NodeJS.ProcessEnv, runner
       const made = createWorktree(t.repo, t.worktree, t.branch, from);
       t = mutateTask(t.id, () => made, env);
     }
-    const claude = isClaude(armTemplate(t, config));
+    const claude = isClaude(memberTemplate(t, config));
     const terminal = selectTerminal({ env, platform: process.platform });
     const resume = claude && t.sessionStarted === true;
     if (resume) {
       writeFileSync(promptFile(t.id, env), followUpPrompt(t));
     } else {
       const brief = readFileSync(briefFile(t.id, env), 'utf8');
-      writeFileSync(promptFile(t.id, env), armPrompt(t, brief, notesFor(t.project, env), claude ? claudeArmNotes(t.id, t.headAddress) : undefined));
+      writeFileSync(promptFile(t.id, env), memberPrompt(t, brief, notesFor(t, env), claude ? claudeMemberNotes(t.id, t.amigoAddress) : undefined));
     }
     let trustAdded = false;
     if (claude) {
-      writeJsonAtomic(settingsFile(t.id, env), armSettings(stopHookSeconds(checksFor(t, env).length, config.checkTimeoutMin)));
+      writeJsonAtomic(settingsFile(t.id, env), memberSettings(stopHookSeconds(checksFor(t, env).length, config.checkTimeoutMin)));
       trustAdded = trustFolder(t.cwd, env);
     }
     const now = mutateTask(
@@ -355,16 +364,16 @@ export function startArm(t: Task, config: Config, env: NodeJS.ProcessEnv, runner
       }),
       env,
     );
-    const headWorkspace = terminal === 'herdr' ? headHerdrWorkspace(env) : null;
+    const amigoWorkspace = terminal === 'herdr' ? amigoHerdrWorkspace(env) : null;
     const { tabConfig, herdrWorkspace } = openTab(terminal, {
-      name: armName(t.id),
-      title: `octomaxxing: ${t.title}`,
+      name: memberName(t.id),
+      title: `amigo: ${t.title}`,
       // The tab's shell sits in the task folder, never in the worktree, so it cannot block removing the worktree on close.
       cwd: taskDir(t.id, env),
-      argv: [process.execPath, cliPath, '_tab', t.id, '--run', String(now.runs), '--home', home(env), ...tabEnvArgs({ ...env, OCTOMAXXING_TERMINAL: terminal, ...(headWorkspace ? { OCTOMAXXING_HERDR_WORKSPACE: headWorkspace } : {}) })],
+      argv: [process.execPath, cliPath, '_tab', t.id, '--run', String(now.runs), '--home', home(env), ...tabEnvArgs({ ...env, AMIGO_TERMINAL: terminal, ...(amigoWorkspace ? { AMIGO_HERDR_WORKSPACE: amigoWorkspace } : {}) })],
       dir: taskDir(t.id, env),
       platform: process.platform,
-      env: { ...env, OCTOMAXXING_HOME: home(env) },
+      env: { ...env, AMIGO_HOME: home(env) },
       ...(terminal === 'herdr' ? { herdr: herdrPlacement(t, env) } : {}),
     }, runner);
     if (tabConfig || herdrWorkspace) mutateTask(t.id, () => ({ tabConfig, herdrWorkspace }), env);
@@ -379,7 +388,7 @@ function spawnAgent(launch: Launch, opts: Parameters<typeof spawn>[2]) {
   return launch.shell ? spawn(launch.commandLine as string, { ...opts, shell: true }) : spawn(launch.file, launch.args, opts);
 }
 
-/** Record the agent's pid. False when the arm was closed before it started: then the agent is stopped at once. */
+/** Record the agent's pid. False when the squad member was closed before it started: then the agent is stopped at once. */
 function recordPid(id: string, pid: number | undefined, env: NodeJS.ProcessEnv, more: (cur: Task) => Partial<Task> = () => ({})): boolean {
   const t = mutateTask(id, (cur) => (cur.status === 'closing' || cur.status === 'closed' ? null : { pid: pid ?? null, ...(pid ? more(cur) : {}) }), env);
   if (t.status === 'closing' || t.status === 'closed') {
@@ -390,7 +399,7 @@ function recordPid(id: string, pid: number | undefined, env: NodeJS.ProcessEnv, 
 }
 
 /**
- * `octomaxxing _tab <id>`: runs inside the arm's terminal tab. Claude Code gets an interactive session the user can type
+ * `amigo _tab <id>`: runs inside the squad member's terminal tab. Claude Code gets an interactive session the user can type
  * in (its hooks record each turn); other agents run once with their output shown in the tab and kept in the log.
  * Returns the tab's exit code: non-zero keeps the tab open so the error stays readable.
  */
@@ -398,7 +407,7 @@ export async function runTab(id: string, env: NodeJS.ProcessEnv = process.env, r
   const t = requireTask(id, env);
   // A tab that opens late, or is reopened from the terminal's menu, must not start a second session.
   if (t.status !== 'running' || (run !== undefined && t.runs !== run) || runnerAlive(id, env)) {
-    process.stdout.write(`octomaxxing: ${id} is ${t.status} (run ${t.runs}), not starting it from this tab.\n`);
+    process.stdout.write(`amigo: ${id} is ${t.status} (run ${t.runs}), not starting it from this tab.\n`);
     return 0;
   }
   const tick = () => {
@@ -414,11 +423,11 @@ export async function runTab(id: string, env: NodeJS.ProcessEnv = process.env, r
   const heartbeat = setInterval(tick, HEARTBEAT_MS);
   let code = 1;
   try {
-    const template = armTemplate(t, loadConfig(env));
-    code = isClaude(template) ? await runClaudeArm(t, env) : await runOnce(t, template, env);
+    const template = memberTemplate(t, loadConfig(env));
+    code = isClaude(template) ? await runClaudeMember(t, env) : await runOnce(t, template, env);
   } catch (err) {
-    process.stderr.write(`octomaxxing: ${(err as Error).message}\n`);
-    appendFileSync(logFile(id, env), `octomaxxing: ${(err as Error).message}\n`);
+    process.stderr.write(`amigo: ${(err as Error).message}\n`);
+    appendFileSync(logFile(id, env), `amigo: ${(err as Error).message}\n`);
     mutateTask(id, (cur) => (cur.status === 'running' ? { status: 'failed', pid: null, seen: false, summary: (err as Error).message } : null), env);
   } finally {
     clearInterval(heartbeat);
@@ -438,24 +447,24 @@ function appendLog(id: string, text: string | Buffer, env: NodeJS.ProcessEnv): v
   }
 }
 
-async function runClaudeArm(t: Task, env: NodeJS.ProcessEnv): Promise<number> {
+async function runClaudeMember(t: Task, env: NodeJS.ProcessEnv): Promise<number> {
   if (resumesSession(t)) {
     // Without its transcript, claude --resume exits at once with "No conversation found": say why instead.
     const transcript = t.transcriptPath || guessTranscriptPath(t.cwd, t.sessionId as string, env);
     if (!existsSync(transcript)) {
       const why = `can't resume: no transcript for session ${t.sessionId} at ${transcript}`;
-      process.stderr.write(`octomaxxing: ${why}\n`);
-      appendLog(t.id, `octomaxxing: ${why}\n`, env);
+      process.stderr.write(`amigo: ${why}\n`);
+      appendLog(t.id, `amigo: ${why}\n`, env);
       mutateTask(t.id, (cur) => (cur.status === 'running' ? { status: 'failed', pid: null, seen: false, summary: why } : null), env);
       return 1;
     }
   }
-  const launch = armLaunch(t, loadConfig(env), readFileSync(promptFile(t.id, env), 'utf8'), env);
+  const launch = memberLaunch(t, loadConfig(env), readFileSync(promptFile(t.id, env), 'utf8'), env);
   // Ctrl+C belongs to the session, not to this wrapper.
   process.on('SIGINT', () => {});
   // stderr is piped (and still shown in the tab) so a launch that dies at once, like a failed --resume, leaves its error
   // in output.log; the session's screen is stdout, which stays the tab's own.
-  const child = spawnAgent(launch, { cwd: t.cwd, stdio: ['inherit', 'inherit', 'pipe'], env: { ...ownSessionEnv(env), OCTOMAXXING_TASK: t.id, OCTOMAXXING_HOME: home(env) } });
+  const child = spawnAgent(launch, { cwd: t.cwd, stdio: ['inherit', 'inherit', 'pipe'], env: { ...ownSessionEnv(env), AMIGO_TASK: t.id, AMIGO_HOME: home(env) } });
   let stderr = '';
   child.stderr?.on('data', (chunk: Buffer) => {
     process.stderr.write(chunk);
@@ -466,8 +475,8 @@ async function runClaudeArm(t: Task, env: NodeJS.ProcessEnv): Promise<number> {
   if (!recordPid(t.id, child.pid, env, (cur) => ({ sessionStarted: true, followUpsSent: cur.followUps.length }))) return 0;
   const exit = await new Promise<number | null>((done) => {
     child.on('error', (err) => {
-      process.stderr.write(`octomaxxing: claude could not start: ${err.message}\n`);
-      appendLog(t.id, `octomaxxing: claude could not start: ${err.message}\n`, env);
+      process.stderr.write(`amigo: claude could not start: ${err.message}\n`);
+      appendLog(t.id, `amigo: claude could not start: ${err.message}\n`, env);
       done(null);
     });
     // close, not exit: it also waits for the stderr pipe to drain.
@@ -482,7 +491,7 @@ async function runClaudeArm(t: Task, env: NodeJS.ProcessEnv): Promise<number> {
     },
     env,
   );
-  // A session closed by `octomaxxing close` or a follow-up, or ended after reporting, is a clean end: the tab closes.
+  // A session closed by `amigo close` or a follow-up, or ended after reporting, is a clean end: the tab closes.
   return after.status === 'failed' && exit !== 0 ? (exit ?? 1) : 0;
 }
 
@@ -490,9 +499,9 @@ async function runOnce(t: Task, template: string[], env: NodeJS.ProcessEnv): Pro
   const log = logFile(t.id, env);
   const before = existsSync(log) ? readFileSync(log).length : 0;
   const launch = buildLaunch(template, { prompt: readFileSync(promptFile(t.id, env), 'utf8'), promptFile: promptFile(t.id, env) }, env);
-  appendFileSync(log, `\n=== octomaxxing: run ${t.runs}, ${new Date().toISOString()} ===\n`);
-  // OCTOMAXXING_TASK marks the arm's environment: octomaxxing refuses to manage tasks from inside an arm.
-  const child = spawnAgent(launch, { cwd: t.cwd, stdio: ['ignore', 'pipe', 'pipe'], env: { ...env, OCTOMAXXING_TASK: t.id }, windowsHide: true });
+  appendFileSync(log, `\n=== amigo: run ${t.runs}, ${new Date().toISOString()} ===\n`);
+  // AMIGO_TASK marks the squad member's environment: amigo refuses to manage tasks from inside a squad member.
+  const child = spawnAgent(launch, { cwd: t.cwd, stdio: ['ignore', 'pipe', 'pipe'], env: { ...env, AMIGO_TASK: t.id }, windowsHide: true });
   if (!recordPid(t.id, child.pid, env)) return 0;
   const tee = (out: NodeJS.WritableStream) => (chunk: Buffer) => {
     appendFileSync(log, chunk);
@@ -502,7 +511,7 @@ async function runOnce(t: Task, template: string[], env: NodeJS.ProcessEnv): Pro
   child.stderr?.on('data', tee(process.stderr));
   const code = await new Promise<number | null>((done) => {
     child.on('error', (err) => {
-      appendFileSync(log, `octomaxxing: the agent could not start: ${err.message}\n`);
+      appendFileSync(log, `amigo: the agent could not start: ${err.message}\n`);
       done(null);
     });
     child.on('close', (c) => done(c));
@@ -528,7 +537,7 @@ async function runOnce(t: Task, template: string[], env: NodeJS.ProcessEnv): Pro
 }
 
 /**
- * What an arm's reported turn records. An arm that says done goes to "verifying" while its project's checks run (see
+ * What a squad member's reported turn records. A squad member that says done goes to "verifying" while its project's checks run (see
  * verifyDone); without checks it is done and "unverified". A reviewer is not checked: its verdict is recorded instead.
  */
 function reportPatch(cur: Task, status: Task['status'], summary: string, env: NodeJS.ProcessEnv): Partial<Task> {
@@ -546,8 +555,8 @@ interface HookPayload {
 }
 
 /**
- * A Claude Code hook in an arm (`octomaxxing _hook prompt|stop`). Returns what to print: on a stop whose turn did not
- * report (no STATUS line, or no message to a Claude head), the arm is sent back once to do it.
+ * A Claude Code hook in a squad member (`amigo _hook prompt|stop`). Returns what to print: on a stop whose turn did not
+ * report (no STATUS line, or no message to a Claude amigo), the squad member is sent back once to do it.
  */
 export async function applyHook(name: string, payload: HookPayload, id: string, env: NodeJS.ProcessEnv = process.env): Promise<string> {
   const live = (s: Task['status']) => s === 'running' || FINISHED.includes(s);
@@ -559,7 +568,7 @@ export async function applyHook(name: string, payload: HookPayload, id: string, 
     return '';
   }
   if (name === 'stop-failure') {
-    // The turn ended on an API error (rate limit, overload...): the session is idle, so the head must hear about it.
+    // The turn ended on an API error (rate limit, overload...): the session is idle, so amigo must hear about it.
     const why = [payload.error, payload.error_type, payload.last_assistant_message].find((v) => typeof v === 'string' && v.trim());
     mutateTask(id, (cur) => (cur.status === 'running' ? { status: 'blocked', summary: `The turn ended with an error${why ? `: ${lastLines(why, 1)}` : ''}. Send a follow-up to retry.`, seen: false } : null), env);
     return '';
@@ -576,13 +585,13 @@ export async function applyHook(name: string, payload: HookPayload, id: string, 
     (cur) => {
       if (!live(cur.status)) return null;
       if (!payload.stop_hook_active) {
-        const messaged = !cur.headAddress || transcriptMessagedHead(payload.transcript_path, cur.headAddress);
+        const messaged = !cur.amigoAddress || transcriptMessagedAmigo(payload.transcript_path, cur.amigoAddress);
         if (!messaged || !report) {
-          out = JSON.stringify({ decision: 'block', reason: reportReason(messaged, Boolean(report), cur.headAddress) });
+          out = JSON.stringify({ decision: 'block', reason: reportReason(messaged, Boolean(report), cur.amigoAddress) });
           return null;
         }
       }
-      const patch = reportPatch(cur, report?.status ?? 'done', report?.summary || lastLines(message, 1) || 'The arm ended its turn without a STATUS line.', env);
+      const patch = reportPatch(cur, report?.status ?? 'done', report?.summary || lastLines(message, 1) || 'The squad member ended its turn without a STATUS line.', env);
       turn.verify = patch.status === 'verifying';
       return { ...patch, exitCode: null };
     },
@@ -596,7 +605,7 @@ export async function applyHook(name: string, payload: HookPayload, id: string, 
   return out;
 }
 
-/** Give a finished arm a follow-up. A Claude arm resumes its session in a new tab; other agents run again with it. */
+/** Give a finished squad member a follow-up. A Claude squad member resumes its session in a new tab; other agents run again with it. */
 export function sendFollowUp(id: string, message: string, env: NodeJS.ProcessEnv = process.env): Task {
   if (!message.trim()) throw new Error('The message is empty');
   const reviewers = listTasks(env).filter((r) => r.reviewOf === id && r.status !== 'closed');
@@ -604,18 +613,18 @@ export function sendFollowUp(id: string, message: string, env: NodeJS.ProcessEnv
   const t = mutateTask(
     id,
     (cur) => {
-      if (!FINISHED.includes(cur.status)) throw new Error(`Task ${id} is ${cur.status}; send works once the arm has finished a turn`);
+      if (!FINISHED.includes(cur.status)) throw new Error(`Task ${id} is ${cur.status}; send works once the squad member has finished a turn`);
       return { followUps: [...cur.followUps, message.trim()], status: 'queued', seen: true, checkRetries: 0, verification: undefined };
     },
     env,
   );
-  // The old tab ends first; its exit starts the queue again, which reopens the arm.
+  // The old tab ends first; its exit starts the queue again, which reopens the squad member.
   if (t.pid && runnerAlive(id, env)) killTree(t.pid);
   drain(env);
   return requireTask(id, env);
 }
 
-function describeResults(tasks: Task[]): string {
+export function describeResults(tasks: Task[]): string {
   return tasks
     .map((t) => {
       const checks = t.status === 'done' ? describeVerification(t) : null;
@@ -625,7 +634,7 @@ function describeResults(tasks: Task[]): string {
 }
 
 /** Results nobody has seen yet (optionally only for some ids); marks them seen. */
-function takeFresh(ids: string[], env: NodeJS.ProcessEnv): Task[] {
+export function takeFresh(ids: string[], env: NodeJS.ProcessEnv): Task[] {
   return withLock(lockPath('inbox', env), () => {
     const fresh = listTasks(env).filter((t) => FINISHED.includes(t.status) && !t.seen && (!ids.length || ids.includes(t.id)));
     for (const t of fresh) mutateTask(t.id, () => ({ seen: true }), env);
@@ -633,23 +642,29 @@ function takeFresh(ids: string[], env: NodeJS.ProcessEnv): Task[] {
   });
 }
 
-/** Arms that finished a turn since the head last looked; marks them seen. */
+/** A notice as the inbox shows it: its title, then its text indented. */
+const describeNotice = (n: Notice): string => `${n.title}\n${n.text.split(/\r?\n/).map((l) => `    ${l}`).join('\n')}`;
+
+/** Squad members that finished a turn since amigo last looked, and finished background results (the briefing's live checks); marks them seen. */
 export function inbox(env: NodeJS.ProcessEnv = process.env): string {
-  drain(env); // the head runs inbox often: queued arms also start here as memory frees up
+  drain(env); // amigo runs inbox often: queued squad members also start here as memory frees up
   const fresh = takeFresh([], env);
-  return fresh.length ? describeResults(fresh) : 'Inbox empty.';
+  const notices = takeNotices(env);
+  const parts = [...(fresh.length ? [describeResults(fresh)] : []), ...notices.map(describeNotice)];
+  return parts.length ? parts.join('\n') : 'Inbox empty.';
 }
 
-/** Wait until an arm (any, or one of ids) finishes a turn. Also starts queued arms as memory frees up. */
-export async function waitForArms(ids: string[], timeoutMs: number, env: NodeJS.ProcessEnv = process.env, pollMs = 2000): Promise<string> {
+/** Wait until a squad member (any, or one of ids) finishes a turn. Also starts queued squad members as memory frees up. */
+export async function waitForMembers(ids: string[], timeoutMs: number, env: NodeJS.ProcessEnv = process.env, pollMs = 2000): Promise<string> {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
     drain(env);
     const fresh = takeFresh(ids, env);
-    if (fresh.length) return `${describeResults(fresh)}\nDetails: octomaxxing status <id>`;
+    const notices = ids.length ? [] : takeNotices(env);
+    if (fresh.length || notices.length) return `${[...(fresh.length ? [describeResults(fresh)] : []), ...notices.map(describeNotice)].join('\n')}${fresh.length ? '\nDetails: amigo status <id>' : ''}`;
     const open = listTasks(env).filter((t) => (t.status === 'queued' || isActive(t)) && (!ids.length || ids.includes(t.id)));
-    if (!open.length) return 'Nothing is running or queued, and nothing new has finished.';
-    if (Date.now() >= deadline) return `No arm finished within ${Math.round(timeoutMs / 60_000)} min. Run octomaxxing wait again.`;
+    if (!open.length && !(!ids.length && noticesPending(env))) return 'Nothing is running or queued, and nothing new has finished.';
+    if (Date.now() >= deadline) return `No squad member finished within ${Math.round(timeoutMs / 60_000)} min. Run amigo wait again.`;
     await new Promise((r) => setTimeout(r, pollMs));
   }
 }
@@ -665,7 +680,7 @@ export interface Stations {
   queued: Task[];
   building: Task[];
   verifying: Task[];
-  /** Reviewer arms still working. */
+  /** Reviewer squad members still working. */
   review: Task[];
   /** Being committed and cleaned up by close. */
   closing: Task[];
@@ -694,7 +709,7 @@ export function stations(tasks: Task[]): Stations {
   };
 }
 
-function stationText(s: Stations, all: Task[]): string {
+export function stationText(s: Stations, all: Task[]): string {
   const row = (t: Task, extra = '') => `  ${t.id}  [${t.project}] ${t.title}  (${age(t.updatedAt)})${extra}`;
   const group = (name: string, tasks: Task[], line: (t: Task) => string): string[] => (tasks.length ? [`${name} (${tasks.length})`, ...tasks.map(line)] : []);
   const waitingRow = (t: Task) => {
@@ -712,7 +727,7 @@ function stationText(s: Stations, all: Task[]): string {
   ].join('\n') || (all.length ? 'Nothing is open.' : 'No tasks yet.');
 }
 
-/** The risk and review lines of `status <id>`, for an arm whose work is still in its worktree. */
+/** The risk and review lines of `status <id>`, for a squad member whose work is still in its worktree. */
 function riskLines(t: Task, env: NodeJS.ProcessEnv): string[] {
   if (!t.worktree || !t.repo || !t.baseSha || !existsSync(t.worktree) || t.status === 'closed') return [];
   try {
@@ -735,7 +750,7 @@ export function statusText(id: string | undefined, env: NodeJS.ProcessEnv = proc
     const t = requireTask(id, env);
     const lines = [
       `${t.id}  ${t.status}  [${t.project}] ${t.title}`,
-      `agent:   ${t.agent}   runs: ${t.runs}   updated ${age(t.updatedAt)} ago${runnerAlive(t.id, env) ? `   session open: ${armName(t.id)}` : ''}`,
+      `agent:   ${t.agent}   runs: ${t.runs}   updated ${age(t.updatedAt)} ago${runnerAlive(t.id, env) ? `   session open: ${memberName(t.id)}` : ''}`,
       `folder:  ${t.cwd}${t.branch ? `   branch: ${t.branch}` : ''}${t.reviewOf ? `   reviewing: ${t.reviewOf}` : ''}`,
     ];
     if (t.after) lines.push(`after:   ${t.after}${t.status === 'queued' ? ' (waits until it is closed with a commit)' : ''}`);
@@ -757,67 +772,47 @@ export function statusText(id: string | undefined, env: NodeJS.ProcessEnv = proc
   const open = all.filter((t) => t.status !== 'closed');
   const config = loadConfig(env);
   const running = open.filter(isActive).length;
-  const head = `Arms: ${running} running, ${open.filter((t) => t.status === 'queued').length} queued. Free memory ${freeMemMb(env)} MB (an arm starts while ${config.armMb} MB for it still leaves ${config.reserveMb} MB).`;
+  const head = `Squad members: ${running} running, ${open.filter((t) => t.status === 'queued').length} queued. Free memory ${freeMemMb(env)} MB (a squad member starts while ${config.memberMb} MB for it still leaves ${config.reserveMb} MB).`;
   return `${head}\n${stationText(stations(all), all)}`;
 }
 
-const GREETINGS = [
-  '🐙 Tentacles warmed up.',
-  "🐙 Ready to maxx. Hand me the work, I'll hand it out.",
-  '🐙 Head online. Spotter ready.',
-  '🐙 All arms stretched. Point me at something heavy.',
-  '🐙 Octomaxxing online. What are we maxxing today?',
-  '🐙 Eight arms, zero excuses.',
-];
+const CLAUDE_AMIGO = `## Talking to squad members (you are Claude Code)
 
-/** The head's opening lines: a rotating one-liner plus live status. */
-export function greeting(env: NodeJS.ProcessEnv = process.env, pick: (n: number) => number = (n) => Math.floor(Math.random() * n)): string {
-  refresh(env);
-  const tasks = listTasks(env);
-  const running = tasks.filter(isActive).length;
-  const waiting = tasks.filter((t) => FINISHED.includes(t.status) && !t.seen).map((t) => t.id);
-  const projects = loadProjects(env).length;
-  const status = `${projects} project${projects === 1 ? '' : 's'} · ${running} arm${running === 1 ? '' : 's'} running · inbox: ${waiting.length ? waiting.join(', ') : 'empty'}`;
-  return `${GREETINGS[pick(GREETINGS.length)]}\n${status}`;
-}
+- Claude squad members are sessions named \`amigo-<id>\` in terminal tabs. Each one messages the session that spawned it when a turn ends, whatever that session is named, so never ask the user to rename this session.
+- To answer a squad member whose session is still open, use SendMessage to \`amigo-<id>\`: the squad member carries on in the same session. \`amigo send\` restarts its session instead.
+- Messages from squad members can be held for the user's approval, so never rely on them alone: \`amigo wait\` and \`amigo inbox\` always have every result.`;
 
-const CLAUDE_HEAD = `## Talking to arms (you are Claude Code)
-
-- Claude arms are sessions named \`octomaxxing-<id>\` in terminal tabs. Each one messages the session that spawned it when a turn ends, whatever that session is named, so never ask the user to rename this session.
-- To answer an arm whose session is still open, use SendMessage to \`octomaxxing-<id>\`: the arm carries on in the same session. \`octomaxxing send\` restarts its session instead.
-- Messages from arms can be held for the user's approval, so never rely on them alone: \`octomaxxing wait\` and \`octomaxxing inbox\` always have every result.`;
-
-/** The head's full instructions, for `octomaxxing head` and for the /octomaxxing skill (`octomaxxing brief`). */
-export function headPrompt(agent: string, env: NodeJS.ProcessEnv = process.env): string {
+/** Amigo's full instructions, for the bare `amigo` start and for the /amigo skill (`amigo brief`). */
+export function amigoPrompt(agent: string, env: NodeJS.ProcessEnv = process.env, briefing = '', opts: { live?: boolean } = {}): string {
   const config = loadConfig(env);
   const others = Object.keys(config.agents).filter((a) => a !== agent);
   const drafts = join(home(env), 'drafts');
-  const claude = isClaude(config.agents[agent]?.head ?? config.agents[agent]?.arm ?? []);
+  const claude = isClaude(config.agents[agent]?.amigo ?? config.agents[agent]?.member ?? []);
   return [
-    readPrompt('head.md'),
-    `## Your setup\n\n- You run as the "${agent}" agent. Pass \`--agent ${agent}\` to every spawn so arms use the same agent${others.length ? `, unless a task is better suited to another configured agent: ${others.join(', ')}` : ''}.\n- Write briefs and messages to new files in ${drafts} (create the folder if needed) and pass them with \`--brief-file\` or \`--file\`.`,
-    ...(claude ? [CLAUDE_HEAD] : []),
-    `## Start\n\nBegin your first reply with exactly these two lines, then wait for the user:\n\n${greeting(env)}`,
+    readPrompt('amigo.md'),
+    `## Your setup\n\n- You run as the "${agent}" agent. Pass \`--agent ${agent}\` to every spawn so squad members use the same agent${others.length ? `, unless a task is better suited to another configured agent: ${others.join(', ')}` : ''}.\n- Write briefs and messages to new files in ${drafts} (create the folder if needed) and pass them with \`--brief-file\` or \`--file\`.`,
+    ...(claude ? [CLAUDE_AMIGO] : []),
+    `## Briefing\n\nOpen your first reply with a short report from this briefing: what finished, what is waiting on the user, anything you noticed, and what you would do next as options, your pick first. Then wait for the user.${opts.live ? ' Live checks are running in the background: run \`amigo wait\` in the background for their result, like any other, and mention it when it arrives.' : ''}\n\n${briefing.trim() || '(no briefing)'}`,
   ].join('\n\n') + '\n';
 }
 
-/** Start the head in this terminal and wait for it to exit. */
-export async function runHead(agentName: string | undefined, opts: { dryRun?: boolean }, env: NodeJS.ProcessEnv = process.env): Promise<number> {
+/** Start amigo in this terminal and wait for it to exit. */
+export async function runAmigo(agentName: string | undefined, opts: { dryRun?: boolean; briefing?: string; live?: boolean }, env: NodeJS.ProcessEnv = process.env): Promise<number> {
   const config = loadConfig(env);
   const agent = pickAgent(config, agentName, env);
-  const template = config.agents[agent]!.head;
-  if (!template) throw new Error(`Agent "${agent}" has no "head" template: start the head with /octomaxxing inside it (octomaxxing install-skill), or use --agent with another agent.`);
-  const file = join(home(env), 'head-prompt.md');
-  const prompt = headPrompt(agent, env);
-  const headSettingsFile = join(home(env), 'head-settings.json');
-  const launch = buildLaunch(isClaude(template) ? claudeHeadTemplate(template, headSettingsFile) : template, { prompt, promptFile: file }, env);
+  const template = config.agents[agent]!.amigo;
+  if (!template) throw new Error(`Agent "${agent}" has no "amigo" template: start amigo with /amigo inside it (amigo install-skill), or use --agent with another agent.`);
+  const file = join(home(env), 'amigo-prompt.md');
+  const prompt = amigoPrompt(agent, env, opts.briefing, { live: opts.live });
+  const amigoSettingsFile = join(home(env), 'amigo-settings.json');
+  const launch = buildLaunch(isClaude(template) ? claudeAmigoTemplate(template, amigoSettingsFile) : template, { prompt, promptFile: file }, env);
   if (opts.dryRun) {
-    process.stdout.write(`DRY RUN: would start the head (${agent}) in ${home(env)}:\n${describeLaunch(launch)}\n`);
+    process.stdout.write(`DRY RUN: would start amigo (${agent}) in ${home(env)}:\n${describeLaunch(launch)}\n`);
     return 0;
   }
   writeFileSync(file, prompt);
-  if (isClaude(template)) writeJsonAtomic(headSettingsFile, headSettings());
-  const childEnv = { ...env, OCTOMAXXING_HOME: home(env) };
+  if (isClaude(template)) writeJsonAtomic(amigoSettingsFile, amigoSettings());
+  const childEnv = { ...env, AMIGO_HOME: home(env) };
   const child = spawnAgent(launch, { cwd: home(env), stdio: 'inherit', env: childEnv });
   return await new Promise((done, fail) => {
     child.on('error', fail);
@@ -825,10 +820,10 @@ export async function runHead(agentName: string | undefined, opts: { dryRun?: bo
   });
 }
 
-/** Print an arm's output (for Claude arms: how each turn ended), then keep following it while it runs. */
+/** Print a squad member's output (for Claude squad members: how each turn ended), then keep following it while it runs. */
 export async function attach(id: string, env: NodeJS.ProcessEnv = process.env, out: NodeJS.WritableStream = process.stdout): Promise<void> {
   const log = logFile(id, env);
-  if (requireTask(id, env).sessionId) out.write(`[${id} is the Claude session ${armName(id)}; this shows how each turn ended]\n`);
+  if (requireTask(id, env).sessionId) out.write(`[${id} is the Claude session ${memberName(id)}; this shows how each turn ended]\n`);
   let offset = 0;
   const flush = () => {
     if (!existsSync(log)) return;

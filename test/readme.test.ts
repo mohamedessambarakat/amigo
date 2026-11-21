@@ -20,9 +20,9 @@ describe('README stays in sync with the code', () => {
   });
 
   it('only mentions commands that exist', () => {
-    const known = new Set([...HELP.matchAll(/^ {2}octomaxxing ([a-z-]+)/gm)].map((m) => m[1]));
-    for (const m of readme.matchAll(/`octomaxxing ([a-z][a-z-]*)/g)) {
-      assert.ok(known.has(m[1]), `README mentions "octomaxxing ${m[1]}", which is not a command`);
+    const known = new Set([...HELP.matchAll(/^ {2}amigo ([a-z-]+)/gm)].map((m) => m[1]));
+    for (const m of readme.matchAll(/`amigo ([a-z][a-z-]*)/g)) {
+      assert.ok(known.has(m[1]), `README mentions "amigo ${m[1]}", which is not a command`);
     }
   });
 
@@ -32,9 +32,9 @@ describe('README stays in sync with the code', () => {
     const rows = [...readme.matchAll(/^\| (Claude Code|Codex|Gemini CLI|Antigravity|Grok) \| (.+?) \| (.+?) \| (.+?) \|$/gm)];
     const names: Record<string, string> = { 'Claude Code': 'claude', Codex: 'codex', 'Gemini CLI': 'gemini', Antigravity: 'antigravity', Grok: 'grok' };
     assert.equal(rows.length, Object.keys(TEMPLATES).length);
-    for (const [, label, invoke, head, arm] of rows) {
+    for (const [, label, invoke, amigo, member] of rows) {
       const agent = names[label as string] as string;
-      assert.deepEqual({ head: json(head as string), arm: json(arm as string) }, { head: TEMPLATES[agent]?.head, arm: TEMPLATES[agent]?.arm }, label);
+      assert.deepEqual({ amigo: json(amigo as string), member: json(member as string) }, { amigo: TEMPLATES[agent]?.amigo, member: TEMPLATES[agent]?.member }, label);
       assert.equal(invoke === 'none' ? undefined : invoke?.replace(/`/g, ''), TARGETS.find((t) => t.agent === agent)?.invoke, `${label} slash command`);
     }
   });

@@ -7,19 +7,19 @@ import { ensurePolicy } from './policy.ts';
 
 /** How to start one agent CLI. Each is an argv array; `{prompt}` is replaced by the prompt text. */
 export interface AgentTemplate {
-  /** Interactive session that stays open for the user (the head). Optional: some agents can only be arms. */
-  head?: string[];
-  /** An arm. Claude Code runs it as an interactive session (any -p is dropped); other agents run one task and exit. */
-  arm: string[];
+  /** Interactive session that stays open for the user (amigo). Optional: some agents can only be squad members. */
+  amigo?: string[];
+  /** A squad member. Claude Code runs it as an interactive session (any -p is dropped); other agents run one task and exit. */
+  member: string[];
 }
 
 export interface Config {
   agents: Record<string, AgentTemplate>;
   /** Agent used when --agent is not given. Defaults to the first one in `agents`. */
   defaultAgent?: string;
-  /** Memory one arm needs, in MB. An arm starts only while free memory minus this stays at or above reserveMb. */
-  armMb: number;
-  /** Free memory, in MB, that must remain after an arm starts. */
+  /** Memory one squad member needs, in MB. A squad member starts only while free memory minus this stays at or above reserveMb. */
+  memberMb: number;
+  /** Free memory, in MB, that must remain after a squad member starts. */
   reserveMb: number;
   /** How long one project check may run, in minutes, before it counts as failed. */
   checkTimeoutMin: number;
@@ -28,17 +28,21 @@ export interface Config {
 export interface Project {
   name: string;
   path: string;
-  /** Rules every arm working on this project must follow. */
+  /** Rules every squad member working on this project must follow. */
   notes?: string;
-  /** Shell commands run in an arm's folder when it says done; all must pass (see verify.ts). */
+  /** Shell commands run in a squad member's folder when it says done; all must pass (see verify.ts). */
   checks?: string[];
   /** Globs for paths that make a change need the user's attention, on top of the built-in ones (see risk.ts). */
   risky?: string[];
-  /** Was the folder a git repo when it was added? An arm working in a non-git folder can `git init` it and plant config there, so spawn refuses once this changes (see checkGitState). */
+  /** Shell commands the startup briefing runs in the project folder (see briefing.ts). Not gates. Left out: the defaults for a GitHub repo; an empty list: none. */
+  live?: string[];
+  /** Plain-words things a squad member looks at for the startup briefing. Not gates. */
+  watch?: string[];
+  /** Was the folder a git repo when it was added? A squad member working in a non-git folder can `git init` it and plant config there, so spawn refuses once this changes (see checkGitState). */
   wasGit?: boolean;
 }
 
-const STARTER_CONFIG: Config = { agents: {}, armMb: 600, reserveMb: 2048, checkTimeoutMin: 10 };
+const STARTER_CONFIG: Config = { agents: {}, memberMb: 600, reserveMb: 2048, checkTimeoutMin: 10 };
 
 /** Create the home folder with an empty config and project list. Returns true on the first run. */
 export function ensureHome(env: NodeJS.ProcessEnv = process.env): boolean {
@@ -63,24 +67,24 @@ export function validateConfig(raw: unknown, where = 'config.json'): Config {
   const agents = o.agents ?? {};
   if (typeof agents !== 'object' || Array.isArray(agents)) throw new Error(`${where}: "agents" must be an object`);
   for (const [name, t] of Object.entries(agents)) {
-    for (const kind of ['head', 'arm'] as const) {
+    for (const kind of ['amigo', 'member'] as const) {
       const argv = (t as Partial<AgentTemplate> | null)?.[kind];
-      if (kind === 'head' && argv === undefined) continue;
+      if (kind === 'amigo' && argv === undefined) continue;
       if (!isArgv(argv)) throw new Error(`${where}: agents.${name}.${kind} must be a non-empty array of strings`);
       if (!argv.slice(1).some((a) => a.includes('{prompt}'))) throw new Error(`${where}: agents.${name}.${kind} needs a "{prompt}" argument`);
     }
   }
-  const mb = (key: 'armMb' | 'reserveMb'): number => {
+  const mb = (key: 'memberMb' | 'reserveMb'): number => {
     const v = o[key] ?? STARTER_CONFIG[key];
     if (typeof v !== 'number' || !Number.isFinite(v) || v < 0) throw new Error(`${where}: "${key}" must be a number of MB, 0 or more`);
     return v;
   };
-  const armMb = mb('armMb');
+  const memberMb = mb('memberMb');
   const reserveMb = mb('reserveMb');
   const checkTimeoutMin = o.checkTimeoutMin ?? STARTER_CONFIG.checkTimeoutMin;
   if (typeof checkTimeoutMin !== 'number' || !(checkTimeoutMin > 0)) throw new Error(`${where}: "checkTimeoutMin" must be a number of minutes above 0`);
   if (o.defaultAgent !== undefined && !(o.defaultAgent in agents)) throw new Error(`${where}: defaultAgent "${o.defaultAgent}" is not in "agents"`);
-  return { agents, armMb, reserveMb, checkTimeoutMin, ...(o.defaultAgent ? { defaultAgent: o.defaultAgent } : {}) };
+  return { agents, memberMb, reserveMb, checkTimeoutMin, ...(o.defaultAgent ? { defaultAgent: o.defaultAgent } : {}) };
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
@@ -108,12 +112,12 @@ export function validateProjects(raw: unknown, where = 'projects.json'): Project
     seen.add(p.name);
     if (typeof p.path !== 'string' || !isAbsolute(p.path)) throw new Error(`${where}: project "${p.name}" needs an absolute "path"`);
     if (p.notes !== undefined && typeof p.notes !== 'string') throw new Error(`${where}: project "${p.name}": "notes" must be text`);
-    for (const key of ['checks', 'risky'] as const) {
+    for (const key of ['checks', 'risky', 'live', 'watch'] as const) {
       const v = p[key];
       if (v !== undefined && !(Array.isArray(v) && v.every((x) => typeof x === 'string' && x.trim() !== ''))) throw new Error(`${where}: project "${p.name}": "${key}" must be a list of non-empty strings`);
     }
     if (p.wasGit !== undefined && typeof p.wasGit !== 'boolean') throw new Error(`${where}: project "${p.name}": "wasGit" must be true or false`);
-    return { name: p.name, path: p.path, ...(p.wasGit !== undefined ? { wasGit: p.wasGit } : {}), ...(p.notes ? { notes: p.notes } : {}), ...(p.checks?.length ? { checks: p.checks } : {}), ...(p.risky?.length ? { risky: p.risky } : {}) };
+    return { name: p.name, path: p.path, ...(p.wasGit !== undefined ? { wasGit: p.wasGit } : {}), ...(p.notes ? { notes: p.notes } : {}), ...(p.checks?.length ? { checks: p.checks } : {}), ...(p.risky?.length ? { risky: p.risky } : {}), ...(p.live ? { live: p.live } : {}), ...(p.watch?.length ? { watch: p.watch } : {}) };
   });
 }
 
@@ -123,7 +127,7 @@ export function loadProjects(env: NodeJS.ProcessEnv = process.env): Project[] {
 
 export function findProject(projects: Project[], name: string): Project {
   const p = projects.find((x) => x.name === name);
-  if (!p) throw new Error(`Unknown project "${name}". Known: ${projects.map((x) => x.name).join(', ') || '(none yet: octomaxxing add <path>)'}`);
+  if (!p) throw new Error(`Unknown project "${name}". Known: ${projects.map((x) => x.name).join(', ') || '(none yet: amigo add <path>)'}`);
   return p;
 }
 
@@ -144,6 +148,8 @@ export interface ProjectFields {
   /** A list replaces the project's list; an empty list clears it. Left out, the old list stays. */
   checks?: string[];
   risky?: string[];
+  live?: string[];
+  watch?: string[];
 }
 
 /** Register a folder. Adding a name that already points at this folder updates the fields given and keeps the rest. */
@@ -160,6 +166,8 @@ export function addProject(path: string, opts: ProjectFields, env: NodeJS.Proces
     notes: opts.notes ?? old?.notes,
     checks: opts.checks ?? old?.checks,
     risky: opts.risky ?? old?.risky,
+    live: opts.live ?? old?.live,
+    watch: opts.watch ?? old?.watch,
     wasGit: isGitRepo(abs), // adding it again is the user vouching for the folder as it is now
   };
   const list = old ? projects.map((p) => (p.name === name ? project : p)) : [...projects, project];
@@ -168,7 +176,7 @@ export function addProject(path: string, opts: ProjectFields, env: NodeJS.Proces
   return { project: next.find((p) => p.name === name) as Project, updated: Boolean(old) };
 }
 
-/** Add a line to a project's notes (the hard rules every later arm gets). */
+/** Add a line to a project's notes (the hard rules every later squad member gets). */
 export function addNote(name: string, text: string, env: NodeJS.ProcessEnv = process.env): Project {
   const projects = loadProjects(env);
   const old = findProject(projects, name);
@@ -179,8 +187,8 @@ export function addNote(name: string, text: string, env: NodeJS.ProcessEnv = pro
 }
 
 /**
- * Refuse a project whose folder stopped being what it was when added: a non-git folder an arm turned into a repo (git init
- * plus config and .gitattributes) would run its filters as the head on the next `worktree add`. A project added before this
+ * Refuse a project whose folder stopped being what it was when added: a non-git folder a squad member turned into a repo (git init
+ * plus config and .gitattributes) would run its filters as amigo on the next `worktree add`. A project added before this
  * was recorded is taken as it is the first time it is checked (kept when `record` is set).
  */
 export function checkGitState(project: Project, record: boolean, env: NodeJS.ProcessEnv = process.env): void {
@@ -190,6 +198,6 @@ export function checkGitState(project: Project, record: boolean, env: NodeJS.Pro
     return;
   }
   if (project.wasGit !== now) {
-    throw new Error(`Project ${project.name} ${project.wasGit ? 'was a git repo' : 'was not a git repo'} when you added it, but ${project.path} ${now ? 'is one now' : 'no longer is'}. An arm may have changed it. Look at the folder yourself, then add it again (octomaxxing add ${project.path} --name ${project.name}) before spawning more arms.`);
+    throw new Error(`Project ${project.name} ${project.wasGit ? 'was a git repo' : 'was not a git repo'} when you added it, but ${project.path} ${now ? 'is one now' : 'no longer is'}. A squad member may have changed it. Look at the folder yourself, then add it again (amigo add ${project.path} --name ${project.name}) before spawning more squad members.`);
   }
 }

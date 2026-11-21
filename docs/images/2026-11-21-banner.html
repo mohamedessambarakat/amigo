@@ -1,0 +1,42 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<!-- Source of 2026-11-21-banner.png. Render at 1280x400, device scale 2, transparent page background. -->
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #0f0f11;
+    --fg: #f4f2ee;
+    --muted: #a6a29a;
+    --byline: #9a968e;
+    --accent: #f2a541;
+  }
+  html, body { margin: 0; background: transparent; }
+  .banner {
+    position: relative; width: 1280px; height: 400px; box-sizing: border-box;
+    background: var(--bg); border-radius: 28px;
+    display: flex; align-items: center; justify-content: center; gap: 56px;
+  }
+  .mark { flex: none; margin-top: 6px; }
+  .name { color: var(--fg); font: 600 128px/1 Geist, system-ui, sans-serif; letter-spacing: -0.045em; margin: 0 0 0 -4px; }
+  .tag { color: var(--muted); font: 400 38px/1.2 Geist, system-ui, sans-serif; letter-spacing: -0.01em; margin: 20px 0 0; }
+  .tag b { color: var(--fg); font-weight: 500; }
+  .by { position: absolute; right: 48px; bottom: 46px; color: var(--byline); font: 500 24px Geist, system-ui, sans-serif; }
+</style>
+</head>
+<body>
+  <div class="banner">
+    <svg class="mark" width="184" height="184" viewBox="0 0 168 168" aria-hidden="true">
+      <!-- you: the larger shape; amigo: the accent shape at your right hand -->
+      <rect x="8" y="8" width="104" height="104" rx="30" fill="var(--fg)"/>
+      <rect x="72" y="72" width="88" height="88" rx="26" fill="var(--accent)" stroke="var(--bg)" stroke-width="10"/>
+    </svg>
+    <div>
+      <h1 class="name">amigo</h1>
+      <p class="tag"><b>Your right hand.</b> Runs the squad.</p>
+    </div>
+    <div class="by">by essam</div>
+  </div>
+</body>
+</html>

@@ -113,7 +113,7 @@ describe('risk scoring', () => {
     assert.ok(!globMatches('auth', 'author/x.ts'));
   });
 
-  it('measures what an arm changed against its start commit: committed or not, untracked and deleted files included', () => {
+  it('measures what a squad member changed against its start commit: committed or not, untracked and deleted files included', () => {
     const { dir } = makeHome();
     try {
       const repo = makeRepo(join(dir, 'repo'));
@@ -181,8 +181,8 @@ describe('mandatory review', () => {
 
       const closed = cli(env, ['close', id, '--commit']);
       assert.equal(closed.code, 0, closed.err);
-      assert.match(closed.out, /Committed \w+ to branch octomaxxing\//);
-      assert.equal(git(repo, 'show', '--name-only', '--format=', `octomaxxing/${id}`).trim().split(/\r?\n/).length, 4);
+      assert.match(closed.out, /Committed \w+ to branch amigo\//);
+      assert.equal(git(repo, 'show', '--name-only', '--format=', `amigo/${id}`).trim().split(/\r?\n/).length, 4);
     } finally {
       cleanup(dir);
     }

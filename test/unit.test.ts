@@ -2,11 +2,11 @@ import assert from 'node:assert/strict';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { after, describe, it } from 'node:test';
-import { age, armPrompt, greeting, headPrompt, titleOf } from '../src/arms.ts';
+import { age, memberPrompt, amigoPrompt, titleOf } from '../src/squad.ts';
 import { INLINE_LIMIT, buildLaunch, pointerLine, quoteForCmd, resolveExecutable } from '../src/command.ts';
 import { nameFromPath, pickAgent, validateConfig, validateProjects } from '../src/config.ts';
 import { commitAll, looksSecret, porcelainPath } from '../src/git.ts';
-import { HEARTBEAT_MS, armNumber, beat, newId, nextArmNumber, parseStatus, resolveId, runnerAlive, saveTask, type Task } from '../src/tasks.ts';
+import { HEARTBEAT_MS, memberNumber, beat, newId, nextMemberNumber, parseStatus, resolveId, runnerAlive, saveTask, type Task } from '../src/tasks.ts';
 import { installSkills, removeSkills } from '../src/skills.ts';
 import { TEMPLATES } from '../src/templates.ts';
 import { cleanup, git, makeHome, makeRepo, tmpDir } from './helpers.ts';
@@ -16,23 +16,23 @@ after(() => cleanup(tmp));
 
 describe('config', () => {
   it('accepts a valid config and fills in the memory gate', () => {
-    const c = validateConfig({ agents: { a: { head: ['a', '{prompt}'], arm: ['a', '-p', '{prompt}'] } } });
-    assert.deepEqual([c.armMb, c.reserveMb], [600, 2048]);
+    const c = validateConfig({ agents: { a: { amigo: ['a', '{prompt}'], member: ['a', '-p', '{prompt}'] } } });
+    assert.deepEqual([c.memberMb, c.reserveMb], [600, 2048]);
     assert.equal(pickAgent(c, undefined), 'a');
   });
 
   it('rejects templates without {prompt}, bad memory numbers and an unknown defaultAgent', () => {
-    assert.throws(() => validateConfig({ agents: { a: { head: ['a'], arm: ['a', '{prompt}'] } } }), /agents\.a\.head needs a "\{prompt\}"/);
-    assert.throws(() => validateConfig({ agents: { a: { head: ['a', '{prompt}'] } } }), /agents\.a\.arm must be/);
-    assert.doesNotThrow(() => validateConfig({ agents: { armonly: { arm: ['some-agent', '--message', '{prompt}'] } } }), 'arm-only agents are fine');
-    assert.throws(() => validateConfig({ armMb: -1 }), /armMb/);
+    assert.throws(() => validateConfig({ agents: { a: { amigo: ['a'], member: ['a', '{prompt}'] } } }), /agents.a.amigo needs a "\{prompt\}"/);
+    assert.throws(() => validateConfig({ agents: { a: { amigo: ['a', '{prompt}'] } } }), /agents.a.member must be/);
+    assert.doesNotThrow(() => validateConfig({ agents: { memberonly: { member: ['some-agent', '--message', '{prompt}'] } } }), 'member-only agents are fine');
+    assert.throws(() => validateConfig({ memberMb: -1 }), /memberMb/);
     assert.throws(() => validateConfig({ reserveMb: 'lots' }), /reserveMb/);
     assert.throws(() => validateConfig({ agents: {}, defaultAgent: 'x' }), /defaultAgent/);
   });
 
   it('explains what to do when no agent is configured', () => {
     assert.throws(() => pickAgent(validateConfig({}), undefined), /No agent configured yet/);
-    assert.throws(() => pickAgent(validateConfig({ agents: { a: { head: ['a', '{prompt}'], arm: ['a', '{prompt}'] } } }), 'b'), /Unknown agent "b"/);
+    assert.throws(() => pickAgent(validateConfig({ agents: { a: { amigo: ['a', '{prompt}'], member: ['a', '{prompt}'] } } }), 'b'), /Unknown agent "b"/);
   });
 
   it('validates projects', () => {
@@ -104,39 +104,26 @@ describe('tasks', () => {
     assert.equal(newId('Fix the Footer Link!', 7), '7-fix-the-footer');
     assert.equal(newId('Internationalization overhaul', 12), '12-internationaliza', 'one long word is cut at 16 letters');
     assert.equal(newId('عنوان', 3), '3');
-    assert.equal(armNumber('7-fix-footer'), '7');
-    assert.equal(armNumber('2fa-login-ab12cd34'), null, 'old random ids have no number');
+    assert.equal(memberNumber('7-fix-footer'), '7');
+    assert.equal(memberNumber('2fa-login-ab12cd34'), null, 'old random ids have no number');
     assert.equal(titleOf('Title: Fix footer\nmore'), 'Fix footer');
     assert.equal(titleOf('# Heading\nmore'), 'Heading');
   });
 
-  it('builds the arm prompt with notes, brief and follow-ups', () => {
+  it('builds the squad member prompt with notes, brief and follow-ups', () => {
     const t = { id: 'x-1', project: 'p', cwd: '/w', followUps: ['use blue'], summary: 'which color?' } as Task;
-    const p = armPrompt(t, 'Title: paint', 'never touch .env');
+    const p = memberPrompt(t, 'Title: paint', 'never touch .env');
     for (const part of ['Task id: x-1', 'never touch .env', 'Title: paint', 'which color?', '1. use blue', 'STATUS: done']) assert.ok(p.includes(part), part);
     assert.ok(!p.includes('blast radius'), 'only reviewers get the blast-radius check');
   });
 
   it('gives reviewers the blast-radius check, read-only on production', () => {
-    const r = armPrompt({ id: 'r-1', project: 'p', cwd: '/w', followUps: [], reviewOf: 'x-1' } as unknown as Task, 'Title: review', undefined);
+    const r = memberPrompt({ id: 'r-1', project: 'p', cwd: '/w', followUps: [], reviewOf: 'x-1' } as unknown as Task, 'Title: review', undefined);
     for (const part of ['task x-1', 'blast radius', 'file:line', '**unproven**', 'production', 'STATUS: done']) assert.ok(r.includes(part), part);
   });
 });
 
-describe('greeting', () => {
-  it('rotates the line and carries live status', () => {
-    const { dir, env } = makeHome(3);
-    try {
-      const g = greeting(env, () => 0);
-      assert.match(g, /^🐙 Tentacles warmed up\.\n0 projects · 0 arms running · inbox: empty$/);
-      assert.notEqual(greeting(env, () => 1).split('\n')[0], g.split('\n')[0]);
-    } finally {
-      cleanup(dir);
-    }
-  });
-});
-
-describe('arm ids', () => {
+describe('squad member ids', () => {
   it('take arm2 and #2 as arm 2', () => {
     const { dir, env } = makeHome();
     try {
@@ -171,23 +158,23 @@ describe('agent templates and skills', () => {
     const userHome = join(dir, 'user');
     try {
       const lines = installSkills('claude', env, userHome);
-      const skill = join(userHome, '.claude', 'skills', 'octomaxxing', 'SKILL.md');
-      assert.match(readFileSync(skill, 'utf8'), /^---\nname: octomaxxing\n[\s\S]*octomaxxing brief --agent claude/);
+      const skill = join(userHome, '.claude', 'skills', 'amigo', 'SKILL.md');
+      assert.match(readFileSync(skill, 'utf8'), /^---\nname: amigo\n[\s\S]*amigo brief --agent claude/);
       assert.ok(lines.some((l) => l.includes('added its template')));
-      assert.deepEqual(JSON.parse(readFileSync(join(env.OCTOMAXXING_HOME as string, 'config.json'), 'utf8')).agents.claude, TEMPLATES.claude);
+      assert.deepEqual(JSON.parse(readFileSync(join(env.AMIGO_HOME as string, 'config.json'), 'utf8')).agents.claude, TEMPLATES.claude);
       assert.ok(!installSkills('claude', env, userHome).some((l) => l.includes('added its template')), 'never adds an agent twice');
 
       installSkills('codex', env, userHome);
       installSkills('grok', env, userHome);
-      const shared = join(userHome, '.agents', 'skills', 'octomaxxing', 'SKILL.md');
+      const shared = join(userHome, '.agents', 'skills', 'amigo', 'SKILL.md');
       assert.match(readFileSync(shared, 'utf8'), /--agent codex[\s\S]*--agent grok/);
       installSkills('gemini', env, userHome);
-      assert.match(readFileSync(join(userHome, '.gemini', 'commands', 'octomaxxing.toml'), 'utf8'), /prompt = """\n[\s\S]*--agent gemini/);
+      assert.match(readFileSync(join(userHome, '.gemini', 'commands', 'amigo.toml'), 'utf8'), /prompt = """\n[\s\S]*--agent gemini/);
 
-      const foreign = join(userHome, '.gemini', 'config', 'skills', 'octomaxxing', 'SKILL.md');
+      const foreign = join(userHome, '.gemini', 'config', 'skills', 'amigo', 'SKILL.md');
       mkdirSync(join(foreign, '..'), { recursive: true });
       writeFileSync(foreign, 'someone else');
-      assert.throws(() => installSkills('antigravity', env, userHome), /not written by octomaxxing/);
+      assert.throws(() => installSkills('antigravity', env, userHome), /not written by amigo/);
 
       const removed = removeSkills(undefined, userHome);
       assert.equal(removed.length, 3);
@@ -204,7 +191,7 @@ describe('runner heartbeat', () => {
   it('counts a runner as alive only while its heartbeat is fresh', () => {
     const { dir, env } = makeHome();
     try {
-      mkdirSync(join(env.OCTOMAXXING_HOME as string, 'tasks', 'hb-1'), { recursive: true });
+      mkdirSync(join(env.AMIGO_HOME as string, 'tasks', 'hb-1'), { recursive: true });
       assert.equal(runnerAlive('hb-1', env), false);
       beat('hb-1', env);
       assert.equal(runnerAlive('hb-1', env), true);
@@ -231,9 +218,9 @@ describe('secret files', () => {
     const dir = tmpDir();
     try {
       const repo = makeRepo(join(dir, 'r'));
-      git(repo, 'checkout', '-q', '-b', 'octomaxxing/t-1');
+      git(repo, 'checkout', '-q', '-b', 'amigo/t-1');
       writeFileSync(join(repo, '.env'), 'TOKEN=fake');
-      assert.throws(() => commitAll(repo, repo, 'octomaxxing/t-1', 'm'), /may hold secrets: \.env/);
+      assert.throws(() => commitAll(repo, repo, 'amigo/t-1', 'm'), /may hold secrets: \.env/);
       assert.equal(git(repo, 'status', '--porcelain').trim(), '?? .env');
     } finally {
       cleanup(dir);
@@ -241,46 +228,46 @@ describe('secret files', () => {
   });
 });
 
-describe('arm numbers', () => {
+describe('squad member numbers', () => {
   it('counts up, never reuses a number, and resolves what a person types', () => {
     const { dir, env } = makeHome();
     try {
-      assert.equal(nextArmNumber(env), 1);
+      assert.equal(nextMemberNumber(env), 1);
       const now = new Date().toISOString();
       const task = (id: string, status: Task['status']) =>
         saveTask({ id, title: id, agent: 'fake', status, createdAt: now, updatedAt: now, runs: 1, followUps: [], seen: true, project: 'p', cwd: '/w', repo: null, worktree: null, branch: null, baseSha: null } as Task, env);
       task('1-old-work', 'closed');
       task('2-fix-footer', 'running');
       task('fix-login-ab12cd34', 'done');
-      assert.equal(nextArmNumber(env), 3, 'closed arms keep their number');
+      assert.equal(nextMemberNumber(env), 3, 'closed squad members keep their number');
       assert.equal(resolveId('2', env), '2-fix-footer');
-      assert.equal(resolveId('1', env), '1-old-work', 'a closed arm still resolves for status');
+      assert.equal(resolveId('1', env), '1-old-work', 'a closed squad member still resolves for status');
       assert.equal(resolveId('fix-l', env), 'fix-login-ab12cd34', 'old ids by their start');
       assert.equal(resolveId('2-fix-footer', env), '2-fix-footer');
-      assert.throws(() => resolveId('9', env), /No arm matches "9"/);
+      assert.throws(() => resolveId('9', env), /No squad member matches "9"/);
       task('20-other', 'queued');
       assert.equal(resolveId('2', env), '2-fix-footer', 'a number never matches a longer number');
       task('fix-loop-cd34ef56', 'queued');
-      assert.throws(() => resolveId('fix-lo', env), /several arms/);
+      assert.throws(() => resolveId('fix-lo', env), /several squad members/);
       task('12-numbered', 'running');
       assert.equal(resolveId('arm12', env), '12-numbered', 'arm12 is arm 12 while no old id starts with it');
       task('arm12-deadbeef', 'done');
       assert.equal(resolveId('arm12', env), 'arm12-deadbeef', 'an old id starting with arm12 wins over the arm12 shorthand');
       assert.equal(resolveId('arm12-deadbeef', env), 'arm12-deadbeef');
-      assert.equal(resolveId('12', env), '12-numbered', 'the bare number still means arm 12');
+      assert.equal(resolveId('12', env), '12-numbered', 'the bare number still means squad member 12');
     } finally {
       cleanup(dir);
     }
   });
 });
 
-describe('head instructions', () => {
-  it('say arms open in tabs, with no show or hide commands', () => {
+describe('amigo instructions', () => {
+  it('say squad members open in tabs, with no show or hide commands', () => {
     const { dir, env } = makeHome();
     try {
-      const prompt = headPrompt('fake', env);
-      assert.match(prompt, /Each arm opens in its own tab of the terminal you run in/);
-      assert.doesNotMatch(prompt, /octomaxxing (show|hide|board)|background, with no window/);
+      const prompt = amigoPrompt('fake', env);
+      assert.match(prompt, /Each squad member opens in its own tab of the terminal you run in/);
+      assert.doesNotMatch(prompt, /amigo (show|hide|board)|background, with no window/);
     } finally {
       cleanup(dir);
     }

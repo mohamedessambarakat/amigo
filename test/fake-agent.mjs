@@ -9,9 +9,9 @@ if (pointer) prompt = readFileSync(pointer[1], 'utf8');
 
 const has = (w) => prompt.includes(w);
 if (has('MODE:sleep')) await new Promise((r) => setTimeout(r, 2500));
-console.log(`fake agent in ${process.cwd()} (task ${process.env.OCTOMAXXING_TASK ?? '?'})`);
-if (has('MODE:head')) {
-  console.log(prompt.split('## Start')[1] ?? '');
+console.log(`fake agent in ${process.cwd()} (task ${process.env.AMIGO_TASK ?? '?'})`);
+if (has('MODE:amigo')) {
+  console.log(prompt.split('## Briefing')[1] ?? '');
   process.exit(0);
 }
 if (has('MODE:fail')) {
@@ -23,14 +23,14 @@ if (has('You are a reviewer')) {
   process.exit(0);
 }
 if (has('MODE:manage')) {
-  // An arm trying to run octomaxxing itself must be refused.
+  // A squad member trying to run amigo itself must be refused.
   const r = spawnSync(process.execPath, [process.env.CLI_PATH, 'close', 'anything', '--force'], { encoding: 'utf8' });
   const inbox = spawnSync(process.execPath, [process.env.CLI_PATH, 'inbox'], { encoding: 'utf8' });
   console.log(`STATUS: done - manage exit ${r.status}: ${r.stderr.trim()} | inbox exit ${inbox.status}`);
   process.exit(0);
 }
 if (has('MODE:switch')) execFileSync('git', ['checkout', '-q', '-b', 'elsewhere']);
-const followUps = has('## Follow-ups from the head');
+const followUps = has('## Follow-ups from amigo');
 if (has('MODE:question') && !followUps) {
   console.log('**STATUS: question** — which color?');
   process.exit(0);
@@ -76,7 +76,7 @@ if (has('MODE:docs')) {
   write('notes.md', 'docs\n');
   finish('wrote notes.md');
 }
-const file = join(process.cwd(), 'arm-output.txt');
+const file = join(process.cwd(), 'member-output.txt');
 if (followUps) appendFileSync(file, 'follow-up handled\n');
 else writeFileSync(file, `pointer=${Boolean(pointer)}\n`);
-console.log('STATUS: done - wrote arm-output.txt');
+console.log('STATUS: done - wrote member-output.txt');

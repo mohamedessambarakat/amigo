@@ -1,14 +1,15 @@
 import os from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { LEGACY_HOME_DIR } from './legacy.ts';
 
 /** The installed code: src/, prompts/. */
 export const codeRoot: string = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 export const cliPath: string = join(codeRoot, 'src', 'cli.ts');
 
-/** Everything octomaxxing stores: ~/.octomaxxing, or OCTOMAXXING_HOME. */
+/** Everything amigo stores: ~/.amigo, or AMIGO_HOME. */
 export function home(env: NodeJS.ProcessEnv = process.env): string {
-  return env.OCTOMAXXING_HOME ? resolve(env.OCTOMAXXING_HOME) : join(os.homedir(), '.octomaxxing');
+  return env.AMIGO_HOME ? resolve(env.AMIGO_HOME) : join(os.homedir(), '.amigo');
 }
 
 export const configPath = (env: NodeJS.ProcessEnv = process.env): string => join(home(env), 'config.json');
@@ -24,3 +25,13 @@ export const policyApprovalPath = (env: NodeJS.ProcessEnv = process.env): string
 export const gatesConfirmedPath = (env: NodeJS.ProcessEnv = process.env): string => join(home(env), 'gates.confirmed.json');
 /** One JSON line per self-approved close, PR and undo. */
 export const approvalsPath = (env: NodeJS.ProcessEnv = process.env): string => join(home(env), 'approvals.jsonl');
+
+/** The home of the product's former name, moved to home() once (see migrate.ts). AMIGO_OLD_HOME overrides it, for tests. */
+export function oldHome(env: NodeJS.ProcessEnv = process.env): string {
+  return env.AMIGO_OLD_HOME ? resolve(env.AMIGO_OLD_HOME) : join(os.homedir(), LEGACY_HOME_DIR);
+}
+
+/** Where a scratch squad member works: its own folder, never a git repo. */
+export const scratchDir = (id: string, env: NodeJS.ProcessEnv = process.env): string => join(home(env), 'scratch', id);
+/** Results that are not squad members' (the briefing's live checks): inbox prints them once. */
+export const noticesPath = (env: NodeJS.ProcessEnv = process.env): string => join(home(env), 'notices.json');

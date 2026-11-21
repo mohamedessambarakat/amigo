@@ -2,9 +2,9 @@ import { spawnSync } from 'node:child_process';
 import { resolveExecutable, quoteForCmd } from './command.ts';
 import { run, type RunResult } from './proc.ts';
 
-/** The GitHub CLI: `gh` on PATH, or OCTOMAXXING_GH (a path to another program, for tests). */
+/** The GitHub CLI: `gh` on PATH, or AMIGO_GH (a path to another program, for tests). */
 export function ghPath(env: NodeJS.ProcessEnv): string | null {
-  return resolveExecutable(env.OCTOMAXXING_GH || 'gh', env);
+  return resolveExecutable(env.AMIGO_GH || 'gh', env);
 }
 
 export function requireGh(env: NodeJS.ProcessEnv): string {

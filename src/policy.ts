@@ -58,7 +58,7 @@ const sha256 = (text: string): string => createHash('sha256').update(text).diges
 
 export function policyState(env: NodeJS.ProcessEnv = process.env): PolicyState {
   const file = policyPath(env);
-  if (!existsSync(file)) return { file, policy: null, problem: 'there is no policy.json (run any octomaxxing command to create the starter)', hash: null, approved: false };
+  if (!existsSync(file)) return { file, policy: null, problem: 'there is no policy.json (run any amigo command to create the starter)', hash: null, approved: false };
   const text = readFileSync(file, 'utf8');
   const hash = sha256(text);
   let policy: Policy;
@@ -68,8 +68,8 @@ export function policyState(env: NodeJS.ProcessEnv = process.env): PolicyState {
     return { file, policy: null, problem: `policy.json is invalid: ${(err as Error).message}`, hash, approved: false };
   }
   const approvedHash = readJson<{ sha256?: string } | null>(policyApprovalPath(env), null)?.sha256;
-  if (!approvedHash) return { file, policy, problem: 'the policy has not been approved yet (octomaxxing approve-policy)', hash, approved: false };
-  if (approvedHash !== hash) return { file, policy, problem: 'policy.json was edited after it was approved (octomaxxing approve-policy approves the new version)', hash, approved: false };
+  if (!approvedHash) return { file, policy, problem: 'the policy has not been approved yet (amigo approve-policy)', hash, approved: false };
+  if (approvedHash !== hash) return { file, policy, problem: 'policy.json was edited after it was approved (amigo approve-policy approves the new version)', hash, approved: false };
   return { file, policy, problem: null, hash, approved: true };
 }
 

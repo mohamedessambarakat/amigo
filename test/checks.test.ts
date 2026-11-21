@@ -2,14 +2,14 @@ import assert from 'node:assert/strict';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
-import { applyHook, stopHookSeconds } from '../src/arms.ts';
+import { applyHook, stopHookSeconds } from '../src/squad.ts';
 import { addProject, loadProjects } from '../src/config.ts';
 import { getTask, saveTask } from '../src/tasks.ts';
 import { runCheck } from '../src/verify.ts';
 import { cleanup, cli, idFrom, makeHome, makeRepoWithChecks, waitFor } from './helpers.ts';
 
 describe('verification gates', () => {
-  it('a failing check sends the arm a follow-up with its output, and the task shows verifying meanwhile', async () => {
+  it('a failing check sends the squad member a follow-up with its output, and the task shows verifying meanwhile', async () => {
     const { dir, env } = makeHome();
     try {
       const repo = makeRepoWithChecks(join(dir, 'repo'));
@@ -22,7 +22,7 @@ describe('verification gates', () => {
 
       const done = await waitFor(id, env, ['done', 'blocked', 'failed']);
       assert.equal(done.status, 'done');
-      assert.equal(done.runs, 2, 'the arm ran again for the fix');
+      assert.equal(done.runs, 2, 'the squad member ran again for the fix');
       assert.equal(done.followUps.length, 1);
       assert.match(done.followUps[0] as string, /`node needs-follow-up\.mjs` \(exit 1\)/);
       assert.match(done.followUps[0] as string, /CHECK-FAIL-MARKER: the follow-up was not handled yet/);
@@ -70,14 +70,14 @@ describe('verification gates', () => {
     }
   });
 
-  it('a Claude arm is sent back in its own session by the Stop hook, then blocked after two retries', async () => {
+  it('a Claude squad member is sent back in its own session by the Stop hook, then blocked after two retries', async () => {
     const { dir, env } = makeHome();
     try {
       const folder = join(dir, 'p');
       mkdirSync(folder);
       writeFileSync(join(folder, 'fail.mjs'), "console.error('boom-from-check');\nprocess.exit(1);\n");
       addProject(folder, { checks: ['node fail.mjs'] }, env);
-      const home = env.OCTOMAXXING_HOME as string;
+      const home = env.AMIGO_HOME as string;
       mkdirSync(join(home, 'tasks', 'x-1'), { recursive: true });
       const now = new Date().toISOString();
       saveTask({ id: 'x-1', title: 't', project: 'p', agent: 'claude', cwd: folder, repo: null, worktree: null, branch: null, baseSha: null, status: 'running', createdAt: now, updatedAt: now, runs: 1, followUps: [], seen: true }, env);
@@ -90,7 +90,7 @@ describe('verification gates', () => {
         assert.match(blocked.reason, new RegExp(`automatic retry ${retry} of 2`));
         assert.equal(getTask('x-1', env)?.status, 'running', 'the session carries on');
       }
-      assert.equal(await stop(), '', 'no third retry: the hook lets the arm stop');
+      assert.equal(await stop(), '', 'no third retry: the hook lets the squad member stop');
       const t = getTask('x-1', env);
       assert.equal(t?.status, 'blocked');
       assert.match(t?.summary ?? '', /Check failed after 2 automatic retries: node fail\.mjs \(exit 1\): boom-from-check/);
@@ -132,7 +132,7 @@ describe('verification gates', () => {
 });
 
 describe('Stop hook timeout', () => {
-  it('covers checks added after the arm started: at least 10 checks at their time limit', () => {
+  it('covers checks added after the squad member started: at least 10 checks at their time limit', () => {
     assert.equal(stopHookSeconds(0, 10), 10 * 10 * 60 + 60, 'no checks yet, but some may be added while the session is open');
     assert.equal(stopHookSeconds(2, 10), stopHookSeconds(0, 10));
     assert.equal(stopHookSeconds(12, 5), 12 * 5 * 60 + 60, 'more checks than the allowance');
