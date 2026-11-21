@@ -1,5 +1,5 @@
 // A stand-in for a real agent CLI, used by the tests. Behaviour comes from MODE: words in the brief.
-import { readFileSync, writeFileSync, appendFileSync, mkdirSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, appendFileSync, mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
 
@@ -8,7 +8,12 @@ const pointer = /^Read the file (.+?) and follow the instructions in it exactly\
 if (pointer) prompt = readFileSync(pointer[1], 'utf8');
 
 const has = (w) => prompt.includes(w);
-if (has('MODE:sleep')) await new Promise((r) => setTimeout(r, 2500));
+// MODE:hold keeps the squad member at work until the test calls releaseHeld, so a test can look at a running task without
+// racing it. The time limit only stops an orphan when a test fails before it releases.
+if (has('MODE:hold')) {
+  const gate = `${process.env.AMIGO_HOME}.release-held`;
+  for (const end = Date.now() + 120_000; !existsSync(gate) && Date.now() < end; ) await new Promise((r) => setTimeout(r, 50));
+}
 console.log(`fake agent in ${process.cwd()} (task ${process.env.AMIGO_TASK ?? '?'})`);
 if (has('MODE:amigo')) {
   console.log(prompt.split('## Briefing')[1] ?? '');

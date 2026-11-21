@@ -13,7 +13,7 @@ import { beginNotice, finishNotice, noticesPending, takeNotices, touchNotice } f
 import { moveTrust } from '../src/claude.ts';
 import { resolveExecutable } from '../src/command.ts';
 import { noticesPath } from '../src/paths.ts';
-import { addOrigin, cleanEnv, cleanup, cli, fakeGhEnv, ghCalls, git, idFrom, makeHome, makeRepo, moveFolder, tmpDir, waitFor } from './helpers.ts';
+import { addOrigin, cleanEnv, cleanup, cli, fakeGhEnv, ghCalls, git, idFrom, makeHome, makeRepo, moveFolder, releaseHeld, tmpDir, waitFor } from './helpers.ts';
 
 /** Poll the inbox until its text contains `needle` (the live checks run in a detached process). */
 async function inboxHas(env: NodeJS.ProcessEnv, needle: RegExp, timeoutMs = 30_000): Promise<string> {
@@ -76,8 +76,8 @@ describe('scratch workspace', () => {
   it('two scratch squad members run in parallel, each in its own folder, unverified; close keeps the folder', async () => {
     const { dir, env } = makeHome(2);
     try {
-      const a = cli(env, ['spawn', '--scratch'], 'Title: First\nMODE:sleep\nDone when: a file exists');
-      const b = cli(env, ['spawn', '--scratch'], 'Title: Second\nMODE:sleep\nDone when: a file exists');
+      const a = cli(env, ['spawn', '--scratch'], 'Title: First\nMODE:hold\nDone when: a file exists');
+      const b = cli(env, ['spawn', '--scratch'], 'Title: Second\nMODE:hold\nDone when: a file exists');
       assert.equal(a.code, 0, a.err);
       assert.equal(b.code, 0, b.err);
       const [ida, idb] = [idFrom(a.out), idFrom(b.out)];
@@ -91,6 +91,7 @@ describe('scratch workspace', () => {
       assert.equal(ta.worktree, null);
       assert.equal(ta.branch, null);
       assert.deepEqual([getTask(ida, env)?.status, getTask(idb, env)?.status], ['running', 'running'], 'both run at the same time');
+      releaseHeld(env);
 
       const [da, db] = [await waitFor(ida, env, ['done', 'failed']), await waitFor(idb, env, ['done', 'failed'])];
       assert.equal(da.status, 'done');
@@ -105,6 +106,7 @@ describe('scratch workspace', () => {
       assert.ok(closed.out.includes(ta.cwd), 'close prints the folder it kept');
       assert.ok(existsSync(join(ta.cwd, 'member-output.txt')), 'the folder and its files are kept');
     } finally {
+      releaseHeld(env);
       cleanup(dir);
     }
   });
@@ -393,7 +395,7 @@ describe('one-time migration from the former home', () => {
     try {
       const repo = makeRepo(join(s.dir, 'repo'));
       cli(s.building, ['add', repo]);
-      const id = idFrom(cli(s.building, ['spawn', '--project', 'repo'], 'Title: Slow\nMODE:sleep\nwork').out);
+      const id = idFrom(cli(s.building, ['spawn', '--project', 'repo'], 'Title: Slow\nMODE:hold\nwork').out);
       assert.equal(getTask(id, s.building)?.status, 'running');
       const r = cli(s.migrating, ['status']);
       assert.equal(r.code, 1);
@@ -401,11 +403,13 @@ describe('one-time migration from the former home', () => {
       assert.ok(existsSync(s.old), 'the old home stays where it was');
       assert.ok(!existsSync(join(s.user, '.amigo')), 'no new home was made');
       assert.equal(cli(s.migrating, ['help']).code, 0, 'help still works');
+      releaseHeld(s.building);
       await waitFor(id, s.building, ['done']);
       const ok = cli(s.migrating, ['status']);
       assert.equal(ok.code, 0, ok.err);
       assert.match(ok.err, /Moved /);
     } finally {
+      releaseHeld(s.building);
       cleanup(s.dir);
     }
   });
@@ -476,7 +480,7 @@ describe('one-time migration from the former home', () => {
     try {
       const repo = makeRepo(join(s.dir, 'repo'));
       cli(s.building, ['add', repo]);
-      const id = idFrom(cli(s.building, ['spawn', '--project', 'repo'], 'Title: Old session\nMODE:sleep\nwork').out);
+      const id = idFrom(cli(s.building, ['spawn', '--project', 'repo'], 'Title: Old session\nMODE:hold\nwork').out);
       assert.equal(getTask(id, s.building)?.status, 'running');
       const { AMIGO_HOME: _home, ...common } = s.building;
       const oldSession = { ...common, HOME: s.user, USERPROFILE: s.user, AMIGO_OLD_HOME: s.old, OCTOMAXXING_TASK: id, OCTOMAXXING_HOME: s.old };
@@ -490,6 +494,7 @@ describe('one-time migration from the former home', () => {
       const after = getTask(id, s.building)!;
       assert.equal(after.summary, 'hook saw it', "the old session's hook wrote to the old home");
     } finally {
+      releaseHeld(s.building);
       await waitFor(getTask(listTasks(s.building)[0]!.id, s.building) ? listTasks(s.building)[0]!.id : '', s.building, ['done', 'failed']).catch(() => undefined);
       cleanup(s.dir);
     }

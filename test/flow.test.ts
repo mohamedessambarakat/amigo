@@ -5,7 +5,7 @@ import { describe, it } from 'node:test';
 import { briefWithIssue, stations, statusText } from '../src/squad.ts';
 import { checkPrTitle } from '../src/github.ts';
 import { getTask, saveTask, type Task } from '../src/tasks.ts';
-import { addOrigin, allowPrs, cleanup, cli, fakeGhEnv, ghCalls, git, idFrom, makeHome, makeRepo, waitFor } from './helpers.ts';
+import { addOrigin, allowPrs, cleanup, cli, fakeGhEnv, ghCalls, git, idFrom, makeHome, makeRepo, releaseHeld, waitFor } from './helpers.ts';
 
 const folderOf = (env: NodeJS.ProcessEnv, id: string, file: string): string => readFileSync(join(env.AMIGO_HOME as string, 'tasks', id, file), 'utf8');
 
@@ -15,7 +15,7 @@ describe('dependent tasks', () => {
     try {
       const repo = makeRepo(join(dir, 'repo'));
       cli(env, ['add', repo]);
-      const first = idFrom(cli(env, ['spawn', '--project', 'repo'], 'Title: First\nMODE:sleep').out);
+      const first = idFrom(cli(env, ['spawn', '--project', 'repo'], 'Title: First\nMODE:hold').out);
       const spawned = cli(env, ['spawn', '--after', first], 'Title: Second');
       assert.equal(spawned.code, 0, spawned.err);
       assert.match(spawned.out, new RegExp(`^Queued \\(waits until ${first} is closed with a commit\\)`));
@@ -24,6 +24,7 @@ describe('dependent tasks', () => {
       assert.equal(getTask(second, env)?.baseSha, null);
       assert.ok(!existsSync(getTask(second, env)?.worktree as string), 'no worktree yet');
 
+      releaseHeld(env);
       await waitFor(first, env, ['done']);
       assert.match(cli(env, ['status']).out, new RegExp(`queued \\(1\\)\\n\\s+${second} .*waits for ${first}`), 'finished but not closed: still queued');
       assert.equal(getTask(second, env)?.status, 'queued');
@@ -38,6 +39,7 @@ describe('dependent tasks', () => {
       assert.equal(git(done.worktree as string, 'rev-parse', 'HEAD').trim(), committed);
       assert.notEqual(committed, git(repo, 'rev-parse', 'main').trim());
     } finally {
+      releaseHeld(env);
       cleanup(dir);
     }
   });

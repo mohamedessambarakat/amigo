@@ -5,7 +5,7 @@ import { describe, it } from 'node:test';
 import { parseVerdict } from '../src/gates.ts';
 import { assessChanges, docsOrTestsOnly, globMatches, snapshot, type Change } from '../src/risk.ts';
 import { getTask } from '../src/tasks.ts';
-import { cleanup, cli, git, idFrom, makeHome, makeRepo, waitFor } from './helpers.ts';
+import { cleanup, cli, git, idFrom, makeHome, makeRepo, releaseHeld, waitFor } from './helpers.ts';
 
 const change = (path: string, added = 1, removed = 0, deleted = false): Change => ({ path, added, removed, deleted });
 
@@ -239,7 +239,7 @@ describe('mandatory review', () => {
       cli(env, ['add', repo]);
       const id = idFrom(cli(env, ['spawn', '--project', 'repo'], 'Title: Four files\nMODE:big').out);
       const t = await waitFor(id, env, ['done', 'failed']);
-      const review = idFrom(cli(env, ['spawn', '--review', id], 'Title: Slow review\nMODE:sleep').out);
+      const review = idFrom(cli(env, ['spawn', '--review', id], 'Title: Slow review\nMODE:hold').out);
       assert.ok(getTask(review, env)?.reviewedTree, "the parent's tree is recorded when the reviewer is spawned");
 
       const sent = cli(env, ['send', id], 'please also add a fifth file');
@@ -248,6 +248,7 @@ describe('mandatory review', () => {
       assert.equal(getTask(id, env)?.status, 'done', 'the refused send changed nothing');
 
       writeFileSync(join(t.worktree as string, 'sneaky.txt'), 'changed while the reviewer was reading\n');
+      releaseHeld(env);
       await waitFor(review, env, ['done', 'failed']);
       const verdict = getTask(id, env)?.review;
       assert.equal(verdict?.verdict, 'PASS');
@@ -257,6 +258,7 @@ describe('mandatory review', () => {
       assert.match(cli(env, ['close', id, '--commit']).err, /PASS does not count/);
       assert.equal(cli(env, ['send', id], 'one more thing').code, 0, 'allowed once the reviewer is closed');
     } finally {
+      releaseHeld(env);
       cleanup(dir);
     }
   });
