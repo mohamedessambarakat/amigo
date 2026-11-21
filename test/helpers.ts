@@ -125,6 +125,11 @@ export function releaseChecks(repo: string): void {
   writeFileSync(releaseFile(repo), '');
 }
 
+/** Lets every MODE:hold squad member of this home finish, now and on every later start. */
+export function releaseHeld(env: NodeJS.ProcessEnv): void {
+  writeFileSync(`${env.AMIGO_HOME}.release-held`, '');
+}
+
 /** A bare repo to act as origin for `repo`. */
 export function addOrigin(dir: string, repo: string): string {
   const bare = join(dir, 'origin.git');

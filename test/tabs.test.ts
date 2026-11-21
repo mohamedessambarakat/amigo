@@ -12,7 +12,7 @@ import { descendants } from '../src/proc.ts';
 import { beat, saveTask, type Task } from '../src/tasks.ts';
 import { detectTerminal, amigoHerdrWorkspace, herdrLabel, openTab, planTab, selectTerminal, tabScript, warpTabConfig, type HerdrPlacement } from '../src/terminal.ts';
 import type { RunResult } from '../src/proc.ts';
-import { cleanup, cli, makeHome, tmpDir, waitFor } from './helpers.ts';
+import { cleanup, cli, makeHome, releaseHeld, tmpDir, waitFor } from './helpers.ts';
 
 const req = (platform: NodeJS.Platform) => ({
   name: 'amigo-x-1',
@@ -531,13 +531,15 @@ describe('memory gate and wait', () => {
         mkdirSync(join(dir, p));
         cli(low, ['add', join(dir, p)]);
       }
-      const first = cli(low, ['spawn', '--project', 'a'], 'Title: one\nMODE:sleep').out;
+      const first = cli(low, ['spawn', '--project', 'a'], 'Title: one\nMODE:hold').out;
       assert.match(first, /^Started/);
       const second = cli(low, ['spawn', '--project', 'b'], 'Title: two').out;
       assert.match(second, /^Queued/, 'the second waits for memory');
       // When the first ends, nothing runs, so the second may start.
+      releaseHeld(low);
       await waitFor(/task:\s+(\S+)/.exec(second)![1]!, low, ['done']);
     } finally {
+      releaseHeld(env);
       cleanup(dir);
     }
   });

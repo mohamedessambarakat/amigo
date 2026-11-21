@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { describe, it } from 'node:test';
 import { cliPath, codeRoot, home } from '../src/paths.ts';
 import { getTask } from '../src/tasks.ts';
-import { cleanup, cli, fakeAgent, git, idFrom, makeHome, makeRepo, tmpDir, waitFor } from './helpers.ts';
+import { cleanup, cli, fakeAgent, git, idFrom, makeHome, makeRepo, releaseHeld, tmpDir, waitFor } from './helpers.ts';
 
 describe('end to end with a fake agent', () => {
   it('code project: spawn, inbox, follow-up, review, close --commit', async () => {
@@ -61,16 +61,18 @@ describe('end to end with a fake agent', () => {
         mkdirSync(join(dir, name));
         cli(env, ['add', join(dir, name)]);
       }
-      const a = idFrom(cli(env, ['spawn', '--project', 'one'], 'Title: one\nMODE:sleep').out);
-      const second = cli(env, ['spawn', '--project', 'two'], 'Title: two\nMODE:sleep');
+      const a = idFrom(cli(env, ['spawn', '--project', 'one'], 'Title: one\nMODE:hold').out);
+      const second = cli(env, ['spawn', '--project', 'two'], 'Title: two\nMODE:hold');
       assert.match(second.out, /^Queued/);
       const b = idFrom(second.out);
       assert.equal(getTask(b, env)?.status, 'queued');
+      releaseHeld(env);
       await waitFor(a, env, ['done']);
       await waitFor(b, env, ['done']);
       assert.ok(existsSync(join(dir, 'one', 'member-output.txt')), 'non-git projects are worked on in place');
       assert.match(cli(env, ['close', a, '--commit']).out, /in place/);
     } finally {
+      releaseHeld(env);
       cleanup(dir);
     }
   });
@@ -81,12 +83,14 @@ describe('end to end with a fake agent', () => {
       const folder = join(dir, 'shared');
       mkdirSync(folder);
       cli(env, ['add', folder]);
-      const a = idFrom(cli(env, ['spawn', '--project', 'shared'], 'Title: one\nMODE:sleep').out);
+      const a = idFrom(cli(env, ['spawn', '--project', 'shared'], 'Title: one\nMODE:hold').out);
       const b = idFrom(cli(env, ['spawn', '--project', 'shared'], 'Title: two').out);
       assert.equal(getTask(b, env)?.status, 'queued', 'waits although squad members are free');
+      releaseHeld(env);
       await waitFor(a, env, ['done']);
       await waitFor(b, env, ['done']);
     } finally {
+      releaseHeld(env);
       cleanup(dir);
     }
   });
