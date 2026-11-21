@@ -27,4 +27,4 @@ jobs:
         shell: bash
         run: |
           npm install -g .
-          OCTOMAXXING_HOME="$RUNNER_TEMP/octo-home" octomaxxing help
+          AMIGO_HOME="$RUNNER_TEMP/amigo-home" amigo help

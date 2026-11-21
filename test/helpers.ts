@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import { join } from 'node:path';
 import { cliPath, codeRoot, policyPath } from '../src/paths.ts';
@@ -10,20 +10,30 @@ import { getTask, type Status, type Task } from '../src/tasks.ts';
 export const fakeAgent = join(codeRoot, 'test', 'fake-agent.mjs');
 
 export function tmpDir(prefix = 'amigo-test-'): string {
-  return realpathSync(mkdtempSync(join(os.tmpdir(), prefix)));
+  // native: the long form of a Windows 8.3 short temp path (C:\Users\RUNNER~1), the form git prints
+  return realpathSync.native(mkdtempSync(join(os.tmpdir(), prefix)));
 }
 
-/** A squad member's tab process can still be finishing (and holding the folder on Windows) just after its task reports. */
-export function cleanup(dir: string): void {
+/** Runs fn until the folder it touches is free: a squad member's tab process can still be finishing (and holding the folder on Windows) just after its task reports. */
+function whenReleased(fn: () => void): void {
   for (let waited = 0; ; waited += 250) {
     try {
-      rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+      fn();
       return;
     } catch (err) {
       if (waited > 30_000 || !['EPERM', 'EBUSY', 'ENOTEMPTY'].includes((err as NodeJS.ErrnoException).code ?? '')) throw err;
       Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 250);
     }
   }
+}
+
+export function cleanup(dir: string): void {
+  whenReleased(() => rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
+}
+
+/** Rename a home whose last task just reported, once its tab process has let go of it. */
+export function moveFolder(from: string, to: string): void {
+  whenReleased(() => renameSync(from, to));
 }
 
 /**
@@ -97,13 +107,22 @@ export function makeRepoWithChecks(dir: string): string {
   const repo = makeRepo(dir);
   writeFileSync(join(repo, 'ok.mjs'), '');
   writeFileSync(join(repo, 'fail.mjs'), "console.error('ALWAYS-FAILS marker');\nprocess.exit(1);\n");
+  // It holds the task in verifying until the test calls releaseChecks, so a test can look at that state without racing it.
   writeFileSync(
     join(repo, 'needs-follow-up.mjs'),
-    "import { readFileSync } from 'node:fs';\nawait new Promise((r) => setTimeout(r, 1200));\nconst text = readFileSync('member-output.txt', 'utf8');\nif (!text.includes('follow-up handled')) {\n  console.error('CHECK-FAIL-MARKER: the follow-up was not handled yet');\n  process.exit(1);\n}\n",
+    `import { existsSync, readFileSync } from 'node:fs';\nwhile (!existsSync(${JSON.stringify(releaseFile(repo))})) await new Promise((r) => setTimeout(r, 50));\n` +
+      "const text = readFileSync('member-output.txt', 'utf8');\nif (!text.includes('follow-up handled')) {\n  console.error('CHECK-FAIL-MARKER: the follow-up was not handled yet');\n  process.exit(1);\n}\n",
   );
   git(repo, 'add', '.');
   git(repo, 'commit', '-q', '-m', 'check scripts');
   return repo;
+}
+
+const releaseFile = (repo: string): string => `${repo}.release-checks`;
+
+/** Lets needs-follow-up.mjs of a makeRepoWithChecks repo finish, now and on every later run. */
+export function releaseChecks(repo: string): void {
+  writeFileSync(releaseFile(repo), '');
 }
 
 /** A bare repo to act as origin for `repo`. */
