@@ -348,6 +348,9 @@ describe('approval policy', () => {
       const marker = (name: string) => join(dir, name).replaceAll('\\', '/');
       writeFileSync(join(repo, '.husky', 'pre-commit'), `#!/bin/sh\necho ran > "${marker('commit-hook-ran')}"\n`);
       writeFileSync(join(repo, '.husky', 'pre-push'), `#!/bin/sh\necho ran > "${marker('push-hook-ran')}"\n`);
+      // git runs only executable hooks on macOS and Linux
+      chmodSync(join(repo, '.husky', 'pre-commit'), 0o755);
+      chmodSync(join(repo, '.husky', 'pre-push'), 0o755);
 
       const snap = snapshot(repo, repo, base);
       assert.equal(assessChanges(snap.changes).level, 'needs-you');

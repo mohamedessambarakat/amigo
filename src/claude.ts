@@ -1,6 +1,6 @@
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import os from 'node:os';
-import { basename, join, resolve } from 'node:path';
+import { basename, dirname, join, resolve, sep, win32 } from 'node:path';
 import { sleepSync, withLock, writeJsonAtomic } from './fsx.ts';
 import { cliPath, lockPath } from './paths.ts';
 
@@ -55,7 +55,8 @@ export function guessTranscriptPath(cwd: string, sessionId: string, env: NodeJS.
 
 /** A template whose command is Claude Code. */
 export function isClaude(template: string[]): boolean {
-  return /^claude(\.(exe|cmd))?$/i.test(basename(template[0] ?? ''));
+  // win32.basename splits on both / and \, so a Windows path in the config reads the same on every OS
+  return /^claude(\.(exe|cmd))?$/i.test(win32.basename(template[0] ?? ''));
 }
 
 /**
@@ -154,12 +155,34 @@ export function reportReason(messaged: boolean, hasStatus: boolean, amigoAddress
 // ---------- workspace trust ----------
 
 /**
+ * The ways one folder can be written: as given, and with symlinks (macOS /var -> /private/var) and Windows 8.3 short
+ * names resolved. A folder that does not exist yet is resolved through its nearest existing parent.
+ */
+const pathForms = (p: string): string[] => {
+  const given = resolve(p);
+  const tail: string[] = [];
+  for (let dir = given; ; ) {
+    try {
+      return [given, join(realpathSync.native(dir), ...tail)];
+    } catch {
+      const parent = dirname(dir);
+      if (parent === dir) return [given];
+      tail.unshift(basename(dir));
+      dir = parent;
+    }
+  }
+};
+
+/**
  * ~/.claude.json, or AMIGO_CLAUDE_JSON. With AMIGO_HOME in the temp folder (tests) the override is required,
  * so a test can never write the user's real file.
  */
 export function claudeJsonPath(env: NodeJS.ProcessEnv = process.env): string {
   if (env.AMIGO_CLAUDE_JSON) return env.AMIGO_CLAUDE_JSON;
-  if (env.AMIGO_HOME && resolve(env.AMIGO_HOME).toLowerCase().startsWith(resolve(os.tmpdir()).toLowerCase())) {
+  const temps = pathForms(os.tmpdir()).map((t) => t.toLowerCase());
+  // Whole folder names only: C:\Temp2 is not in C:\Temp. A drive root (C:\, /) already ends in a separator.
+  const inside = (h: string, t: string) => h === t || h.startsWith(t.endsWith(sep) ? t : t + sep);
+  if (env.AMIGO_HOME && pathForms(env.AMIGO_HOME).some((h) => temps.some((t) => inside(h.toLowerCase(), t)))) {
     throw new Error('AMIGO_HOME is in the temp folder but AMIGO_CLAUDE_JSON is not set; refusing to touch the real ~/.claude.json');
   }
   return join(os.homedir(), '.claude.json');

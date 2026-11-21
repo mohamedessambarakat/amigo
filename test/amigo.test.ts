@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { delimiter, isAbsolute, join } from 'node:path';
 import { describe, it } from 'node:test';
 import { COMMANDS, HELP } from '../src/cli.ts';
@@ -13,7 +13,7 @@ import { beginNotice, finishNotice, noticesPending, takeNotices, touchNotice } f
 import { moveTrust } from '../src/claude.ts';
 import { resolveExecutable } from '../src/command.ts';
 import { noticesPath } from '../src/paths.ts';
-import { addOrigin, cleanEnv, cleanup, cli, fakeGhEnv, ghCalls, git, idFrom, makeHome, makeRepo, tmpDir, waitFor } from './helpers.ts';
+import { addOrigin, cleanEnv, cleanup, cli, fakeGhEnv, ghCalls, git, idFrom, makeHome, makeRepo, moveFolder, tmpDir, waitFor } from './helpers.ts';
 
 /** Poll the inbox until its text contains `needle` (the live checks run in a detached process). */
 async function inboxHas(env: NodeJS.ProcessEnv, needle: RegExp, timeoutMs = 30_000): Promise<string> {
@@ -454,7 +454,7 @@ describe('one-time migration from the former home', () => {
       // What a crash right after the rename leaves: the folder moved, the marker in it, nothing inside rewritten.
       const moved = join(s.user, '.amigo');
       writeFileSync(join(s.old, '.migration-incomplete'), JSON.stringify({ from: s.old }));
-      renameSync(s.old, moved);
+      moveFolder(s.old, moved);
       assert.match(JSON.stringify(JSON.parse(readFileSync(join(moved, 'tasks', id, 'task.json'), 'utf8'))), /\.octomaxxing/, 'the task still has old paths');
 
       const r = cli(s.migrating, ['status', id]);
@@ -547,7 +547,7 @@ describe('one-time migration from the former home', () => {
       await waitFor(id, s.building, ['done']);
       const moved = join(s.user, '.amigo');
       writeFileSync(join(s.old, '.migration-incomplete'), JSON.stringify({ from: s.old }));
-      renameSync(s.old, moved);
+      moveFolder(s.old, moved);
       const inMoved = { ...s.building, AMIGO_HOME: moved };
       await new Promise((r) => setTimeout(r, 500));
       beat(id, inMoved);

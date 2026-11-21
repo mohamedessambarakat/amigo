@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import os from 'node:os';
+import { existsSync, mkdirSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { describe, it } from 'node:test';
 import { applyHook, memberPrompt, followUpPrompt, herdrPlacement, startMember, tabEnvArgs } from '../src/squad.ts';
@@ -352,6 +354,76 @@ describe('Claude Code squad members', () => {
     try {
       assert.throws(() => claudeJsonPath({ AMIGO_HOME: env.AMIGO_HOME }), /refusing to touch the real/);
       assert.equal(claudeJsonPath(env), env.AMIGO_CLAUDE_JSON);
+      assert.equal(claudeJsonPath({ AMIGO_HOME: join(os.homedir(), '.amigo') }), join(os.homedir(), '.claude.json'), 'a real home is allowed');
+    } finally {
+      cleanup(dir);
+    }
+  });
+
+  /** Runs fn with os.tmpdir() answering `temp`. */
+  const withTemp = (temp: string, fn: () => void) => {
+    const saved = { TEMP: process.env.TEMP, TMP: process.env.TMP, TMPDIR: process.env.TMPDIR };
+    Object.assign(process.env, { TEMP: temp, TMP: temp, TMPDIR: temp });
+    try {
+      assert.equal(os.tmpdir(), temp);
+      fn();
+    } finally {
+      for (const [k, v] of Object.entries(saved)) if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  };
+  const refuses = (home: string) => assert.throws(() => claudeJsonPath({ AMIGO_HOME: home }), /refusing to touch the real/, home);
+
+  it('refuses a home in the temp folder reached through a link, created yet or not, in either form', () => {
+    const dir = tmpDir();
+    try {
+      const real = join(dir, 'real-temp');
+      const link = join(dir, 'linked-temp');
+      mkdirSync(join(real, 'made'), { recursive: true });
+      symlinkSync(real, link, process.platform === 'win32' ? 'junction' : 'dir');
+      withTemp(link, () => {
+        for (const base of [link, real]) {
+          refuses(join(base, 'not-created', 'home'));
+          refuses(join(base, 'made'));
+        }
+      });
+      withTemp(real, () => refuses(join(link, 'not-created')));
+    } finally {
+      cleanup(dir);
+    }
+  });
+
+  it('refuses the temp folder and what is inside it, but not a sibling whose name starts with the same letters', () => {
+    const dir = tmpDir();
+    try {
+      const temp = join(dir, 'temp');
+      mkdirSync(temp);
+      withTemp(temp, () => {
+        refuses(temp);
+        refuses(join(temp, 'home'));
+        assert.equal(claudeJsonPath({ AMIGO_HOME: join(`${temp}2`, 'home') }), join(os.homedir(), '.claude.json'));
+      });
+    } finally {
+      cleanup(dir);
+    }
+  });
+
+  it('refuses a home in a temp folder named by its 8.3 short name, created yet or not, in either form', { skip: process.platform !== 'win32' }, () => {
+    const dir = tmpDir();
+    try {
+      const long = join(dir, 'a-long-temp-folder-name');
+      mkdirSync(join(long, 'made'), { recursive: true });
+      // Verbatim: node would otherwise escape the inner quotes, and cmd would answer for a path that does not exist.
+      const short = spawnSync('cmd', ['/d', '/s', '/c', `"for %I in ("${long}") do @echo %~sI"`], { encoding: 'utf8', windowsVerbatimArguments: true }).stdout.trim();
+      assert.ok(existsSync(join(short, 'made')), `${short} is not a working name for ${long}`);
+      assert.match(short, /~\d[^\\]*$/, `this volume gives ${long} no 8.3 name, so the test proves nothing`);
+      withTemp(short, () => {
+        for (const base of [short, long]) {
+          refuses(join(base, 'not-created', 'home'));
+          refuses(join(base, 'made'));
+        }
+      });
+      withTemp(long, () => refuses(join(short, 'not-created')));
     } finally {
       cleanup(dir);
     }

@@ -6,7 +6,7 @@ import { applyHook, stopHookSeconds } from '../src/squad.ts';
 import { addProject, loadProjects } from '../src/config.ts';
 import { getTask, saveTask } from '../src/tasks.ts';
 import { runCheck } from '../src/verify.ts';
-import { cleanup, cli, idFrom, makeHome, makeRepoWithChecks, waitFor } from './helpers.ts';
+import { cleanup, cli, idFrom, makeHome, makeRepoWithChecks, releaseChecks, waitFor } from './helpers.ts';
 
 describe('verification gates', () => {
   it('a failing check sends the squad member a follow-up with its output, and the task shows verifying meanwhile', async () => {
@@ -19,6 +19,7 @@ describe('verification gates', () => {
       await waitFor(id, env, ['verifying']);
       assert.match(cli(env, ['status', id]).out, /^\S+\s+verifying /m);
       assert.match(cli(env, ['status']).out, /verifying \(1\)/);
+      releaseChecks(repo);
 
       const done = await waitFor(id, env, ['done', 'blocked', 'failed']);
       assert.equal(done.status, 'done');

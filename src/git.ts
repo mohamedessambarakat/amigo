@@ -9,7 +9,8 @@ const samePath = (a: string, b: string): boolean => {
   const n = (p: string) => {
     let r = resolve(p);
     try {
-      r = realpathSync(r);
+      // native: on Windows it also expands 8.3 short names (C:\Users\RUNNER~1), which git records in full
+      r = realpathSync.native(r);
     } catch {
       // a path that does not exist is compared as written
     }
