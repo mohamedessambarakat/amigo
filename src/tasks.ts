@@ -218,13 +218,13 @@ export function saveTask(task: Task, env: NodeJS.ProcessEnv = process.env): void
   writeJsonAtomic(taskFile(task.id, env), task);
 }
 
-/** Read-modify-write one task under a lock, so the runner and the CLI never overwrite each other. */
+/** Read-modify-write one task under a lock, so the runner and the CLI never overwrite each other. updatedAt becomes now unless the patch carries its own (a migration keeps a record's age). */
 export function mutateTask(id: string, fn: (t: Task) => Partial<Task> | null, env: NodeJS.ProcessEnv = process.env): Task {
   return withLock(lockPath(`task-${id}`, env), () => {
     const t = requireTask(id, env);
     const patch = fn(t);
     if (!patch) return t;
-    const next = { ...t, ...patch, updatedAt: new Date().toISOString() };
+    const next = { ...t, updatedAt: new Date().toISOString(), ...patch };
     saveTask(next, env);
     return next;
   });

@@ -332,7 +332,7 @@ describe('one-time migration from the former home', () => {
       const cfg = JSON.parse(readFileSync(join(s.old, 'config.json'), 'utf8'));
       writeFileSync(join(s.old, 'config.json'), JSON.stringify({ agents: { fake: { head: cfg.agents.fake.amigo, arm: cfg.agents.fake.member } }, armMb: 0, reserveMb: 0 }));
       const task = JSON.parse(readFileSync(join(s.old, 'tasks', id, 'task.json'), 'utf8'));
-      writeFileSync(join(s.old, 'tasks', id, 'task.json'), JSON.stringify({ ...task, trustAdded: true, headAddress: 'uds:/tmp/x' }));
+      writeFileSync(join(s.old, 'tasks', id, 'task.json'), JSON.stringify({ ...task, trustAdded: true, headAddress: 'uds:/tmp/x', updatedAt: '2026-01-02T03:04:05.000Z' }));
       writeFileSync(s.claudeJson, JSON.stringify({ numStartups: 3, projects: { [oldWorktree.replaceAll('\\', '/')]: { allowedTools: [], hasTrustDialogAccepted: true, lastCost: 1.5 } } }));
       const skill = join(s.user, '.claude', 'skills', 'octomaxxing', 'SKILL.md');
       mkdirSync(join(s.user, '.claude', 'skills', 'octomaxxing'), { recursive: true });
@@ -360,6 +360,7 @@ describe('one-time migration from the former home', () => {
       assert.ok(migrated.cwd.startsWith(moved));
       assert.equal((migrated as unknown as Record<string, unknown>).headAddress, undefined);
       assert.equal(migrated.amigoAddress, 'uds:/tmp/x');
+      assert.equal(migrated.updatedAt, '2026-01-02T03:04:05.000Z', 'moving a record keeps its age');
       const config = JSON.parse(readFileSync(join(moved, 'config.json'), 'utf8'));
       assert.ok(config.agents.fake.amigo && config.agents.fake.member && config.memberMb === 0, 'old config keys are renamed');
       assert.ok(!('head' in config.agents.fake) && !('armMb' in config));

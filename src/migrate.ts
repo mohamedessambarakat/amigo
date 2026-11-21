@@ -98,7 +98,7 @@ function rewriteMovedHome(env: NodeJS.ProcessEnv, from: string, to: string, user
     repaired++;
     try {
       const gitDir = findAdminDir(t.repo, t.worktree);
-      if (gitDir !== t.gitDir) mutateTask(t.id, () => ({ gitDir }), env);
+      if (gitDir !== t.gitDir) mutateTask(t.id, (cur) => ({ gitDir, updatedAt: cur.updatedAt }), env);
     } catch (err) {
       warnings.push(`${t.id}: ${(err as Error).message}`);
     }
