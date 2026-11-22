@@ -1,5 +1,5 @@
 // A stand-in for the GitHub CLI, used by the tests. It logs every call (FAKE_GH_LOG) and answers the calls amigo makes.
-import { appendFileSync, readFileSync } from 'node:fs';
+import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 
 const args = process.argv.slice(2);
 const entry = { cwd: process.cwd(), args };
@@ -20,6 +20,13 @@ if (args[0] === 'run' && args[1] === 'list') {
   process.exit(0);
 }
 if (args[0] === 'pr' && args[1] === 'create') {
+  // FAKE_GH_FAIL_PR_ONCE names a marker file: the first create fails (and writes it), later ones succeed.
+  const once = process.env.FAKE_GH_FAIL_PR_ONCE;
+  if (once && !existsSync(once)) {
+    writeFileSync(once, '');
+    console.error('fake gh: pr create failed');
+    process.exit(1);
+  }
   console.log('https://github.com/example/repo/pull/7');
   process.exit(0);
 }

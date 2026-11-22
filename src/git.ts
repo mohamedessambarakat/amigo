@@ -1,5 +1,6 @@
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
+import { checkCommitMessage } from './commit.ts';
 import { sleepSync } from './fsx.ts';
 import { legacyBranchName } from './legacy.ts';
 import { home } from './paths.ts';
@@ -160,7 +161,8 @@ export function looksSecret(path: string): boolean {
  * Refuses when the worktree is no longer on that branch (the agent switched or detached it), so nothing lands where nobody looks,
  * and when a changed file looks like it holds secrets (looksSecret). Hooks never run (see noHooks). With `expectedTree`
  * (the git tree the gates checked), only exactly that work is committed: a different tree, before or after the commit, is
- * rolled back and refused, and so is a clean worktree whose HEAD is not that tree.
+ * rolled back and refused, and so is a clean worktree whose HEAD is not that tree. A message that breaks the commit rule
+ * (checkCommitMessage) is refused before anything is staged.
  */
 export function commitAll(repo: string, worktree: string, branch: string, message: string, expectedTree?: string, env: NodeJS.ProcessEnv = process.env, gitDir?: string): string | null {
   const wRun = (args: string[]) => worktreeRun(repo, worktree, args, { gitDir });
@@ -173,6 +175,8 @@ export function commitAll(repo: string, worktree: string, branch: string, messag
     if (expectedTree && wGit(['rev-parse', 'HEAD^{tree}']).trim() !== expectedTree) throw changed('the branch does not hold the checked work');
     return null;
   }
+  const bad = checkCommitMessage(message);
+  if (bad) throw new Error(`"${message.split(/\r?\n/)[0]}" is not a valid commit subject: ${bad}. Nothing was committed.`);
   const secrets = changes.map(porcelainPath).filter(looksSecret);
   if (secrets.length) throw new Error(`Refusing to commit files that may hold secrets: ${secrets.join(', ')}. Delete them or add them to .gitignore, then close again.`);
   wGit(['add', '-A']);
@@ -248,9 +252,102 @@ export function branchSha(repo: string, branch: string): string | null {
   return r.status === 0 ? r.stdout.trim() : null;
 }
 
-/** How many commits a branch has on top of the commit it started from. */
+function commitRefExists(repo: string, ref: string): boolean {
+  return run('git', ['-C', repo, 'rev-parse', '-q', '--verify', `${ref}^{commit}`]).status === 0;
+}
+
+/** Origin's default branch ref (origin/HEAD, else origin/main or origin/master), or null when none exists. */
+function originDefaultRef(repo: string): string | null {
+  const head = run('git', ['-C', repo, 'symbolic-ref', '-q', 'refs/remotes/origin/HEAD']).stdout.trim();
+  return [head, 'refs/remotes/origin/main', 'refs/remotes/origin/master'].find((r) => r && commitRefExists(repo, r)) ?? null;
+}
+
+/**
+ * Refs for the repo's default branch (local and on origin) that exist as commits, never including `selfBranch`.
+ * Checks origin/HEAD (and its local counterpart), then main/master on origin and locally, falling back to the
+ * repo's current HEAD branch (and its origin counterpart) when none of those exist.
+ */
+function defaultBranchRefs(repo: string, selfBranch?: string): string[] {
+  const selfRef = selfBranch ? `refs/heads/${selfBranch}` : '';
+  const refs: string[] = [];
+  const add = (ref: string | null) => {
+    if (ref && ref !== selfRef && !refs.includes(ref) && commitRefExists(repo, ref)) refs.push(ref);
+  };
+  const origin = originDefaultRef(repo);
+  if (origin) {
+    add(origin);
+    if (origin.startsWith('refs/remotes/origin/')) add(`refs/heads/${origin.slice('refs/remotes/origin/'.length)}`);
+  }
+  if (!refs.some((r) => r.startsWith('refs/heads/'))) {
+    for (const name of ['main', 'master']) {
+      if (commitRefExists(repo, `refs/heads/${name}`)) {
+        add(`refs/heads/${name}`);
+        break;
+      }
+    }
+  }
+  if (!refs.length) {
+    const localHead = run('git', ['-C', repo, 'symbolic-ref', '-q', 'HEAD']).stdout.trim();
+    if (localHead && localHead !== selfRef && !localHead.startsWith('refs/heads/amigo/')) {
+      add(localHead);
+      if (localHead.startsWith('refs/heads/')) add(`refs/remotes/origin/${localHead.slice('refs/heads/'.length)}`);
+    }
+  }
+  return refs;
+}
+
+/** Rev-list arguments for a task branch: commits on `branch` excluding `baseSha` and the repo's local/origin default branch. */
+function taskCommitArgs(repo: string, branch: string, baseSha: string): string[] {
+  const excluded = [baseSha, ...defaultBranchRefs(repo, branch)].map((ref) => `^${ref}`);
+  return [`refs/heads/${branch}`, ...excluded];
+}
+
+/**
+ * The newest commit on `branch` already reachable from `baseSha` or the repo's default branch (local or on origin).
+ * On a branch rebased onto (or merging) an advanced default branch this is the rebased/merged base rather than the
+ * stale `baseSha`, so `git reset --soft <sha>` uncommits only the task's own commits without undoing the rebase.
+ */
+export function effectiveBase(repo: string, branch: string, baseSha: string): string {
+  const refs = [baseSha, ...defaultBranchRefs(repo, branch)];
+  const mbs: string[] = [];
+  for (const ref of refs) {
+    const r = run('git', ['-C', repo, 'merge-base', `refs/heads/${branch}`, ref]);
+    const sha = r.status === 0 ? r.stdout.trim() : '';
+    if (sha && !mbs.includes(sha)) mbs.push(sha);
+  }
+  if (!mbs.length) return baseSha;
+  const isAncestor = (a: string, b: string) => run('git', ['-C', repo, 'merge-base', '--is-ancestor', a, b]).status === 0;
+  const newest = mbs.filter((a) => !mbs.some((b) => b !== a && isAncestor(a, b)));
+  return newest[0] ?? baseSha;
+}
+
+/**
+ * The subject line of the newest non-merge task commit on `branch` (excluding `baseSha` and default branch when `baseSha`
+ * is given), or the head commit's subject when `baseSha` is omitted. Null when no matching commit exists.
+ */
+export function headSubject(repo: string, branch: string, baseSha?: string): string | null {
+  const rev = baseSha
+    ? run('git', ['-C', repo, 'rev-list', '-n', '1', '--no-merges', ...taskCommitArgs(repo, branch, baseSha), '--']).stdout.trim()
+    : `refs/heads/${branch}`;
+  if (!rev) return null;
+  const r = run('git', ['-C', repo, 'log', '-1', '--format=%s', rev, '--']);
+  return r.status === 0 && r.stdout.trim() ? r.stdout.trim() : null;
+}
+
+/**
+ * The task's own non-merge commits on `branch` (excluding `baseSha` and the repo's local/origin default branch),
+ * oldest first, each with its short sha and full message.
+ */
+export function branchCommits(repo: string, branch: string, baseSha: string): { sha: string; message: string }[] {
+  const shas = runOrThrow('git', ['-C', repo, 'rev-list', '--reverse', '--no-merges', ...taskCommitArgs(repo, branch, baseSha), '--'])
+    .split(/\r?\n/)
+    .filter(Boolean);
+  return shas.map((sha) => ({ sha: sha.slice(0, 7), message: runOrThrow('git', ['-C', repo, 'log', '-1', '--format=%B', sha, '--']) }));
+}
+
+/** How many non-merge commits a branch has on top of `baseSha` and the repo's default branch. */
 export function commitsAhead(repo: string, branch: string, baseSha: string): number {
-  return Number(runOrThrow('git', ['-C', repo, 'rev-list', '--count', `${baseSha}..refs/heads/${branch}`]).trim());
+  return Number(runOrThrow('git', ['-C', repo, 'rev-list', '--count', '--no-merges', ...taskCommitArgs(repo, branch, baseSha), '--']).trim());
 }
 
 /**
@@ -258,9 +355,7 @@ export function commitsAhead(repo: string, branch: string, baseSha: string): num
  * cannot be told (origin/HEAD, else origin/main or origin/master).
  */
 export function onOriginDefault(repo: string, sha: string): boolean {
-  const exists = (ref: string) => run('git', ['-C', repo, 'rev-parse', '-q', '--verify', ref]).status === 0;
-  const head = run('git', ['-C', repo, 'symbolic-ref', '-q', 'refs/remotes/origin/HEAD']).stdout.trim();
-  const ref = [head, 'refs/remotes/origin/main', 'refs/remotes/origin/master'].find((r) => r && exists(r));
+  const ref = originDefaultRef(repo);
   return Boolean(ref) && run('git', ['-C', repo, 'merge-base', '--is-ancestor', sha, ref as string]).status === 0;
 }
 

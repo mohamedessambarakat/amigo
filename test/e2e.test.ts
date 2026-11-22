@@ -42,11 +42,11 @@ describe('end to end with a fake agent', () => {
       assert.match(blocked.err, /Close the review first/);
       assert.equal(cli(env, ['close', review]).code, 0);
 
-      const closed = cli(env, ['close', id, '--commit', '-m', 'add squad member output']);
+      const closed = cli(env, ['close', id, '--commit', '-m', 'feat: add squad member output']);
       assert.equal(closed.code, 0, closed.err);
       assert.match(closed.out, /Committed \w+ to branch amigo\//);
       assert.ok(!existsSync(wt), 'worktree removed');
-      assert.equal(git(repo, 'log', '-1', '--format=%s', `amigo/${id}`).trim(), 'add squad member output');
+      assert.equal(git(repo, 'log', '-1', '--format=%s', `amigo/${id}`).trim(), 'feat: add squad member output');
       assert.equal(git(repo, 'show', '--name-only', '--format=', `amigo/${id}`).trim(), 'member-output.txt');
       assert.equal(git(repo, 'rev-parse', '--abbrev-ref', 'HEAD').trim(), 'main', 'nothing merged');
     } finally {

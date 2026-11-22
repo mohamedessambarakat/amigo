@@ -44,8 +44,15 @@ const write = (rel, text = 'x\n') => {
   mkdirSync(dirname(join(process.cwd(), rel)), { recursive: true });
   writeFileSync(join(process.cwd(), rel), text);
 };
+// Every done report proposes a commit subject in the file the prompt names, as squad members without hooks are told to;
+// MODE:nocommit, MODE:badcommit, MODE:dropcommit (no subject on follow-ups) and MODE:echo (prints its prompt, no file) break that.
+const subjectFile = /`([^`\n]*commit-subject\.txt)`/.exec(prompt)?.[1];
+const subject = has('MODE:nocommit') || has('MODE:echo') || (has('MODE:dropcommit') && followUps) ? null : has('MODE:badcommit') ? 'Wrote the member output file' : 'feat: write member output';
 const finish = (what) => {
+  if (subject && subjectFile) writeFileSync(subjectFile, `${subject}\n`);
   console.log(`STATUS: done - ${what}`);
+  // Echoes its input after its own report, so the log ends with whatever the brief or issue said.
+  if (has('MODE:echo')) console.log(prompt);
   process.exit(0);
 };
 if (has('MODE:big')) {
@@ -81,7 +88,15 @@ if (has('MODE:docs')) {
   write('notes.md', 'docs\n');
   finish('wrote notes.md');
 }
+// MODE:badselfcommit and MODE:goodselfcommit commit the work themselves, which squad members are told never to do.
+const selfCommit = has('MODE:badselfcommit') ? 'Totally not a valid subject' : has('MODE:goodselfcommit') ? 'fix: commit it myself' : null;
+if (selfCommit) {
+  write('member-output.txt', 'self\n');
+  execFileSync('git', ['add', '-A']);
+  execFileSync('git', ['-c', 'user.name=member', '-c', 'user.email=member@localhost', 'commit', '-q', '-m', selfCommit]);
+  finish('committed member-output.txt myself');
+}
 const file = join(process.cwd(), 'member-output.txt');
 if (followUps) appendFileSync(file, 'follow-up handled\n');
 else writeFileSync(file, `pointer=${Boolean(pointer)}\n`);
-console.log('STATUS: done - wrote member-output.txt');
+finish('wrote member-output.txt');

@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
   memberName,
@@ -18,6 +18,7 @@ import {
   trustFolder,
 } from './claude.ts';
 import { buildLaunch, describeLaunch, type Launch } from './command.ts';
+import { decodeSubjectFile, parseCommitSubject } from './commit.ts';
 import { checkGitState, findProject, loadConfig, loadProjects, pickAgent, type Config } from './config.ts';
 import { withLock, writeJsonAtomic } from './fsx.ts';
 import { recordVerdict, reviewPassed, treeOf } from './gates.ts';
@@ -36,6 +37,7 @@ import {
   briefFile,
   claimTaskDir,
   clearBeat,
+  commitSubjectFile,
   lastLines,
   listTasks,
   logFile,
@@ -65,9 +67,10 @@ function memberTemplate(t: Pick<Task, 'agent'>, config: Config): string[] {
 }
 
 /** Everything a squad member gets for its first run: the squad member rules, the project notes, the brief and any follow-ups. */
-export function memberPrompt(t: Task, brief: string, notes: string | undefined, claudeNotes?: string): string {
+export function memberPrompt(t: Task, brief: string, notes: string | undefined, claudeNotes?: string, commitFile?: string): string {
   const parts = [readPrompt('member.md'), `## Your task\n\nTask id: ${t.id}\nProject: ${t.project}\nWorking directory: ${t.cwd}`];
   if (claudeNotes) parts.push(claudeNotes);
+  if (t.worktree && !t.reviewOf) parts.push(commitSubjectNotes(commitFile));
   if (t.reviewOf) {
     parts.push(
       `## You are a reviewer\n\nYou check the work of task ${t.reviewOf} in this folder. Read, run and report only: do not edit, commit, stage, reset or delete anything. Check the brief's criteria, then the blast radius: what the change could break outside its own diff, each risk with a real file:line ("searched, nothing found" is an answer; never invent a caller). Prove the fact its safety rests on by running real code, such as a small script or test that fails loudly if you are wrong; if you could not, say **unproven**. Never run anything against live data or production services. End with STATUS: done - PASS - <findings> only if every Done-when criterion holds and no risk is left unproven, otherwise STATUS: done - FAIL - <findings>. The verdict must be the first word after the dash.`,
@@ -80,6 +83,17 @@ export function memberPrompt(t: Task, brief: string, notes: string | undefined, 
     parts.push(`## Follow-ups from amigo (newest last)\n\n${t.followUps.map((m, i) => `${i + 1}. ${m.trim()}`).join('\n')}`);
   }
   return parts.join('\n\n') + '\n';
+}
+
+/**
+ * How a squad member hands amigo its commit subject. A Claude squad member puts it in its own final message, which the stop hook
+ * reads; any other agent writes it to `file`, since its run log also holds echoed input (the brief, an issue) and is never read for it.
+ */
+function commitSubjectNotes(file?: string): string {
+  const how = file
+    ? 'write only the subject, on one line, to the file `' + file + '` (overwrite it). amigo reads that file when your run ends and then deletes it; your printed output is never read for the subject.'
+    : 'make the line right before your STATUS line exactly `COMMIT: <subject>`, in your final message, plain text at the start of the line with nothing around it (no quote, bullet, code block or bold).';
+  return `## Commit subject\n\nWhen you report done on work that changed files, ${how}`;
 }
 
 /** A resumed Claude session already has the brief: it gets every follow-up it has not been given yet. */
@@ -343,7 +357,7 @@ export function startMember(t: Task, config: Config, env: NodeJS.ProcessEnv, run
       writeFileSync(promptFile(t.id, env), followUpPrompt(t));
     } else {
       const brief = readFileSync(briefFile(t.id, env), 'utf8');
-      writeFileSync(promptFile(t.id, env), memberPrompt(t, brief, notesFor(t, env), claude ? claudeMemberNotes(t.id, t.amigoAddress) : undefined));
+      writeFileSync(promptFile(t.id, env), memberPrompt(t, brief, notesFor(t, env), claude ? claudeMemberNotes(t.id, t.amigoAddress) : undefined, claude ? undefined : commitSubjectFile(t.id, env)));
     }
     let trustAdded = false;
     if (claude) {
@@ -495,7 +509,32 @@ async function runClaudeMember(t: Task, env: NodeJS.ProcessEnv): Promise<number>
   return after.status === 'failed' && exit !== 0 ? (exit ?? 1) : 0;
 }
 
+const SUBJECT_FILE_BYTES = 512;
+
+/**
+ * The subject a squad member without hooks wrote to its commit-subject file this run, or why it could not be used; null when there
+ * is no file. Reads only the first 512 bytes, and always removes what is there (a folder too), so the next run starts clean.
+ */
+export function takeCommitSubject(id: string, env: NodeJS.ProcessEnv): { subject?: string; problem?: string } | null {
+  const file = commitSubjectFile(id, env);
+  if (!existsSync(file)) return null;
+  try {
+    if (!statSync(file).isFile()) return { problem: `${file} is not a file, so it was ignored and removed` };
+    const fd = openSync(file, 'r');
+    try {
+      const buf = Buffer.alloc(SUBJECT_FILE_BYTES);
+      return decodeSubjectFile(buf.subarray(0, readSync(fd, buf, 0, SUBJECT_FILE_BYTES, 0)), file);
+    } finally {
+      closeSync(fd);
+    }
+  } finally {
+    rmSync(file, { recursive: true, force: true });
+  }
+}
+
 async function runOnce(t: Task, template: string[], env: NodeJS.ProcessEnv): Promise<number> {
+  // A subject left from an earlier run must not describe this one.
+  rmSync(commitSubjectFile(t.id, env), { recursive: true, force: true });
   const log = logFile(t.id, env);
   const before = existsSync(log) ? readFileSync(log).length : 0;
   const launch = buildLaunch(template, { prompt: readFileSync(promptFile(t.id, env), 'utf8'), promptFile: promptFile(t.id, env) }, env);
@@ -517,6 +556,9 @@ async function runOnce(t: Task, template: string[], env: NodeJS.ProcessEnv): Pro
     child.on('close', (c) => done(c));
   });
   const output = readFileSync(log).subarray(before).toString('utf8');
+  const taken = takeCommitSubject(t.id, env);
+  if (taken?.problem) appendFileSync(log, `amigo: no commit subject this run: ${taken.problem}\n`);
+  const subject = taken?.subject ?? null;
   const reported = parseStatus(output);
   if (reported?.status === 'done') recordVerdict(requireTask(t.id, env), reported.summary, env);
   const after = mutateTask(
@@ -525,7 +567,7 @@ async function runOnce(t: Task, template: string[], env: NodeJS.ProcessEnv): Pro
       cur.status !== 'running'
         ? { pid: null }
         : {
-            ...reportPatch(cur, reported?.status ?? (code === 0 ? 'done' : 'failed'), reported?.summary || lastLines(output, 1) || `exited with code ${code}`, env),
+            ...reportPatch(cur, reported?.status ?? (code === 0 ? 'done' : 'failed'), reported?.summary || lastLines(output, 1) || `exited with code ${code}`, subject, env),
             exitCode: code,
             pid: null,
           },
@@ -540,10 +582,12 @@ async function runOnce(t: Task, template: string[], env: NodeJS.ProcessEnv): Pro
  * What a squad member's reported turn records. A squad member that says done goes to "verifying" while its project's checks run (see
  * verifyDone); without checks it is done and "unverified". A reviewer is not checked: its verdict is recorded instead.
  */
-function reportPatch(cur: Task, status: Task['status'], summary: string, env: NodeJS.ProcessEnv): Partial<Task> {
+function reportPatch(cur: Task, status: Task['status'], summary: string, subject: string | null, env: NodeJS.ProcessEnv): Partial<Task> {
   if (status !== 'done' || cur.reviewOf) return { status, summary, seen: false };
-  if (checksFor(cur, env).length) return { status: 'verifying', summary, seen: true };
-  return { status, summary, seen: false, verification: { state: 'unverified', results: [], at: new Date().toISOString() } };
+  // Every done report replaces the subject, so it always describes the latest work; one without a subject clears it.
+  const commit = { commitSubject: subject ?? undefined };
+  if (checksFor(cur, env).length) return { status: 'verifying', summary, seen: true, ...commit };
+  return { status, summary, seen: false, ...commit, verification: { state: 'unverified', results: [], at: new Date().toISOString() } };
 }
 
 interface HookPayload {
@@ -591,7 +635,7 @@ export async function applyHook(name: string, payload: HookPayload, id: string, 
           return null;
         }
       }
-      const patch = reportPatch(cur, report?.status ?? 'done', report?.summary || lastLines(message, 1) || 'The squad member ended its turn without a STATUS line.', env);
+      const patch = reportPatch(cur, report?.status ?? 'done', report?.summary || lastLines(message, 1) || 'The squad member ended its turn without a STATUS line.', parseCommitSubject(message), env);
       turn.verify = patch.status === 'verifying';
       return { ...patch, exitCode: null };
     },
