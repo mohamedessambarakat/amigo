@@ -1,8 +1,5 @@
-/** What the product was called before amigo: only branches of migrated tasks and sessions it started look at it. */
+/** What the product was called before amigo: only sessions it started look at it. */
 export const LEGACY_NAME = 'octomaxxing';
-
-/** The branch a task made before the rename: migrated tasks keep it. */
-export const legacyBranchName = (id: string): string => `${LEGACY_NAME}/${id}`;
 
 const LEGACY_TASK = `${LEGACY_NAME.toUpperCase()}_TASK`;
 const LEGACY_HOME = `${LEGACY_NAME.toUpperCase()}_HOME`;

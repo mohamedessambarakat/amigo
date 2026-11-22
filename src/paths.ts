@@ -8,7 +8,7 @@ export const cliPath: string = join(codeRoot, 'src', 'cli.ts');
 
 /**
  * Everything amigo stores: ~/.amigo, or AMIGO_HOME. Split by what each record is:
- *   config/    local choices (agents, the old gate files until they go)
+ *   config/    local choices (agents)
  *   data/      durable records: the project registry, boss.md, learnings.md, backlog.md, <id>/brief.md and <id>/report.md
  *   state/     runtime records: task records, locks, notices, scratch folders, the worktree pool
  *   projects/  amigo's own clones, one per registered project, read-only to amigo except through the guarded sync
@@ -48,15 +48,6 @@ export const scratchDir = (id: string, env: NodeJS.ProcessEnv = process.env): st
 export const noticesPath = (env: NodeJS.ProcessEnv = process.env): string => join(stateDir(env), 'notices.json');
 /** Where amigo writes the briefs and messages it drafts. */
 export const draftsDir = (env: NodeJS.ProcessEnv = process.env): string => join(stateDir(env), 'drafts');
-
-// The old self-approval gates, to be removed with the reviewer gate and risk scoring; until then they live under config/ and state/.
-export const policyPath = (env: NodeJS.ProcessEnv = process.env): string => join(configDir(env), 'policy.json');
-/** The sha256 of the policy the user approved (see policy.ts). */
-export const policyApprovalPath = (env: NodeJS.ProcessEnv = process.env): string => join(configDir(env), 'policy.approved.json');
-/** The sha256 of each project's checks and risky globs as the user last confirmed them (see gates.ts). */
-export const gatesConfirmedPath = (env: NodeJS.ProcessEnv = process.env): string => join(configDir(env), 'gates.confirmed.json');
-/** One JSON line per self-approved close, PR and undo. */
-export const approvalsPath = (env: NodeJS.ProcessEnv = process.env): string => join(stateDir(env), 'approvals.jsonl');
 
 /** Files at the top of a home that only the old layout has: their presence means `amigo migrate` has not run. */
 export const OLD_LAYOUT_FILES: readonly string[] = ['config.json', 'projects.json'];

@@ -2,7 +2,6 @@ import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { delimiter, dirname } from 'node:path';
 import { loadProjects, type Project } from './config.ts';
-import { gatesConfirmed } from './gates.ts';
 import { isGitRepo } from './git.ts';
 import { ghPath } from './github.ts';
 import { BEAT_MS, beginNotice, finishNotice, touchNotice } from './notices.ts';
@@ -44,7 +43,6 @@ export function defaultLive(project: Project, env: NodeJS.ProcessEnv): LiveComma
 export function livePlan(project: Project, env: NodeJS.ProcessEnv): { commands: LiveCommand[]; skipped?: string } {
   if (project.liveCommands === undefined) return { commands: defaultLive(project, env) };
   if (!project.liveCommands.length) return { commands: [] };
-  if (!gatesConfirmed(project, env)) return { commands: [], skipped: `Live commands of ${project.name} skipped: you have not confirmed them (in a terminal: amigo confirm-gates ${project.name}).` };
   return { commands: project.liveCommands.map((command) => ({ kind: 'shell' as const, command, label: command })) };
 }
 
@@ -150,8 +148,7 @@ export function startBriefing(agent: string | undefined, env: NodeJS.ProcessEnv,
   for (const plan of plans) if (plan.skipped) notes.push(plan.skipped);
   const hasLive = plans.some((plan) => plan.commands.length > 0);
   const withWatch = projects.filter((p) => p.watch?.length);
-  const watched = withWatch.filter((p) => gatesConfirmed(p, env));
-  for (const p of withWatch) if (!watched.includes(p)) notes.push(`Watch items of ${p.name} skipped: you have not confirmed them (in a terminal: amigo confirm-gates ${p.name}).`);
+  const watched = withWatch;
   let live = false;
   if (opts.dryRun) {
     if (hasLive) notes.push('Live checks would run in the background (dry run: not started).');

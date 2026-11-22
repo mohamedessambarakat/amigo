@@ -2,9 +2,7 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import { join } from 'node:path';
-import { cliPath, codeRoot, policyPath } from '../src/paths.ts';
-import { ensureHome } from '../src/config.ts';
-import { storeApproval } from '../src/policy.ts';
+import { cliPath, codeRoot } from '../src/paths.ts';
 import { getTask, type Status, type Task } from '../src/tasks.ts';
 
 export const fakeAgent = join(codeRoot, 'test', 'fake-agent.mjs');
@@ -94,9 +92,21 @@ export function makeRepo(dir: string): string {
   return dir;
 }
 
-/** Run the real CLI in a child process. */
+/**
+ * A build's brief in the two sections spawn requires: a leading `Title:` line stays on top, the rest is the Boss's intent (where
+ * the fake agent finds its MODE: words). Text that already has the sections is returned as it is.
+ */
+export function asBuildBrief(text: string): string {
+  if (!text.trim() || /^## Boss's intent$/m.test(text)) return text;
+  const lines = text.split(/\r?\n/);
+  const title = /^title:/i.test(lines[0] ?? '') ? `${lines.shift()}\n` : '';
+  return `${title}## Boss's intent\n${lines.join('\n').trim() || 'Do the task in the title.'}\n## amigo spec\nDo what the intent asks; keep it small.\n`;
+}
+
+/** Run the real CLI in a child process. A brief piped to a build's spawn (--project or --after) is put in the build sections (asBuildBrief). */
 export function cli(env: NodeJS.ProcessEnv, args: string[], input?: string): { code: number; out: string; err: string } {
-  const r = spawnSync(process.execPath, [cliPath, ...args], { env, input: input ?? '', encoding: 'utf8' });
+  const build = args[0] === 'spawn' && (args.includes('--project') || args.includes('--after')) && !args.includes('--review') && input !== undefined;
+  const r = spawnSync(process.execPath, [cliPath, ...args], { env, input: build ? asBuildBrief(input) : (input ?? ''), encoding: 'utf8' });
   return { code: r.status ?? -1, out: r.stdout, err: r.stderr };
 }
 
@@ -114,29 +124,6 @@ export async function waitFor(id: string, env: NodeJS.ProcessEnv, statuses: Stat
     if (Date.now() > end) throw new Error(`${id} did not reach ${statuses.join('/')} (now ${t?.status})`);
     await new Promise((r) => setTimeout(r, 200));
   }
-}
-
-/** A repo with check scripts committed in it: ok.mjs passes, fail.mjs always fails, needs-follow-up.mjs passes once the fake agent handled a follow-up. */
-export function makeRepoWithChecks(dir: string): string {
-  const repo = makeRepo(dir);
-  writeFileSync(join(repo, 'ok.mjs'), '');
-  writeFileSync(join(repo, 'fail.mjs'), "console.error('ALWAYS-FAILS marker');\nprocess.exit(1);\n");
-  // It holds the task in verifying until the test calls releaseChecks, so a test can look at that state without racing it.
-  writeFileSync(
-    join(repo, 'needs-follow-up.mjs'),
-    `import { existsSync, readFileSync } from 'node:fs';\nwhile (!existsSync(${JSON.stringify(releaseFile(repo))})) await new Promise((r) => setTimeout(r, 50));\n` +
-      "const text = readFileSync('member-output.txt', 'utf8');\nif (!text.includes('follow-up handled')) {\n  console.error('CHECK-FAIL-MARKER: the follow-up was not handled yet');\n  process.exit(1);\n}\n",
-  );
-  git(repo, 'add', '.');
-  git(repo, 'commit', '-q', '-m', 'check scripts');
-  return repo;
-}
-
-const releaseFile = (repo: string): string => `${repo}.release-checks`;
-
-/** Lets needs-follow-up.mjs of a makeRepoWithChecks repo finish, now and on every later run. */
-export function releaseChecks(repo: string): void {
-  writeFileSync(releaseFile(repo), '');
 }
 
 /** Lets every MODE:hold squad member of this home finish, now and on every later start. */
@@ -172,15 +159,6 @@ export function ghCalls(log: string): { cwd: string; args: string[]; body?: stri
         .filter(Boolean)
         .map((l) => JSON.parse(l))
     : [];
-}
-
-/** Approve a policy that allows pull requests (what the user does by hand with approve-policy). */
-export function allowPrs(env: NodeJS.ProcessEnv, pr: 'after-human-yes' | 'also-self-approved' = 'after-human-yes'): void {
-  ensureHome(env);
-  const p = JSON.parse(readFileSync(policyPath(env), 'utf8'));
-  p.pr = pr;
-  writeFileSync(policyPath(env), JSON.stringify(p, null, 2));
-  storeApproval(env);
 }
 
 /** Point a clone's origin at a new bare repo holding its main (for tests that check what was pushed): returns the bare repo. */
