@@ -1,6 +1,7 @@
 import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { describeAway, readAway } from './away.ts';
 import { resolveExecutable } from './command.ts';
 import { loadProjects } from './config.ts';
 import { readJson, writeJsonAtomic } from './fsx.ts';
@@ -89,7 +90,8 @@ const RECOVERY_RULES = [
   'Recovery rules (stopped crew member):',
   '- A crew member whose pull request already landed is not a recovery case: close it the ordinary way, never with --force.',
   '- Read its state first (amigo status <id>). Its worktree and commits are kept: never spawn a fresh copy of the task or close --force while they hold unlanded work.',
-  '- Relaunch it in its own worktree, same task, with its brief plus a short progress note: amigo send <id> "<what is done, what is left>".',
+  '- Relaunch it in its own worktree, same task, with its brief plus a short progress note: amigo control <id> relaunch --note "<what is done, what is left>".',
+  "- The full playbook is skills/agent/stuck-crew-recovery.md in amigo's code folder.",
   '- A crew member that is confused or looping gets one corrective line; one genuinely wedged after that is relaunched. If a second relaunch fails, report the plain failure, the preserved work and the consequence to the Boss.',
   '- A low context reading is not wedging.',
 ].join('\n');
@@ -221,6 +223,8 @@ export function sessionDigest(env: NodeJS.ProcessEnv, opts: { payloadSession?: s
   sections.push(locked ? describeDrain(drainWakes(env)) : 'WAKE QUEUE: not drained (read-only session).');
   const need = supervisionNeed(env);
   sections.push(`${SUPERVISION}\nNow: ${need.length ? `supervision needed (${need.join(', ')}); watcher ${watcherHealthy(env) ? 'running' : 'arms at the end of this turn'}` : 'nothing needs supervision'}.${listChecks(env).length ? ` Checks: ${listChecks(env).map((c) => c.name).join(', ')}.` : ''}`);
+  const away = readAway(env);
+  if (away) sections.push(`${describeAway(away)}\nRead the ${away.mode === 'afk' ? '/afk' : '/quiet'} skill and skills/agent/away-quiet-supervision.md before acting.`);
   sections.push(fleetState(env));
   if (locked && backlogActive(env)) {
     // A close whose backlog half failed is replayed here too, not only at the next spawn or close.

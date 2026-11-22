@@ -1,3 +1,4 @@
+import { awayMergeRefusal } from './away.ts';
 import { closeMember } from './close.ts';
 import { loadProjects, type Project } from './config.ts';
 import { fastForwardLive, mergeLocal } from './landing.ts';
@@ -38,7 +39,9 @@ function projectOf(t: Task, env: NodeJS.ProcessEnv): Project {
  * Who may merge: the Boss's current, explicit instruction, or yolo (the project's standing routine merge authority) for green
  * work only. A red or unreported check is waived only on the Boss's word.
  */
-function authority(t: Task, p: Project, opts: MergeOptions): 'boss' | 'yolo' {
+function authority(t: Task, p: Project, opts: MergeOptions, env: NodeJS.ProcessEnv): 'boss' | 'yolo' {
+  const away = awayMergeRefusal({ localOnly: t.mode === 'local-only', waiving: Boolean(opts.allowRed || opts.allowMissing) }, env);
+  if (away) throw new Error(away);
   if ((opts.allowRed || opts.allowMissing) && !opts.boss) throw new Error('Waiving a check that is not green or has not reported needs a current, explicit instruction from the Boss (--boss). Nothing was merged.');
   if (opts.boss) return 'boss';
   if (p.yolo) return 'yolo';
@@ -60,7 +63,7 @@ export function mergeTask(id: string, opts: MergeOptions, env: NodeJS.ProcessEnv
   if (t.merge) throw new Error(`${id} is already merged (${t.merge.url ?? t.merge.how}, ${t.merge.at}). Run amigo land ${id} to finish the cleanup.`);
   if (!t.mode || !t.branch) throw new Error(`${id} is not a build, so there is nothing to merge`);
   const p = projectOf(t, env);
-  const by = authority(t, p, opts);
+  const by = authority(t, p, opts, env);
   const out: string[] = [];
   if (t.mode === 'local-only') {
     if (opts.url) throw new Error('A local-only build has no PR: leave out --pr');

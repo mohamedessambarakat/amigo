@@ -9,7 +9,7 @@ import { VALIDATE_MESSAGE } from './delivery.ts';
 import { landTask, mergeTask, prCheck } from './merge.ts';
 import { reportStatus } from './report.ts';
 import { sendMessage } from './steer.ts';
-import { runLiveChecks, startBriefing } from './briefing.ts';
+import { localBriefing, runLiveChecks, startBriefing } from './briefing.ts';
 import { adoptLegacyEnv } from './legacy.ts';
 import { migrateHome } from './migrate.ts';
 import { addProject, tangleBranch } from './projects.ts';
@@ -26,8 +26,10 @@ import { autoArm, turnEndGuard, type HookPayload } from './supervise.ts';
 import { ackWakes, describeDrain, drainWakes, readQueue } from './wakes.ts';
 import { listChecks, registerCheck, removeCheck, supervisionNeed, watchCycle, watcherHealthy } from './watch.ts';
 import { planCommand } from './plan-commands.ts';
+import { AWAY_MODES, describeAway, enterAway, leaveAway, readAway, type AwayMode } from './away.ts';
+import { updateAmigo } from './update.ts';
 
-export const HELP = `amigo: your right hand. Runs the squad.
+export const HELP = `amigo: your right hand. Runs the crew.
 
   amigo [--agent <name>] [--dry-run]                start amigo in this terminal: a briefing first, then you just talk to it
   amigo install-skill [<agent>] [--remove]          add /amigo to your agent CLIs (all found on PATH, or one)
@@ -39,22 +41,22 @@ export const HELP = `amigo: your right hand. Runs the squad.
   amigo sync [<project>]                            refresh the clones from origin (fast-forward only; anything unsafe is reported, never touched)
   amigo migrate [--live <project>]... [--drop <project>]... [--dry-run]
                                                     convert a home from before this version: projects become clones, the old gate files go
-  amigo note <project> <text>                       add a line to a project's notes (every later squad member gets it)
+  amigo note <project> <text>                       add a line to a project's notes (every later crew member gets it)
   amigo spawn (--project <name> | --review <id> | --scratch) [--title <t>] [--agent <name>] [--after <id>] [--issue <n>] [--brief-file <file>] [--dry-run]
-                                                    start a squad member; the brief comes from stdin unless --brief-file is given. A build's
+                                                    start a crew member; the brief comes from stdin unless --brief-file is given. A build's
                                                     brief is "## Boss's intent" and "## amigo spec"; amigo adds the rules and the definition of done
             [--survey] [--task <backlog id>] [--model <m>] [--effort low|medium|high|xhigh|max] [--boss-max]
                                                     a survey writes data/<id>/report.md and never pushes; --task dispatches a backlog item
   amigo status [<id>]                               tasks by station, or one in detail (status, inbox, PR, uncommitted files)
-  amigo inbox                                       squad members that finished since you last looked, and background results
-  amigo wait [<id>...] [--timeout-min <n>]          wait until a squad member finishes a turn (default 60 min)
+  amigo inbox                                       crew members that finished since you last looked, and background results
+  amigo wait [<id>...] [--timeout-min <n>]          wait until a crew member finishes a turn (default 60 min)
   amigo send <id> [--resolve-key <key>]... [--validate | --file <file> | <message>]
                                                     steer a crew member: the message goes to its durable inbox and its tab is rung
                                                     (--validate: tell a no-mistakes build to run its pipeline; --resolve-key closes that open decision)
   amigo control <id> interrupt|exit|relaunch [--note <text>]
                                                     lifecycle: stop its turn, stop its agent (worktree kept), or start it again with a note
   amigo report <state> [--key <key>] <text>         (crew members) append a status line: working, needs-decision, blocked, paused, done, failed, resolved, note
-  amigo attach <id>                                 print a squad member's results and follow it while it runs
+  amigo attach <id>                                 print a crew member's results and follow it while it runs
   amigo pr-check <id> [<pr url>] [--watch [--timeout-min <n>]]
                                                     read a build's PR live (CI, merge state); a merge on GitHub is recorded and cleaned up after
   amigo merge <id> [--boss] [--pr <url>] [--expected-head <sha>] [--allow-red <check>] [--allow-missing <check>] [--method squash|merge|rebase]
@@ -77,13 +79,16 @@ export const HELP = `amigo: your right hand. Runs the squad.
                                                     attest a survey's open Boss calls (or none), so close may tear it down
   amigo dispatch [<rule number> | default]          the dispatch profiles, or one rule resolved to spawn flags
   amigo capacity                                    lanes in use, open lanes and host headroom, and project caps
+  amigo away (afk | quiet) [--words-file <file> | --words <text>] [--expected-return <time>] | away (return | status)
+                                                    record the Boss's /afk or /quiet posture and his words verbatim; return archives it
+  amigo update                                      fast-forward amigo's own code folder (a project's live folder) from origin
   amigo help                                        this text (-h or --help anywhere in a command prints it too)
   amigo --version                                   print the version
 
 Data lives in ${'$'}AMIGO_HOME (default ~/.amigo): config/, data/, state/ and projects/.`;
 
 /** Every command the help lists, for the tests that keep the help and the dispatch below in step. */
-export const COMMANDS: readonly string[] = ['install-skill', 'brief', 'add', 'projects', 'sync', 'migrate', 'note', 'spawn', 'status', 'inbox', 'wait', 'send', 'control', 'report', 'attach', 'pr-check', 'merge', 'land', 'close', 'digest', 'wake', 'watch', 'check', 'backlog', 'hold', 'answer', 'complete', 'dispatch', 'capacity', 'help'];
+export const COMMANDS: readonly string[] = ['install-skill', 'brief', 'add', 'projects', 'sync', 'migrate', 'note', 'spawn', 'status', 'inbox', 'wait', 'send', 'control', 'report', 'attach', 'pr-check', 'merge', 'land', 'close', 'digest', 'wake', 'watch', 'check', 'backlog', 'hold', 'answer', 'complete', 'dispatch', 'capacity', 'away', 'update', 'help'];
 
 function readStdin(what: string): string {
   if (process.stdin.isTTY) throw new Error(`Pass the ${what} on stdin or as a file (see amigo help)`);
@@ -94,15 +99,15 @@ function parse(argv: string[], options: ParseArgsOptionsConfig) {
   return parseArgs({ args: argv, options, allowPositionals: true, strict: true });
 }
 
-/** Commands that start, change or close squad members. A squad member must never run them on other squad members. */
-// Commands only amigo may run. inbox, wait and brief count too: a squad member running them marks results seen or starts the briefing's checks. So does the bare start.
-const MANAGING = new Set(['spawn', 'send', 'control', 'merge', 'land', 'pr-check', 'close', 'install-skill', 'add', 'sync', 'migrate', 'note', 'inbox', 'wait', 'brief', 'wake', 'watch', 'check', 'digest']);
+/** Commands that start, change or close crew members. A crew member must never run them on other crew members. */
+// Commands only amigo may run. inbox, wait and brief count too: a crew member running them marks results seen or starts the briefing's checks. So does the bare start.
+const MANAGING = new Set(['away', 'update', 'spawn', 'send', 'control', 'merge', 'land', 'pr-check', 'close', 'install-skill', 'add', 'sync', 'migrate', 'note', 'inbox', 'wait', 'brief', 'wake', 'watch', 'check', 'digest']);
 /** Managing commands a read-only session (another session holds the session lock) may still run; the digest says read-only itself. */
 const READ_ONLY_OK = new Set(['digest', 'install-skill', 'brief']);
-const readOnlyOk = (cmd: string, sub: string | undefined): boolean => READ_ONLY_OK.has(cmd) || (cmd === 'wake' && sub === 'status') || (cmd === 'check' && sub === 'list');
+const readOnlyOk = (cmd: string, sub: string | undefined): boolean => READ_ONLY_OK.has(cmd) || (cmd === 'wake' && sub === 'status') || (cmd === 'check' && sub === 'list') || (cmd === 'away' && sub === 'status');
 
 export async function main(argv: string[], rawEnv: NodeJS.ProcessEnv = process.env): Promise<number> {
-  // A session the former name started still counts as a squad member, in the home it was started with.
+  // A session the former name started still counts as a crew member, in the home it was started with.
   const env = adoptLegacyEnv(rawEnv);
   const internal = argv[0]?.startsWith('_') ?? false;
   // -h or --help anywhere asks for the help; nothing else runs.
@@ -113,7 +118,7 @@ export async function main(argv: string[], rawEnv: NodeJS.ProcessEnv = process.e
   const out = (s: string) => {
     if (s) process.stdout.write(s.endsWith('\n') ? s : `${s}\n`);
   };
-  // Internal: the command a squad member's tab runs, and the Claude Code hooks inside a squad member.
+  // Internal: the command a crew member's tab runs, and the Claude Code hooks inside a crew member.
   if (cmd === '_tab') {
     const { values, positionals } = parse(rest, { home: { type: 'string' }, run: { type: 'string' }, env: { type: 'string', multiple: true } });
     const extra = Object.fromEntries(
@@ -264,7 +269,7 @@ export async function main(argv: string[], rawEnv: NodeJS.ProcessEnv = process.e
       if (!name) throw new Error('note needs a project: amigo note <project> <text>');
       const text = words.length ? words.join(' ') : readStdin('note');
       addNote(name, text, env);
-      out(`Added to the notes of ${name}: every squad member started from now on gets it.`);
+      out(`Added to the notes of ${name}: every crew member started from now on gets it.`);
       return 0;
     }
 
@@ -458,6 +463,37 @@ export async function main(argv: string[], rawEnv: NodeJS.ProcessEnv = process.e
     case 'dispatch':
     case 'capacity':
       return await planCommand(cmd, rest, env, out);
+
+    case 'away': {
+      const { values, positionals } = parse(rest, { words: { type: 'string' }, 'words-file': { type: 'string' }, 'expected-return': { type: 'string' } });
+      const sub = positionals[0] ?? 'status';
+      if (sub === 'status') {
+        const r = readAway(env);
+        out(r ? describeAway(r) : 'Not away: no /afk or /quiet posture is recorded.');
+        return 0;
+      }
+      if (sub === 'return' || sub === 'off') {
+        const r = leaveAway(env);
+        if (!r) {
+          out('Not away: nothing to end.');
+          return 0;
+        }
+        out(['Ended. The record is archived.', describeAway(r), '', 'Since then:', localBriefing(env, false), '', 'Next: amigo wake drain, handle every wake and open blocker, then give the Boss the return brief.'].join('\n'));
+        return 0;
+      }
+      if (!AWAY_MODES.includes(sub as AwayMode)) throw new Error(`Unknown away command "${sub}": afk, quiet, return or status`);
+      if (values.words !== undefined && values['words-file'] !== undefined) throw new Error('Pass --words or --words-file, not both');
+      const words = values['words-file'] !== undefined ? readFileSync(values['words-file'] as string, 'utf8') : ((values.words as string | undefined) ?? null);
+      const { record, refreshed } = enterAway(sub as AwayMode, words, { expectedReturn: values['expected-return'] as string | undefined }, env);
+      out(`${refreshed ? 'Refreshed' : 'Entered'} ${record.mode} mode.\n${describeAway(record)}`);
+      return 0;
+    }
+
+    case 'update': {
+      parse(rest, {});
+      for (const line of updateAmigo(env)) out(line);
+      return 0;
+    }
 
     case 'digest': {
       const { values } = parse(rest, { again: { type: 'boolean' } });

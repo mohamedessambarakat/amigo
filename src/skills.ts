@@ -4,13 +4,13 @@ import { dirname, join } from 'node:path';
 import { resolveExecutable } from './command.ts';
 import { loadConfig } from './config.ts';
 import { writeJsonAtomic } from './fsx.ts';
-import { configPath } from './paths.ts';
+import { codeRoot, configPath } from './paths.ts';
 import { TEMPLATES } from './templates.ts';
 
 /** Marks files amigo wrote, so --remove never deletes anything else. */
 export const MARKER = 'installed by amigo';
 
-const DESCRIPTION = 'Turn this session into amigo, which hands tasks to the squad: parallel worker agents. Use only when the user runs /amigo or asks to start amigo.';
+const DESCRIPTION = 'Turn this session into amigo, which hands tasks to the crew: parallel worker agents. Use only when the user runs /amigo or asks to start amigo.';
 
 const skillMd = (body: string): string => `---\nname: amigo\ndescription: ${DESCRIPTION}\n---\n\n<!-- ${MARKER} -->\n\n${body}\n`;
 
@@ -61,6 +61,33 @@ export function targetsFor(agent: string | undefined, env: NodeJS.ProcessEnv = p
 
 const ours = (file: string): boolean => existsSync(file) && readFileSync(file, 'utf8').includes(MARKER);
 
+/**
+ * The Boss's own slash commands inside an amigo session (/catchup, /rundown, /remember, /updateamigo, /afk, /quiet), from
+ * skills/user/<name>/SKILL.md. amigo itself runs only on Claude Code, so only Claude Code gets them, in ~/.claude/skills/<name>/.
+ */
+export const userSkillsDir = (root: string = codeRoot): string => join(root, 'skills', 'user');
+export const USER_SKILLS: readonly string[] = ['catchup', 'rundown', 'remember', 'updateamigo', 'afk', 'quiet'];
+const userSkillFile = (userHome: string, name: string): string => join(userHome, '.claude', 'skills', name, 'SKILL.md');
+
+/** A user skill's text with amigo's marker after its front matter. */
+export function userSkillContent(name: string, root: string = codeRoot): string {
+  const src = readFileSync(join(userSkillsDir(root), name, 'SKILL.md'), 'utf8').replace(/\r\n/g, '\n');
+  const end = src.indexOf('\n---\n', 4);
+  if (!src.startsWith('---\n') || end < 0) throw new Error(`skills/user/${name}/SKILL.md has no front matter`);
+  return `${src.slice(0, end + 5)}\n<!-- ${MARKER} -->\n${src.slice(end + 5)}`;
+}
+
+/** Write the user skills. A file of the same name that amigo did not write is left alone and reported. */
+function installUserSkills(userHome: string): string[] {
+  return USER_SKILLS.map((name) => {
+    const file = userSkillFile(userHome, name);
+    if (existsSync(file) && !ours(file)) return `claude: skipped /${name}: ${file} exists and was not written by amigo; move it away and run install-skill again`;
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, userSkillContent(name));
+    return `claude: wrote ${file} (type /${name} in an amigo session)`;
+  });
+}
+
 /** Write the skill files (and a config entry for agents that have none). Returns one line per thing done. */
 export function installSkills(agent: string | undefined, env: NodeJS.ProcessEnv = process.env, userHome: string = os.homedir()): string[] {
   const targets = targetsFor(agent, env);
@@ -78,6 +105,7 @@ export function installSkills(agent: string | undefined, env: NodeJS.ProcessEnv 
       written.add(file);
     }
     out.push(`${t.agent}: wrote ${file} (type ${t.invoke} in ${commandOf(t.agent)})`);
+    if (t.agent === 'claude') out.push(...installUserSkills(userHome));
     const configured = Object.entries(config.agents).some(([name, a]) => name === t.agent || a.member[0] === commandOf(t.agent));
     if (!configured && TEMPLATES[t.agent]) {
       config.agents[t.agent] = TEMPLATES[t.agent]!;
@@ -99,6 +127,15 @@ export function removeSkills(agent: string | undefined, userHome: string = os.ho
     const dir = dirname(file);
     if (dir.endsWith('amigo') && readdirSync(dir).length === 0) rmSync(dir, { recursive: true });
     out.push(`removed ${file}`);
+  }
+  if (targets.some((t) => t.agent === 'claude')) {
+    for (const name of USER_SKILLS) {
+      const file = userSkillFile(userHome, name);
+      if (!ours(file)) continue;
+      rmSync(file);
+      if (readdirSync(dirname(file)).length === 0) rmSync(dirname(file), { recursive: true });
+      out.push(`removed ${file}`);
+    }
   }
   return out.length ? out : ['Nothing to remove.'];
 }
