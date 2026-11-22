@@ -25,6 +25,7 @@ import { controlRefusal } from './session.ts';
 import { autoArm, turnEndGuard, type HookPayload } from './supervise.ts';
 import { ackWakes, describeDrain, drainWakes, readQueue } from './wakes.ts';
 import { listChecks, registerCheck, removeCheck, supervisionNeed, watchCycle, watcherHealthy } from './watch.ts';
+import { planCommand } from './plan-commands.ts';
 
 export const HELP = `amigo: your right hand. Runs the squad.
 
@@ -42,6 +43,8 @@ export const HELP = `amigo: your right hand. Runs the squad.
   amigo spawn (--project <name> | --review <id> | --scratch) [--title <t>] [--agent <name>] [--after <id>] [--issue <n>] [--brief-file <file>] [--dry-run]
                                                     start a squad member; the brief comes from stdin unless --brief-file is given. A build's
                                                     brief is "## Boss's intent" and "## amigo spec"; amigo adds the rules and the definition of done
+            [--survey] [--task <backlog id>] [--model <m>] [--effort low|medium|high|xhigh|max] [--boss-max]
+                                                    a survey writes data/<id>/report.md and never pushes; --task dispatches a backlog item
   amigo status [<id>]                               tasks by station, or one in detail (status, inbox, PR, uncommitted files)
   amigo inbox                                       squad members that finished since you last looked, and background results
   amigo wait [<id>...] [--timeout-min <n>]          wait until a squad member finishes a turn (default 60 min)
@@ -65,13 +68,22 @@ export const HELP = `amigo: your right hand. Runs the squad.
   amigo watch                                       run one watcher cycle here and print the wake it closes on (the Stop hook does this itself)
   amigo check (add <name> [--every <s>] [--cwd <dir>] -- <command>... | rm <name> | list)
                                                     commands the watcher runs on an interval; anything they print wakes amigo
+  amigo backlog [<tasks-axi command> [args...]]     the work queue (data/backlog.md) through tasks-axi: list, ready, add, show, update...
+  amigo hold <id> --reason <text> [--until YYYY-MM-DD] [--title <t> [--project <p>]] [--origin <survey id>]
+                                                    hold a backlog item for the Boss's call (--title creates it); --until defers it to a date
+  amigo answer <id> [--release] (<the Boss's words> | --file <file>)
+                                                    record the Boss's exact answer: closes the call, or --release lets the held work go on
+  amigo complete <survey id> (--none | <held item id>...)
+                                                    attest a survey's open Boss calls (or none), so close may tear it down
+  amigo dispatch [<rule number> | default]          the dispatch profiles, or one rule resolved to spawn flags
+  amigo capacity                                    lanes in use, open lanes and host headroom, and project caps
   amigo help                                        this text (-h or --help anywhere in a command prints it too)
   amigo --version                                   print the version
 
 Data lives in ${'$'}AMIGO_HOME (default ~/.amigo): config/, data/, state/ and projects/.`;
 
 /** Every command the help lists, for the tests that keep the help and the dispatch below in step. */
-export const COMMANDS: readonly string[] = ['install-skill', 'brief', 'add', 'projects', 'sync', 'migrate', 'note', 'spawn', 'status', 'inbox', 'wait', 'send', 'control', 'report', 'attach', 'pr-check', 'merge', 'land', 'close', 'digest', 'wake', 'watch', 'check', 'help'];
+export const COMMANDS: readonly string[] = ['install-skill', 'brief', 'add', 'projects', 'sync', 'migrate', 'note', 'spawn', 'status', 'inbox', 'wait', 'send', 'control', 'report', 'attach', 'pr-check', 'merge', 'land', 'close', 'digest', 'wake', 'watch', 'check', 'backlog', 'hold', 'answer', 'complete', 'dispatch', 'capacity', 'help'];
 
 function readStdin(what: string): string {
   if (process.stdin.isTTY) throw new Error(`Pass the ${what} on stdin or as a file (see amigo help)`);
@@ -295,6 +307,11 @@ export async function main(argv: string[], rawEnv: NodeJS.ProcessEnv = process.e
         issue: { type: 'string' },
         'brief-file': { type: 'string' },
         'dry-run': { type: 'boolean' },
+        survey: { type: 'boolean' },
+        task: { type: 'string' },
+        model: { type: 'string' },
+        effort: { type: 'string' },
+        'boss-max': { type: 'boolean' },
       });
       const file = values['brief-file'] as string | undefined;
       const issue = values.issue === undefined ? undefined : Number(values.issue);
@@ -311,6 +328,11 @@ export async function main(argv: string[], rawEnv: NodeJS.ProcessEnv = process.e
           agent: values.agent as string | undefined,
           after: values.after === undefined ? undefined : resolveId(values.after as string, env),
           issue,
+          ...(values.survey ? { kind: 'survey' as const } : {}),
+          task: values.task as string | undefined,
+          model: values.model as string | undefined,
+          effort: values.effort as string | undefined,
+          bossMax: Boolean(values['boss-max']),
         },
         { dryRun: Boolean(values['dry-run']) },
         env,
@@ -428,6 +450,14 @@ export async function main(argv: string[], rawEnv: NodeJS.ProcessEnv = process.e
       for (const line of closeMember(resolveId(positionals[0], env), { force: Boolean(values.force) }, env)) out(line);
       return 0;
     }
+
+    case 'backlog':
+    case 'hold':
+    case 'answer':
+    case 'complete':
+    case 'dispatch':
+    case 'capacity':
+      return await planCommand(cmd, rest, env, out);
 
     case 'digest': {
       const { values } = parse(rest, { again: { type: 'boolean' } });

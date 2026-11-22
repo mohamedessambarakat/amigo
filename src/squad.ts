@@ -52,6 +52,11 @@ import {
   type Task,
 } from './tasks.ts';
 import { leaseWorktree } from './worktree.ts';
+import { addItem, backlogActive, findItem, listItems, notDispatchable, removeItem, replayPendingCloses, startItem } from './backlog.ts';
+import { checkCapacityFiles, laneAdmission, projectCapacityProblem, readVitals, type Vitals } from './capacity.ts';
+import { checkDispatch, claudeProfileArgs } from './dispatch.ts';
+import { kindOf, reportPath, surveyContract, surveyGitEnv, TASK_KINDS } from './survey.ts';
+import type { TaskKind } from './tasks.ts';
 
 const readPrompt = (name: string): string => readFileSync(join(codeRoot, 'prompts', name), 'utf8').trim();
 
@@ -74,6 +79,7 @@ export function memberPrompt(t: Task, brief: string, notes: string | undefined, 
     `## Your task\n\nTask id: ${t.id}\nProject: ${t.project}\nWorking directory: ${t.cwd}\nReport status: ${reportCommand()} <state> "<one short line>" (it appends to ${slash(statusFile(t.id, env))})\nInstruction inbox: ${slash(inboxDir(t.id, env))}`,
   ];
   if (claudeNotes) parts.push(claudeNotes);
+  if (kindOf(t) === 'survey' && !t.reviewOf) parts.push(surveyContract(t));
   if (t.reviewOf) {
     parts.push(
       `## You are a reviewer\n\nYou check the work of task ${t.reviewOf} in this folder. Read, run and report only: do not edit, commit, stage, reset or delete anything. Check the brief's criteria, then the blast radius: what the change could break outside its own diff, each risk with a real file:line ("searched, nothing found" is an answer; never invent a caller). Prove the fact its safety rests on by running real code, such as a small script or test that fails loudly if you are wrong; if you could not, say **unproven**. Never run anything against live data or production services. End with STATUS: done - PASS - <findings> only if every Done-when criterion holds and no risk is left unproven, otherwise STATUS: done - FAIL - <findings>. The verdict must be the first word after the dash.`,
@@ -106,7 +112,9 @@ const resumesSession = (t: Task): boolean => t.runs > 1 && Boolean(t.sessionId);
 function memberLaunch(t: Task, config: Config, prompt: string, env: NodeJS.ProcessEnv): Launch {
   const template = memberTemplate(t, config);
   const resume = resumesSession(t);
-  const full = isClaude(template) ? claudeMemberTemplate(template, { id: t.id, sessionId: t.sessionId ?? '<new session id>', resume, settingsFile: settingsFile(t.id, env) }) : template;
+  const claudeFull = isClaude(template) ? claudeMemberTemplate(template, { id: t.id, sessionId: t.sessionId ?? '<new session id>', resume, settingsFile: settingsFile(t.id, env) }) : null;
+  // The dispatch profile's model and effort reach a Claude Code crew member as flags; other agents only record them.
+  const full = claudeFull ? [claudeFull[0] as string, ...claudeProfileArgs(t), ...claudeFull.slice(1)] : template;
   return buildLaunch(full, { prompt, promptFile: promptFile(t.id, env) }, env);
 }
 
@@ -142,6 +150,15 @@ export interface SpawnInput {
   after?: string;
   /** A GitHub issue of the project to read into the brief. */
   issue?: number;
+  /** build (default) or survey (see survey.ts). */
+  kind?: TaskKind;
+  /** Dispatch this existing backlog item: the task takes its id, title, kind and project. */
+  task?: string;
+  /** The dispatch profile's model and effort (see dispatch.ts). */
+  model?: string;
+  effort?: string;
+  /** The Boss asked for max effort on this task. */
+  bossMax?: boolean;
 }
 
 /** "Title: Fix the footer" on the brief's first line, else the first line itself. */
@@ -162,6 +179,14 @@ export function issueBlock(issue: Issue): string {
 
 /** Plan a new squad member. With dryRun, nothing is written: the plan is returned as text, which also proves the agent can be found. */
 export function spawnMember(input: SpawnInput, opts: { dryRun?: boolean }, env: NodeJS.ProcessEnv = process.env): { task: Task; text: string } {
+  if (input.kind !== undefined && !TASK_KINDS.includes(input.kind)) throw new Error(`Unknown task kind "${input.kind}": build or survey`);
+  if (input.review && (input.kind || input.task)) throw new Error('--review is a reviewer of another task: it takes no --survey or --task');
+  checkDispatch({ agent: input.agent, effort: input.effort, model: input.model, bossMax: input.bossMax }, env);
+  checkCapacityFiles(env);
+  if (!opts.dryRun) replayPendingCloses(env);
+  // Dispatching an existing backlog item: it must be dispatchable now, and it names the task.
+  const item = input.task ? backlogItemToDispatch(input, env) : null;
+  if (item) input = { ...input, kind: input.kind ?? ((item.kind === 'survey' ? 'survey' : 'build') as TaskKind), title: input.title ?? item.title, ...(item.repo && item.repo !== 'scratch' && !input.scratch && !input.project ? { project: item.repo } : {}), ...(item.repo === 'scratch' && !input.project ? { scratch: true } : {}) };
   let dependency: Task | undefined;
   if (input.scratch && (input.project || input.review || input.after || input.issue !== undefined)) throw new Error('--scratch stands alone: it works in a folder of its own, so it takes no --project, --review, --after or --issue');
   if (input.after) {
@@ -189,14 +214,16 @@ export function spawnMember(input: SpawnInput, opts: { dryRun?: boolean }, env: 
   // Fails early, before any folder is made, outside herdr-app.
   terminalBackend(env);
   // A build's brief is checked before anything is made: both sections, and a delivery contract (if it names one) that matches the registry.
-  const sections = input.project && !input.review && !input.scratch ? parseBriefInput(input.brief) : null;
+  // A survey delivers a report, not a change, so it gets the survey contract instead of a delivery scaffold.
+  const sections = input.project && !input.review && !input.scratch && input.kind !== 'survey' ? parseBriefInput(input.brief) : null;
   if (sections?.contractMode) {
     const mode = findProject(loadProjects(env), input.project as string).mode;
     if (sections.contractMode !== mode) throw new Error(`The brief's delivery contract says mode=${sections.contractMode}, but ${input.project} is registered as ${mode}. Write the brief for ${mode}, or change the project's mode (amigo add ... --mode).`);
   }
   const title = input.title?.trim() || sections?.title?.trim() || titleOf(sections ? sections.intent : input.brief);
-  let id = newId(title, nextMemberNumber(env));
-  if (!opts.dryRun) {
+  let id = item ? item.id : newId(title, nextMemberNumber(env));
+  if (item && !opts.dryRun && !claimTaskDir(id, env)) throw new Error(`A task named ${id} already exists (see amigo status ${id})`);
+  if (!opts.dryRun && !item) {
     // Two spawns at once can pick the same number: the folder decides, the loser takes the next one.
     for (let i = 0; !claimTaskDir(id, env); i++) {
       if (i >= 20) throw new Error('Could not find a free task id');
@@ -221,18 +248,52 @@ export function spawnMember(input: SpawnInput, opts: { dryRun?: boolean }, env: 
     task = { ...base, project: project.name, mode: project.mode, cwd: '', repo: project.path, worktree: null, branch: branchName(id, project.branchPrefix), baseSha: null, leased: true, ...(dependency ? { after: dependency.id } : {}) };
   }
 
+  if (!input.review) {
+    task.kind = input.kind ?? 'build';
+    if (task.kind === 'survey') {
+      task.report = reportPath(id, env);
+      // A survey has no delivery mode: no PR, no merge, and the done gate does not apply.
+      delete task.mode;
+    }
+  }
+  if (input.model) task.model = input.model;
+  if (input.effort) task.effort = input.effort;
   const brief = task.mode ? buildBrief(task, input.brief, issue ? issueBlock(issue) : null, env) : input.brief;
   const launch = memberLaunch(task, config, memberPrompt(task, brief, notesFor(task, env), undefined, env), env);
   if (issue) task.issue = { number: issue.number, url: issue.url, title: issue.title };
   const where = task.leased
     ? `a worktree of ${task.repo} leased from treehouse, on new branch ${task.branch} (from ${task.after ? `${task.after}'s commit, once it is closed with one` : "origin's tip"})`
     : `${task.cwd} (${task.scratch && !task.reviewOf ? 'scratch folder, not git' : 'in place'}${task.reviewOf ? `, reviewing ${task.reviewOf}` : ''})`;
-  const text = [`task:    ${id}  "${title}"`, `folder:  ${where}`, ...(task.mode ? [`deliver: ${task.mode} (brief: ${briefFile(id, env)})`] : []), `agent:   ${agent} (in a new tab, as ${memberName(id)})`, `command: ${describeLaunch(launch)}`].join('\n');
+  const profile = [task.model ? `model ${task.model}` : '', task.effort ? `effort ${task.effort}` : ''].filter(Boolean).join(', ');
+  const shape = task.kind === 'survey' ? [`kind:    survey: writes ${task.report}, never pushes`] : [];
+  const text = [
+    `task:    ${id}  "${title}"`,
+    ...shape,
+    `folder:  ${where}`,
+    ...(task.mode ? [`deliver: ${task.mode} (brief: ${briefFile(id, env)})`] : []),
+    `agent:   ${agent}${profile ? ` (${profile}${isClaude(memberTemplate(task, config)) ? '' : ': recorded only, this agent gets no such flags'})` : ''} (in a new tab, as ${memberName(id)})`,
+    `command: ${describeLaunch(launch)}`,
+  ].join('\n');
   if (opts.dryRun) return { task, text: `DRY RUN, nothing was started.\n${text}` };
 
   if (task.scratch && !task.reviewOf) mkdirSync(task.cwd, { recursive: true });
   mkdirSync(taskDataDir(id, env), { recursive: true });
   writeFileSync(briefFile(id, env), brief.trim() + '\n');
+  let addedItem = false;
+  if (item) {
+    task.backlogItem = true;
+  } else if (!task.reviewOf && !task.briefing && backlogActive(env)) {
+    // spawn owns the backlog transition: the item is added Queued here and moves In flight when the crew member starts.
+    try {
+      const blockedBy = dependency?.backlogItem ? [dependency.id] : [];
+      addItem({ id, title, kind: task.kind ?? 'build', repo: task.project, blockedBy }, env);
+      task.backlogItem = addedItem = true;
+    } catch (err) {
+      rmSync(taskDir(id, env), { recursive: true, force: true });
+      rmSync(taskDataDir(id, env), { recursive: true, force: true });
+      throw err;
+    }
+  }
   // A task that follows another gets its worktree from the other's commit, when it starts (see startMember).
   if (task.leased && task.repo && task.branch && !task.after) {
     try {
@@ -241,15 +302,48 @@ export function spawnMember(input: SpawnInput, opts: { dryRun?: boolean }, env: 
     } catch (err) {
       rmSync(taskDir(id, env), { recursive: true, force: true });
       rmSync(taskDataDir(id, env), { recursive: true, force: true });
+      if (addedItem) {
+        try {
+          removeItem(id, env);
+        } catch {
+          // the item stays Queued; dispatching it again with --task reuses it
+        }
+      }
       throw err;
     }
   }
   saveTask(task, env);
   drain(env);
   const after = requireTask(id, env);
-  const waiting = after.status === 'queued' && after.after ? `Queued (waits until ${after.after} is closed with a commit)` : 'Queued (waiting for free memory or for its folder)';
+  const held = after.status === 'queued' && !after.after ? capacityHold(after, env) : null;
+  const waiting = after.status === 'queued' && after.after ? `Queued (waits until ${after.after} is closed with a commit)` : held ? `Queued (${held}; it starts when a place frees)` : 'Queued (waiting for free memory or for its folder)';
   const state = after.status === 'running' ? 'Started' : after.status === 'failed' ? `Failed: ${after.summary}` : after.status === 'blocked' ? `Blocked: ${after.summary}` : waiting;
   return { task: after, text: `${state}\n${text}` };
+}
+
+/** The backlog item `spawn --task` dispatches: it must exist and be dispatchable now (Queued, unblocked, not held). */
+function backlogItemToDispatch(input: SpawnInput, env: NodeJS.ProcessEnv) {
+  if (!backlogActive(env)) throw new Error('--task dispatches a backlog item, and this home keeps no backlog yet (amigo backlog add ... starts it)');
+  const all = listItems(env);
+  const found = all.find((i) => i.id === input.task);
+  if (!found) throw new Error(`No backlog item "${input.task}" (see amigo backlog list)`);
+  const why = notDispatchable(found, all);
+  if (why) throw new Error(`Backlog item ${found.id} cannot be dispatched: ${why}`);
+  if (!/^[a-z0-9][a-z0-9-]{0,47}$/.test(found.id)) throw new Error(`Backlog item id "${found.id}" cannot name a task (lowercase letters, digits and -, at most 48)`);
+  if (input.kind && found.kind && ['build', 'survey'].includes(found.kind) && found.kind !== input.kind) throw new Error(`Backlog item ${found.id} is a ${found.kind}, not a ${input.kind}`);
+  if (input.project && found.repo && found.repo !== input.project) throw new Error(`Backlog item ${found.id} is for ${found.repo}, not ${input.project}`);
+  return found;
+}
+
+/** Why a queued task is held back by capacity right now, or null. */
+function capacityHold(t: Task, env: NodeJS.ProcessEnv): string | null {
+  const tasks = listTasks(env);
+  if (!t.scratch && !t.reviewOf) {
+    const project = projectCapacityProblem(t.project, tasks, env);
+    if (project) return project;
+  }
+  const lanes = laneAdmission(tasks, env);
+  return lanes.gating && !lanes.admit ? `lane capacity: ${lanes.reasons.join('; ') || 'no open lane'}` : null;
 }
 
 const TAB_LOST = 'The squad member stopped without reporting: its tab closed or never opened (see amigo attach).';
@@ -300,6 +394,10 @@ export function drain(env: NodeJS.ProcessEnv = process.env): string[] {
     let starting = running.filter((t) => t.startedAt && Date.now() - Date.parse(t.startedAt) < STARTUP_MS).length;
     let free: number | null = null;
     const started: string[] = [];
+    const startedProjects: string[] = [];
+    const startedIn = (project: string): string[] => started.filter((_, i) => startedProjects[i] === project);
+    // Read once per drain: on Windows the CPU load is a short sample.
+    let vitals: Vitals | undefined;
     for (const t of tasks.filter((x) => x.status === 'queued')) {
       if (t.after) {
         const dep = dependencyState(t, tasks);
@@ -307,9 +405,18 @@ export function drain(env: NodeJS.ProcessEnv = process.env): string[] {
         if (dep.state !== 'go') continue;
       }
       if ((t.cwd && busy.has(t.cwd)) || (t.cwd && open.has(t.cwd) && !t.reviewOf) || runnerAlive(t.id, env)) continue;
-      free ??= freeMemMb(env);
-      if ((running.length > 0 || started.length > 0) && !ramAllows(free, config.memberMb, config.reserveMb, starting)) break;
+      // Project capacity: a project at its declared limit keeps its task queued; other projects' tasks may still start.
+      if (!t.scratch && !t.reviewOf && projectCapacityProblem(t.project, tasks, env, startedIn(t.project))) continue;
+      // Lane capacity, once lane-capacity declares admit-spawns, replaces the memory check.
+      const lanes = laneAdmission(tasks, env, started.length, () => (vitals ??= readVitals(env)));
+      if (lanes.gating) {
+        if (!lanes.admit) break;
+      } else {
+        free ??= freeMemMb(env);
+        if ((running.length > 0 || started.length > 0) && !ramAllows(free, config.memberMb, config.reserveMb, starting)) break;
+      }
       if (startMember(t, config, env)) {
+        startedProjects.push(t.project);
         started.push(t.id);
         busy.add(requireTask(t.id, env).cwd);
         starting++;
@@ -346,6 +453,8 @@ export function startMember(t: Task, config: Config, env: NodeJS.ProcessEnv, run
       const made = leaseWorktree(t.repo, t.id, t.branch, env, from);
       t = mutateTask(t.id, () => ({ worktree: made.worktree, cwd: made.worktree, baseSha: made.baseSha, gitDir: made.gitDir }), env);
     }
+    // The crew member starts now: its backlog item moves In flight first, or it does not start.
+    if (t.backlogItem && findItem(t.id, env)?.state !== 'in_flight') startItem(t.id, env);
     const claude = isClaude(memberTemplate(t, config));
     const backend = terminalBackend(env, runner ? { runner } : {});
     const resume = claude && t.sessionStarted === true;
@@ -470,7 +579,7 @@ async function runClaudeMember(t: Task, env: NodeJS.ProcessEnv): Promise<number>
   process.on('SIGINT', () => {});
   // stderr is piped (and still shown in the tab) so a launch that dies at once, like a failed --resume, leaves its error
   // in output.log; the session's screen is stdout, which stays the tab's own.
-  const child = spawnAgent(launch, { cwd: t.cwd, stdio: ['inherit', 'inherit', 'pipe'], env: { ...ownSessionEnv(env), AMIGO_TASK: t.id, AMIGO_HOME: home(env) } });
+  const child = spawnAgent(launch, { cwd: t.cwd, stdio: ['inherit', 'inherit', 'pipe'], env: { ...ownSessionEnv(env), ...surveyGitEnv(t, env), AMIGO_TASK: t.id, AMIGO_HOME: home(env) } });
   let stderr = '';
   child.stderr?.on('data', (chunk: Buffer) => {
     process.stderr.write(chunk);
@@ -508,7 +617,7 @@ async function runOnce(t: Task, template: string[], env: NodeJS.ProcessEnv): Pro
   const statusBefore = readStatus(t.id, env).length;
   appendFileSync(log, `\n=== amigo: run ${t.runs}, ${new Date().toISOString()} ===\n`);
   // AMIGO_TASK marks the squad member's environment: amigo refuses to manage tasks from inside a squad member.
-  const child = spawnAgent(launch, { cwd: t.cwd, stdio: ['ignore', 'pipe', 'pipe'], env: { ...env, AMIGO_TASK: t.id }, windowsHide: true });
+  const child = spawnAgent(launch, { cwd: t.cwd, stdio: ['ignore', 'pipe', 'pipe'], env: { ...env, ...surveyGitEnv(t, env), AMIGO_TASK: t.id }, windowsHide: true });
   if (!recordPid(t.id, child.pid, env)) return 0;
   const tee = (out: NodeJS.WritableStream) => (chunk: Buffer) => {
     appendFileSync(log, chunk);

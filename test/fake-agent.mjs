@@ -34,6 +34,24 @@ if (has('MODE:manage')) {
   console.log(`STATUS: done - manage exit ${r.status}: ${r.stderr.trim()} | inbox exit ${inbox.status}`);
   process.exit(0);
 }
+if (has('MODE:survey')) {
+  // A survey: scratch edits and a commit, a push attempt (it must be refused), the report, then the completion command.
+  const report = /Write your findings to `([^`]+)`/.exec(prompt)?.[1];
+  writeFileSync(join(process.cwd(), 'scratch.txt'), 'lab\n');
+  const commit = spawnSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '-am', 'scratch', '--allow-empty'], { encoding: 'utf8' });
+  const push = spawnSync('git', ['push', 'origin', 'HEAD:refs/heads/survey-leak'], { encoding: 'utf8' });
+  mkdirSync(dirname(report), { recursive: true });
+  const open = has('MODE:surveycall');
+  writeFileSync(report, `# Findings\n\npush exit ${push.status}: ${push.stderr.trim()}\ncommit exit ${commit.status}\n${open ? '\n## Open decisions for the Boss\n\n- a or b?\n' : ''}`);
+  let completed = 'not run';
+  if (!open) {
+    const cmd = /run exactly `"([^"]+)" "([^"]+)" (complete [^`]+)`/.exec(prompt);
+    const r = spawnSync(cmd[1], [cmd[2], ...cmd[3].split(' ')], { encoding: 'utf8' });
+    completed = `exit ${r.status} ${r.stdout.trim()} ${r.stderr.trim()}`;
+  }
+  console.log(`STATUS: done - report written; complete: ${completed}`);
+  process.exit(0);
+}
 if (has('MODE:switch')) execFileSync('git', ['checkout', '-q', '-b', 'elsewhere']);
 const followUps = has('## Follow-ups from amigo');
 if (has('MODE:question') && !followUps) {
