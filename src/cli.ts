@@ -163,7 +163,7 @@ export async function main(argv: string[], rawEnv: NodeJS.ProcessEnv = process.e
     return 0;
   }
   if (env.AMIGO_TASK && (bare || MANAGING.has(cmd))) {
-    throw new Error(`You are running inside squad member ${env.AMIGO_TASK}: only amigo can ${bare ? 'start a session' : cmd}. Report back with a STATUS line instead.`);
+    throw new Error(`You are running inside crew member ${env.AMIGO_TASK}: only amigo can ${bare ? 'start a session' : cmd}. Report back with amigo report instead.`);
   }
   if (MANAGING.has(cmd) && !readOnlyOk(cmd, rest[0])) {
     // One controlling session per home: another Claude session that does not hold the session lock is read-only.

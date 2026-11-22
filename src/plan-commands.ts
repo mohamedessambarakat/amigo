@@ -5,19 +5,27 @@ import { decodeOutput, runAxi } from './backlog.ts';
 import { capacityReport } from './capacity.ts';
 import { dispatchText } from './dispatch.ts';
 import { answerBoss, completeSurvey, holdForBoss } from './holds.ts';
+import { controlRefusal } from './session.ts';
 import { listTasks, resolveId } from './tasks.ts';
 
 /** The planning commands: the backlog, Boss holds, a survey's completion gate, dispatch profiles and capacity. */
 export async function planCommand(cmd: string, rest: string[], env: NodeJS.ProcessEnv, out: (s: string) => void): Promise<number> {
   const member = env.AMIGO_TASK;
-  const managing = (what: string) => {
-    if (member) throw new Error(`You are running inside crew member ${member}: only amigo can ${what}. Report back with a STATUS line instead.`);
+  // Changing the plan is amigo's, and only the controlling session's: another Claude session that does not hold the session lock
+  // is read-only (session.ts). Reading the backlog stays open to it.
+  const controlling = () => {
+    const refusal = controlRefusal(env);
+    if (refusal) throw new Error(refusal);
+  };
+  const managing = (what: string, readOnly = false) => {
+    if (member) throw new Error(`You are running inside crew member ${member}: only amigo can ${what}. Report back with amigo report instead.`);
+    if (!readOnly) controlling();
   };
   const parse = (options: ParseArgsOptionsConfig) => parseArgs({ args: rest, options, allowPositionals: true, strict: true });
 
   switch (cmd) {
     case 'backlog': {
-      managing('change or read the backlog');
+      managing('change or read the backlog', ['list', 'show', 'view', 'ready'].includes(rest[0] ?? 'list'));
       // Everything is passed to tasks-axi as given, on this home's backlog. A --file would silently fork it, and add --start would
       // put an item In flight with no crew member behind it: spawn starts items.
       if (rest.some((a) => a === '--file' || a.startsWith('--file='))) throw new Error('amigo backlog always works on this home\'s data/backlog.md: drop --file');
@@ -64,6 +72,7 @@ export async function planCommand(cmd: string, rest: string[], env: NodeJS.Proce
       const origin = member ? ref : resolveId(ref, env);
       // A survey may attest only its own empty inventory; a non-empty one is amigo's to record.
       if (member && (origin !== member || !values.none || holds.length)) throw new Error(`You are running inside crew member ${member}: you may only run "complete ${member} --none". List the open Boss calls in your report instead.`);
+      if (!member) controlling();
       for (const line of completeSurvey(origin, holds, Boolean(values.none), env)) out(line);
       return 0;
     }

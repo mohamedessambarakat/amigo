@@ -2,10 +2,12 @@ import { randomBytes } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { pidAlive, readJson, withLock, writeJsonAtomic } from './fsx.ts';
-import { home, lockPath, stateDir, taskDir } from './paths.ts';
+import { home, lockPath, stateDir } from './paths.ts';
 import { run } from './proc.ts';
 import { processStarted } from './session.ts';
 import { drain, refresh } from './squad.ts';
+import { prWatch } from './merge.ts';
+import { declaredWait as statusWait, readStatus, statusFile } from './status.ts';
 import { FINISHED, listTasks, logFile, runnerAlive, type Task } from './tasks.ts';
 import { terminalBackend, type EndpointState } from './terminal.ts';
 import { appendWake, findDelivery, markAnnounced, readQueue, recordDelivery, takeRecovery, type WakeKind } from './wakes.ts';
@@ -50,6 +52,8 @@ export interface WatchTunables {
   heartbeatMax: number;
   checkInterval: number;
   checkTimeout: number;
+  /** Seconds between live reads of a build's open PR (CI and merge state). */
+  prPoll: number;
   /** Seconds to linger after a signal, so crew members finishing together make one wake. */
   signalGrace: number;
   /** The longest one watcher cycle runs before it closes with a heartbeat (below the Stop hook's 8 h limit). */
@@ -69,6 +73,7 @@ export function tunables(env: NodeJS.ProcessEnv): WatchTunables {
     heartbeatMax: num(env.AMIGO_HEARTBEAT_MAX_SECS, 7200),
     checkInterval: num(env.AMIGO_CHECK_INTERVAL_SECS, 300),
     checkTimeout: num(env.AMIGO_CHECK_TIMEOUT_SECS, 30, 1),
+    prPoll: num(env.AMIGO_PR_POLL_SECS, 120),
     signalGrace: num(env.AMIGO_SIGNAL_GRACE_SECS, 5),
     maxCycle: num(env.AMIGO_WATCH_MAX_SECS, 6 * 3600, 1),
   };
@@ -83,8 +88,6 @@ export const watchLockPath = (env: NodeJS.ProcessEnv): string => join(stateDir(e
 export const beaconPath = (env: NodeJS.ProcessEnv): string => join(stateDir(env), 'watcher-beat');
 const memoryPath = (env: NodeJS.ProcessEnv): string => join(stateDir(env), 'watch-memory.json');
 export const checksDir = (env: NodeJS.ProcessEnv): string => join(stateDir(env), 'checks');
-/** Where a crew member's status protocol records its declared waits (`paused: <what> [until <UTC ISO time>]`). */
-export const statusLogFile = (id: string, env: NodeJS.ProcessEnv): string => join(taskDir(id, env), 'status.log');
 
 interface WatchLock {
   pid: number;
@@ -102,11 +105,13 @@ interface Memory {
   stale: Record<string, { progress: number; count: number; at: number }>;
   heartbeat: { at: number; interval: number; unread: string };
   checks: Record<string, number>;
+  /** task id -> the PR state last surfaced, and when the PR was last read. */
+  prs: Record<string, { sig: string; at: number }>;
 }
 
 const loadMemory = (env: NodeJS.ProcessEnv): Memory => {
   const m = readJson<Partial<Memory>>(memoryPath(env), {});
-  return { surfaced: m.surfaced ?? {}, stale: m.stale ?? {}, heartbeat: m.heartbeat ?? { at: 0, interval: 0, unread: '' }, checks: m.checks ?? {} };
+  return { surfaced: m.surfaced ?? {}, stale: m.stale ?? {}, heartbeat: m.heartbeat ?? { at: 0, interval: 0, unread: '' }, checks: m.checks ?? {}, prs: m.prs ?? {} };
 };
 
 // ---------- registered checks ----------
@@ -179,7 +184,7 @@ const mtime = (file: string | null | undefined): number => {
 
 /** The latest sign that a crew member is making progress: its record changed, its transcript or output log grew. */
 export function lastProgress(t: Task, env: NodeJS.ProcessEnv): number {
-  return Math.max(Date.parse(t.updatedAt) || 0, Date.parse(t.startedAt ?? '') || 0, mtime(t.transcriptPath), mtime(logFile(t.id, env)), mtime(statusLogFile(t.id, env)));
+  return Math.max(Date.parse(t.updatedAt) || 0, Date.parse(t.startedAt ?? '') || 0, mtime(t.transcriptPath), mtime(logFile(t.id, env)), mtime(statusFile(t.id, env)));
 }
 
 export interface DeclaredWait {
@@ -188,24 +193,15 @@ export interface DeclaredWait {
   at: number;
 }
 
-const PAUSE_RE = /^paused:\s*(.*?)(?:\s+until\s+(\d{4}-\d{2}-\d{2}T[0-9:.]+Z))?\s*$/i;
-
 /**
- * The crew member's declared wait, if its newest status line is one: `paused: <what it waits on> [until <UTC ISO time>]`.
- * A later non-paused line ends it.
+ * The crew member's declared wait, if its latest status word (status.ts) is `paused: <what it waits on> [until <UTC time>]`.
+ * A later working, done or other state line ends it.
  */
 export function declaredWait(id: string, env: NodeJS.ProcessEnv): DeclaredWait | null {
-  let text: string;
-  try {
-    text = readFileSync(statusLogFile(id, env), 'utf8');
-  } catch {
-    return null;
-  }
-  const last = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean).pop();
-  const m = last ? PAUSE_RE.exec(last) : null;
-  if (!m) return null;
-  const until = m[2] ? Date.parse(m[2]) : NaN;
-  return { what: m[1] || 'an external wait', until: Number.isFinite(until) ? until : null, at: mtime(statusLogFile(id, env)) };
+  const w = statusWait(readStatus(id, env));
+  if (!w) return null;
+  const what = w.text.replace(/\s*\buntil\s+\S+\s*$/i, '').trim() || 'an external wait';
+  return { what, until: w.until, at: w.since !== null ? w.since * 1000 : mtime(statusFile(id, env)) };
 }
 
 /** A failed status that means the crew member stopped responding: its tab or session went away in the middle of a turn. */
@@ -336,6 +332,27 @@ export function scan(env: NodeJS.ProcessEnv, now = Date.now()): Wake[] {
     if (reason) wakes.push({ kind: 'check', key: `check:${c.name}`, reason });
   }
   for (const name of Object.keys(mem.checks)) if (!listChecks(env).some((c) => c.name === name)) delete mem.checks[name];
+
+  // PRs: a build's recorded, unmerged PR is read live on its own cadence (merge.ts prWatch). A change to merged (recorded and
+  // cleaned up there), closed, CI red, or green and mergeable wakes amigo once per state and head; CI still running is absorbed.
+  for (const t of tasks) {
+    if (!t.pr || t.merge || t.status === 'closed' || t.status === 'closing') {
+      delete mem.prs[t.id];
+      continue;
+    }
+    const seen = mem.prs[t.id];
+    if (seen && (now - seen.at) / 1000 < tun.prPoll) continue;
+    let read: { sig: string; line: string };
+    try {
+      read = prWatch(t.id, env);
+    } catch (err) {
+      // An unreadable PR (network, gh auth) is reported once per distinct error, then absorbed until it changes.
+      read = { sig: `error:${(err as Error).message}`, line: `could not read ${t.pr}: ${(err as Error).message}` };
+    }
+    mem.prs[t.id] = { sig: read.sig, at: now };
+    if (read.sig !== seen?.sig && !read.sig.startsWith('pending')) wakes.push({ kind: 'check', key: `pr:${t.id}`, reason: `check: ${t.id} PR ${read.line}` });
+  }
+  for (const id of Object.keys(mem.prs)) if (!tasks.some((t) => t.id === id)) delete mem.prs[id];
 
   // Heartbeat: a backstop for results that were surfaced but stay unread, backing off while nothing changes.
   const unread = tasks.filter((t) => FINISHED.includes(t.status) && !t.seen).map((t) => t.id).sort().join(',');

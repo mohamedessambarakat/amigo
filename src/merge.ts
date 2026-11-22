@@ -145,19 +145,42 @@ export async function prCheck(id: string, opts: { url?: string; watchMs?: number
   for (;;) {
     const view = viewPr(url, cwd, env);
     const line = describePr(view);
-    if (view.state.toUpperCase() === 'MERGED') {
-      const out = [`${url}: merged`];
-      if (!t.merge) {
-        record(id, { url, head: view.headRefOid, at: new Date().toISOString(), authority: 'forge', how: 'merged on GitHub', ...(view.mergeCommit?.oid ? { commit: view.mergeCommit.oid } : {}) }, env);
-        mutateTask(id, () => ({ prHead: view.headRefOid }), env);
-      }
-      return [...out, ...afterMerge(id, env)];
-    }
+    if (view.state.toUpperCase() === 'MERGED') return [`${url}: merged`, ...forgeMerged(id, url, view, env)];
     if (view.state.toUpperCase() === 'CLOSED') return [`${url}: closed without merging. The work is not landed; the worktree stays until the Boss decides.`];
     if (/CI red/.test(line) || Date.now() >= end) return [`${url}: ${line}`];
     if (line !== last && opts.watchMs) last = line;
     await new Promise((r) => setTimeout(r, opts.pollMs ?? (Number(env.AMIGO_PR_POLL_MS) || 30_000)));
   }
+}
+
+/** A PR found merged on GitHub (by the Boss or anyone): record it, if not yet, then run the after-merge steps. */
+function forgeMerged(id: string, url: string, view: PrView, env: NodeJS.ProcessEnv): string[] {
+  if (!requireTask(id, env).merge) {
+    record(id, { url, head: view.headRefOid, at: new Date().toISOString(), authority: 'forge', how: 'merged on GitHub', ...(view.mergeCommit?.oid ? { commit: view.mergeCommit.oid } : {}) }, env);
+    mutateTask(id, () => ({ prHead: view.headRefOid }), env);
+  }
+  return afterMerge(id, env);
+}
+
+/**
+ * One live read of a build's recorded PR, for the watcher: a signature of its state (`merged`, `closed`, `red:<head>`,
+ * `green:<head>:<mergeable>`, or `pending:<head>` while CI runs) and a line to show. A PR merged on GitHub is recorded and
+ * cleaned up here, as pr-check does. Throws when the PR cannot be read.
+ */
+export function prWatch(id: string, env: NodeJS.ProcessEnv = process.env): { sig: string; line: string } {
+  const t = requireTask(id, env);
+  if (!t.pr) throw new Error(`${id} has no recorded PR`);
+  const view = viewPr(t.pr, t.repo ?? process.cwd(), env);
+  const state = view.state.toUpperCase();
+  if (state === 'MERGED') return { sig: 'merged', line: `${t.pr}: merged on GitHub. ${forgeMerged(id, t.pr, view, env).join(' ')}` };
+  if (state === 'CLOSED') return { sig: 'closed', line: `${t.pr}: closed without merging. The work is not landed; the worktree stays until the Boss decides.` };
+  const line = describePr(view);
+  const head = view.headRefOid;
+  if (/CI red/.test(line)) return { sig: `red:${head}`, line: `${t.pr}: ${line}` };
+  if (/CI running/.test(line) || view.isDraft) return { sig: `pending:${head}`, line: `${t.pr}: ${line}` };
+  const project = loadProjects(env).find((p) => p.name === t.project);
+  const next = project?.yolo ? `ready: amigo merge ${id}` : `ready for the Boss's "merge it" (amigo merge ${id} --boss)`;
+  return { sig: `green:${head}:${view.mergeable}`, line: `${t.pr}: ${line}${view.mergeable === 'MERGEABLE' ? ` - ${next}` : ''}` };
 }
 
 /** `amigo land <id>`: finish the after-merge steps of a merged build (after its crew member stopped, or a refusal was fixed). */

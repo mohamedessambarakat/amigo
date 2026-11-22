@@ -7,6 +7,7 @@ import { checksNotGreen, verifyMergeable, type PrView } from '../src/pr.ts';
 import { declaredWait, describeStatus, formatStatusLine, openItems, parseStatusLine, readStatus, statusFile } from '../src/status.ts';
 import { inboxBody, pendingMessages } from '../src/steer.ts';
 import { getTask } from '../src/tasks.ts';
+import { scan } from '../src/watch.ts';
 import { addOrigin, cleanup, cli, cloneOf, fakeGhEnv, ghCalls, git, idFrom, makeHome, makeRepo, releaseHeld, waitFor } from './helpers.ts';
 
 const BRIEF = "Title: Write the file\n## Boss's intent\nwrite the member output file\n## amigo spec\nKeep it to one file.\n";
@@ -242,6 +243,43 @@ describe('direct-PR delivery, merge and cleanup', () => {
       assert.equal(getTask(id, env)?.merge?.authority, 'forge');
       assert.equal(getTask(id, env)?.status, 'closed');
     } finally {
+      cleanup(dir);
+    }
+  });
+
+  it('the watcher reads a recorded PR: running CI is absorbed, red and green wake once each, a merge on GitHub is landed', async () => {
+    const { dir, env: base } = makeHome();
+    const gh = fakeGhEnv(dir);
+    const prFile = join(dir, 'pr.json');
+    try {
+      const repo = makeRepo(join(dir, 'repo'));
+      const bare = addOrigin(dir, repo);
+      const env = { ...base, ...gh.env, FAKE_GH_PR: prFile, AMIGO_PR_POLL_SECS: '0', AMIGO_SIGNAL_GRACE_SECS: '0' };
+      cli(env, ['add', bare, '--name', 'repo', '--mode', 'direct-PR']);
+      const id = idFrom(cli(env, ['spawn', '--project', 'repo'], BRIEF).out);
+      assert.equal((await waitFor(id, env, ['done', 'blocked', 'failed'])).status, 'done');
+      const head = git(cloneOf(env, 'repo'), 'rev-parse', `amigo/${id}`).trim();
+      // scan runs in this process, so the fake gh it starts inherits this process's environment.
+      process.env.FAKE_GH_PR = prFile;
+      const prWakes = () => scan(env).filter((w) => w.key === `pr:${id}`).map((w) => w.reason);
+      const run = { __typename: 'CheckRun', name: 'test', startedAt: '2026-11-22T10:00:00Z' };
+      writeFileSync(prFile, JSON.stringify(prState(head, { statusCheckRollup: [{ ...run, status: 'IN_PROGRESS' }] })));
+      assert.deepEqual(prWakes(), [], 'CI still running wakes nobody');
+      writeFileSync(prFile, JSON.stringify(prState(head, { statusCheckRollup: [{ ...run, status: 'COMPLETED', conclusion: 'FAILURE' }] })));
+      assert.match(prWakes()[0] ?? '', new RegExp(`^check: ${id} PR https://github.com/example/repo/pull/7: open, CI red \\(test\\)`));
+      assert.deepEqual(prWakes(), [], 'the same red state wakes once');
+      writeFileSync(prFile, JSON.stringify(prState(head)));
+      assert.match(prWakes()[0] ?? '', /CI green, mergeable MERGEABLE, .* - ready for the Boss's "merge it"/);
+      assert.deepEqual(prWakes(), []);
+      // Merged on GitHub: the watcher records it, runs the after-merge steps and the task is closed once landed.
+      git(cloneOf(env, 'repo'), 'push', '-q', 'origin', `amigo/${id}:main`);
+      writeFileSync(prFile, JSON.stringify(prState(head, { state: 'MERGED' })));
+      assert.match(prWakes()[0] ?? '', new RegExp(`merged on GitHub\\. .*Closed ${id}\\.`));
+      assert.equal(getTask(id, env)?.merge?.authority, 'forge');
+      assert.equal(getTask(id, env)?.status, 'closed');
+      assert.deepEqual(prWakes(), [], 'a closed task is no longer read');
+    } finally {
+      delete process.env.FAKE_GH_PR;
       cleanup(dir);
     }
   });

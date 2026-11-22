@@ -8,6 +8,7 @@ import { ghPath, runGh } from './github.ts';
 import { BEAT_MS, beginNotice, finishNotice, touchNotice } from './notices.ts';
 import { tangleBranch } from './projects.ts';
 import { bossPath, cliPath, home, learningsPath, stateDir } from './paths.ts';
+import { backlogActive, replayPendingCloses } from './backlog.ts';
 import { acquireSessionLock, describeHolder, identity, type Acquired, type Identity } from './session.ts';
 import { syncProjects } from './sync.ts';
 import { FINISHED, listTasks, type Task } from './tasks.ts';
@@ -24,6 +25,7 @@ import { treehousePath } from './worktree.ts';
  *   3. WAKE QUEUE   locked only: drain and present the durable queue, with its acknowledgement command
  *   4. SUPERVISION  how this session is supervised (the Stop hook owns the watcher)
  *   5. FLEET STATE  every open task with its current state and the recovery it needs
+ *      BACKLOG      locked, with a backlog only: replay backlog closes that failed earlier (backlog.ts)
  *   6. NETWORK      locked only: GitHub auth and the clone refresh run in a background worker; the digest never waits on them
  *   7. CONTEXT      the project registry, boss.md and learnings.md, with ABSENT markers for missing files
  */
@@ -220,6 +222,15 @@ export function sessionDigest(env: NodeJS.ProcessEnv, opts: { payloadSession?: s
   const need = supervisionNeed(env);
   sections.push(`${SUPERVISION}\nNow: ${need.length ? `supervision needed (${need.join(', ')}); watcher ${watcherHealthy(env) ? 'running' : 'arms at the end of this turn'}` : 'nothing needs supervision'}.${listChecks(env).length ? ` Checks: ${listChecks(env).map((c) => c.name).join(', ')}.` : ''}`);
   sections.push(fleetState(env));
+  if (locked && backlogActive(env)) {
+    // A close whose backlog half failed is replayed here too, not only at the next spawn or close.
+    try {
+      const replayed = replayPendingCloses(env);
+      sections.push(replayed.length ? `BACKLOG: replayed pending close(s):\n${replayed.map((l) => `- ${l}`).join('\n')}` : 'BACKLOG: no pending closes. amigo backlog ready lists what can start.');
+    } catch (err) {
+      sections.push(`BACKLOG: FAILED to replay pending closes: ${(err as Error).message}`);
+    }
+  }
   if (locked) {
     try {
       startNetworkChecks(env);

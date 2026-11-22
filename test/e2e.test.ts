@@ -149,7 +149,7 @@ describe('end to end with a fake agent', () => {
       cli(env, ['add', makeRepo(join(dir, 'p'))]);
       const id = idFrom(cli({ ...env, CLI_PATH: cliPath }, ['spawn', '--project', 'p'], 'Title: sneaky\nMODE:manage').out);
       const summary = (await waitFor(id, env, ['done'])).summary ?? '';
-      assert.match(summary, /manage exit 1: amigo: You are running inside squad member/);
+      assert.match(summary, /manage exit 1: amigo: You are running inside crew member/);
       assert.match(summary, /inbox exit 1/);
       const brief = cli(env, ['brief', '--agent', 'fake']);
       assert.equal(brief.code, 0, brief.err);

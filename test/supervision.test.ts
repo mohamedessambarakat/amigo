@@ -9,7 +9,8 @@ import { amigoHooks, autoArm, turnEndGuard } from '../src/supervise.ts';
 import { beat, claimTaskDir, mutateTask, saveTask, type Task } from '../src/tasks.ts';
 import { terminalBackend } from '../src/terminal.ts';
 import { ackWakes, appendWake, drainWakes, queuePath, readQueue, takeRecovery } from '../src/wakes.ts';
-import { declaredWait, registerCheck, scan, statusLogFile, supervisionNeed, watchCycle, watcherHealthy } from '../src/watch.ts';
+import { declaredWait, registerCheck, scan, supervisionNeed, watchCycle, watcherHealthy } from '../src/watch.ts';
+import { appendStatus, formatStatusLine } from '../src/status.ts';
 import { cleanup, cli, idFrom, makeHome, waitFor } from './helpers.ts';
 
 /** Fast watcher settings for tests: no signal linger, short polls. */
@@ -92,6 +93,9 @@ describe('session lock', () => {
       assert.equal(refused.code, 1);
       assert.match(refused.err, /read-only/);
       assert.equal(cli(asSession(env, other.pid!, 's2'), ['wake', 'status']).code, 0, 'looking is allowed');
+      // The plan commands follow the same lock: a hold or an answer changes the plan, so a read-only session is refused.
+      assert.match(cli(asSession(env, other.pid!, 's2'), ['hold', 'x', '--reason', 'y', '--title', 'x']).err, /read-only/);
+      assert.match(cli(asSession(env, other.pid!, 's2'), ['answer', 'x', 'yes']).err, /read-only/);
       // The other session takes over once the owner is gone.
       const dead = identity(asSession(env, 999_999_99, 's0'));
       rmSync(join(env.AMIGO_HOME!, 'state', 'session.lock'));
@@ -134,7 +138,8 @@ describe('watcher classification', () => {
       fakeTask(env, '2-waits');
       beat('1-quiet', env);
       beat('2-waits', env);
-      writeFileSync(statusLogFile('2-waits', env), `working: started\npaused: CI on PR 7 until ${new Date(Date.now() + 3_600_000).toISOString()}\n`);
+      appendStatus('2-waits', formatStatusLine('working', 'started'), env);
+      appendStatus('2-waits', formatStatusLine('paused', `CI on PR 7 until ${new Date(Date.now() + 3_600_000).toISOString()}`), env);
       assert.equal(declaredWait('2-waits', env)?.what, 'CI on PR 7');
       const later = Date.now() + 120_000;
       const wakes = scan(env, later);

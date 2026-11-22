@@ -28,7 +28,7 @@ export function surveyContract(t: Pick<Task, 'id' | 'worktree' | 'report'>): str
   return [
     '## This is a survey',
     '',
-    `The deliverable is a written report, not a PR or a commit. ${lab} The report is the only thing that survives, so anything worth keeping must be in it. This replaces the commit rules above: leave nothing for amigo to commit.`,
+    `The deliverable is a written report, not a PR or a commit. ${lab} The report is the only thing that survives, so anything worth keeping must be in it. Nothing in the worktree is delivered: commit nothing for delivery and push nothing.`,
     '',
     '1. Never push to any remote and never open a PR. Pushes from this session are blocked.',
     `2. Stay inside your working directory; outside it, write only the report below, and run only the one command under Definition of done.`,

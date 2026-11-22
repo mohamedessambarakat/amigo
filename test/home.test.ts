@@ -64,7 +64,7 @@ describe('home layout', () => {
     try {
       const refused = cli({ ...env, OCTOMAXXING_TASK: '1-old' }, ['spawn', '--scratch'], 'x');
       assert.equal(refused.code, 1);
-      assert.match(refused.err, /You are running inside squad member 1-old/);
+      assert.match(refused.err, /You are running inside crew member 1-old/);
     } finally {
       cleanup(dir);
     }

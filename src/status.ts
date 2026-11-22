@@ -125,9 +125,9 @@ export function openItems(events: StatusEvent[]): StatusEvent[] {
   return open;
 }
 
-/** `until <YYYY-MM-DDTHH:MM[:SS]Z>` in a paused line, as epoch milliseconds; null when absent or malformed. */
+/** `until <YYYY-MM-DDTHH:MM[:SS[.fff]]Z>` in a paused line, as epoch milliseconds; null when absent or malformed. */
 export function untilOf(text: string): number | null {
-  const m = /\buntil\s+(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?Z)/.exec(text);
+  const m = /\buntil\s+(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?Z)/.exec(text);
   if (!m) return null;
   const ms = Date.parse(m[1] as string);
   return Number.isNaN(ms) ? null : ms;

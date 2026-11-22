@@ -6,6 +6,7 @@ import { scratchDir } from './paths.ts';
 import { killTree } from './proc.ts';
 import { drain } from './squad.ts';
 import { listTasks, mutateTask, requireTask, runnerAlive, type Task } from './tasks.ts';
+import { listChecks, removeCheck } from './watch.ts';
 import { returnWorktree } from './worktree.ts';
 import { closeItem, findItem, replayPendingCloses, reportLink } from './backlog.ts';
 import { discardSurveyBranch, reportWritten, surveyCloseProblem } from './survey.ts';
@@ -92,6 +93,8 @@ export function closeMember(id: string, opts: CloseOptions = {}, env: NodeJS.Pro
     }
     const closed = mutateTask(id, () => ({ status: 'closed', pid: null, ...(committed ? { committed } : {}) }), env);
     out.push(`Closed ${id}.`);
+    // The watcher's checks registered for this task end with it.
+    for (const c of listChecks(env)) if (c.task === id && removeCheck(c.name, env)) out.push(`Removed check ${c.name}.`);
     if (closed.backlogItem) {
       const deliverable =
         closed.kind === 'survey'
