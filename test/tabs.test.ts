@@ -468,6 +468,37 @@ describe('herdr-app backend', () => {
     }
   });
 
+  it('relaunches a Claude session killed before its transcript was written as a new session from the brief, and resumes one that has it', () => {
+    const { dir, env } = makeHome(0, ['claude', '{prompt}']);
+    try {
+      const home = env.AMIGO_HOME as string;
+      const now = new Date().toISOString();
+      const relaunch = (id: string, transcript: string) => {
+        mkdirSync(join(home, 'state', 'tasks', id), { recursive: true });
+        mkdirSync(join(home, 'data', id), { recursive: true });
+        writeFileSync(join(home, 'data', id, 'brief.md'), 'Title: g\nDo the thing.\n');
+        const t: Task = { id, title: 'g', project: 'p', agent: 'fake', cwd: dir, repo: null, worktree: null, branch: null, baseSha: null, status: 'blocked', createdAt: now, updatedAt: now, runs: 1, followUps: ['start from the top'], followUpsSent: 0, seen: true, sessionId: 'S-old', sessionStarted: true, transcriptPath: transcript, summary: 'The crew member stopped without reporting: its tab closed or never opened (see amigo attach).' };
+        saveTask(t, env);
+        assert.equal(startMember(t, loadConfig(appEnv(env)), appEnv(env), fakeHerdrApp(['sp1']).runner), true);
+        const saved = JSON.parse(readFileSync(join(home, 'state', 'tasks', id, 'task.json'), 'utf8')) as Task;
+        return { saved, prompt: readFileSync(join(home, 'state', 'tasks', id, 'prompt.md'), 'utf8') };
+      };
+      const gone = relaunch('5-gone', join(dir, 'projects', 'x', 'S-old.jsonl'));
+      assert.notEqual(gone.saved.sessionId, 'S-old', 'a new session id: --resume of the old one would exit at once');
+      assert.deepEqual([gone.saved.status, gone.saved.sessionStarted, gone.saved.transcriptPath, gone.saved.runs], ['running', false, null, 2]);
+      assert.match(gone.prompt, /## Brief\n\nTitle: g\nDo the thing\.[\s\S]*## Follow-ups from amigo \(newest last\)\n\n1\. start from the top/);
+      assert.match(readFileSync(join(home, 'state', 'tasks', '5-gone', 'output.log'), 'utf8'), /session S-old left no transcript to resume, so run 2 starts a new session/);
+
+      const kept = join(dir, 'S-kept.jsonl');
+      writeFileSync(kept, '{}\n');
+      const resumed = relaunch('6-kept', kept);
+      assert.deepEqual([resumed.saved.sessionId, resumed.saved.sessionStarted, resumed.saved.transcriptPath], ['S-old', true, kept]);
+      assert.match(resumed.prompt, /^Follow-up from amigo:\n\nstart from the top\n/);
+    } finally {
+      cleanup(dir);
+    }
+  });
+
   it('a crew member started outside herdr-app fails with the refusal, and opens nothing', () => {
     const { dir, env } = makeHome();
     try {

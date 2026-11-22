@@ -107,8 +107,15 @@ function notesFor(t: Pick<Task, 'project' | 'scratch'>, env: NodeJS.ProcessEnv):
   return t.scratch ? undefined : loadProjects(env).find((p) => p.name === t.project)?.notes;
 }
 
-/** A Claude crew member's launch passes --resume <session id> rather than --session-id. */
-const resumesSession = (t: Task): boolean => t.runs > 1 && Boolean(t.sessionId);
+/** A Claude crew member's launch passes --resume <session id> rather than --session-id: its session was started before. */
+const resumesSession = (t: Task): boolean => t.sessionStarted === true && Boolean(t.sessionId);
+
+/**
+ * Whether a started Claude session can be resumed: Claude Code wrote its transcript. A session killed before its first turn was
+ * recorded has none, and `claude --resume` would exit at once, so it starts again from the brief.
+ */
+const hasTranscript = (t: Task, env: NodeJS.ProcessEnv): boolean =>
+  Boolean(t.sessionId) && existsSync(t.transcriptPath || guessTranscriptPath(t.cwd, t.sessionId as string, env));
 
 /** The command a crew member's tab runs for this task (what `--dry-run` shows). */
 function memberLaunch(t: Task, config: Config, prompt: string, env: NodeJS.ProcessEnv): Launch {
@@ -459,7 +466,11 @@ export function startMember(t: Task, config: Config, env: NodeJS.ProcessEnv, run
     if (t.backlogItem && findItem(t.id, env)?.state !== 'in_flight') startItem(t.id, env);
     const claude = isClaude(memberTemplate(t, config));
     const backend = terminalBackend(env, runner ? { runner } : {});
-    const resume = claude && t.sessionStarted === true;
+    const resume = claude && t.sessionStarted === true && hasTranscript(t, env);
+    // A started session with no transcript is started afresh: a new session id, the brief and every follow-up.
+    const fresh = claude && t.sessionStarted === true && !resume;
+    if (fresh) appendLog(t.id, `amigo: session ${t.sessionId} left no transcript to resume, so run ${t.runs + 1} starts a new session from the brief and every follow-up
+`, env);
     if (resume) {
       writeFileSync(promptFile(t.id, env), followUpPrompt(t));
     } else {
@@ -480,7 +491,8 @@ export function startMember(t: Task, config: Config, env: NodeJS.ProcessEnv, run
         seen: true,
         exitCode: null,
         startedAt: new Date().toISOString(),
-        sessionId: claude ? (cur.sessionId ?? randomUUID()) : null,
+        sessionId: claude ? (fresh || !cur.sessionId ? randomUUID() : cur.sessionId) : null,
+        ...(fresh ? { sessionStarted: false, transcriptPath: null } : {}),
         trustAdded: cur.trustAdded || trustAdded,
       }),
       env,
