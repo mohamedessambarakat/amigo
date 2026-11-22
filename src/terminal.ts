@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
 import { appendFileSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join, posix, win32 } from 'node:path';
+import { processStartMs } from './fsx.ts';
 import { home, stateDir } from './paths.ts';
 import { killTree, run, type RunResult } from './proc.ts';
 
@@ -451,11 +452,20 @@ function herdrAppBackend(env: NodeJS.ProcessEnv, runner: Runner, warn: (line: st
   };
 }
 
+/** True when the process now holding pid started after the record was written, so the pid was reused. Unknown counts as not reused. */
+function pidReused(pid: number, openedAt: number | undefined): boolean {
+  if (openedAt === undefined) return false;
+  const started = processStartMs(pid);
+  return started !== null && started > openedAt + 2000;
+}
+
 interface FakeRecord {
   task: string;
   home: string;
   pid: number | null;
   cwd: string;
+  /** When the process was spawned (epoch ms), so close never kills a process that later reused its pid. */
+  openedAt?: number;
 }
 
 /**
@@ -494,11 +504,12 @@ function testBackend(env: NodeJS.ProcessEnv): TerminalBackend {
     open(req) {
       const terminal = `tt${randomBytes(4).toString('hex')}`;
       const [cmd, ...args] = req.argv as [string, ...string[]];
+      const openedAt = Date.now();
       const child = spawn(cmd, args, { cwd: req.cwd, detached: true, stdio: 'ignore', windowsHide: true, env: req.env });
       child.on('error', () => {});
       child.unref();
       mkdirSync(dir, { recursive: true });
-      const rec: FakeRecord = { task: req.task, home: tag, pid: child.pid ?? null, cwd: req.cwd };
+      const rec: FakeRecord = { task: req.task, home: tag, pid: child.pid ?? null, cwd: req.cwd, openedAt };
       writeFileSync(recordFile(terminal), JSON.stringify(rec));
       return { backend: 'test', task: req.task, space: null, tab: null, terminal };
     },
@@ -518,7 +529,7 @@ function testBackend(env: NodeJS.ProcessEnv): TerminalBackend {
       if (l === 'absent') return;
       if (l === 'foreign') throw new Error(`Terminal ${ep.terminal} does not carry ${ep.task}'s labels: amigo does not close it`);
       const rec = load(ep.terminal);
-      if (rec?.pid && alive(rec.pid)) killTree(rec.pid);
+      if (rec?.pid && alive(rec.pid) && !pidReused(rec.pid, rec.openedAt)) killTree(rec.pid);
       rmSync(recordFile(ep.terminal), { force: true });
       rmSync(join(dir, `${ep.terminal}.input`), { force: true });
     },

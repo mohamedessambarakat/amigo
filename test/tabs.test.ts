@@ -10,6 +10,7 @@ import { INLINE_LIMIT, buildLaunch, pointerLine, quoteForCmd } from '../src/comm
 import { loadConfig } from '../src/config.ts';
 import { memberSettings, guessTranscriptPath, amigoSettings, claudeMemberNotes, claudeMemberTemplate, claudeAmigoTemplate, claudeJsonPath, dropTrust, isClaude, mergeTrust, ownSessionEnv, reportReason, sessionAddress, turnMessagedAmigo } from '../src/claude.ts';
 import { parseVmStat, ramAllows } from '../src/ram.ts';
+import { stateDir } from '../src/paths.ts';
 import { descendants, run as runCmd } from '../src/proc.ts';
 import { beat, saveTask, type Task } from '../src/tasks.ts';
 import { TESTED_VERSIONS, ancestry, backendVersionWarnings, herdrLabel, homeTag, installedVersions, insideAppTerminal, tabScript, tabShellLine, terminalBackend, versionWarnings, type Placement } from '../src/terminal.ts';
@@ -899,6 +900,33 @@ describe('memory gate and wait', () => {
       assert.match(waited.out, new RegExp(`${id}  done[\\s\\S]*wrote member-output\\.txt`));
       assert.equal((await waitFor(id, env, ['done'])).seen, true);
       assert.match(cli(env, ['inbox']).out, /Inbox empty/, 'wait marks results seen');
+    } finally {
+      cleanup(dir);
+    }
+  });
+});
+
+describe('test terminal backend', () => {
+  it('close leaves alone a process that reused a recorded pid', async () => {
+    const { dir, env } = makeHome();
+    try {
+      const backend = terminalBackend(env);
+      const argv = [process.execPath, '-e', 'setTimeout(() => {}, 60000)'];
+      const ep = backend.open({ task: '1-x', cwd: dir, argv, dir, env, placement: { label: '1-x', ownSpace: false, spaces: [] } });
+      const recFile = join(stateDir(env), 'test-terminals', `${ep.terminal}.json`);
+      const rec = JSON.parse(readFileSync(recFile, 'utf8')) as { pid: number; openedAt: number };
+      // Pretend the record is a minute older than the process: the live pid now belongs to a later process.
+      writeFileSync(recFile, JSON.stringify({ ...rec, openedAt: rec.openedAt - 60_000 }));
+      backend.close(ep);
+      assert.doesNotThrow(() => process.kill(rec.pid, 0), 'a reused pid must not be killed');
+      process.kill(rec.pid);
+      const own = backend.open({ task: '1-x', cwd: dir, argv, dir, env, placement: { label: '1-x', ownSpace: false, spaces: [] } });
+      const ownPid = (JSON.parse(readFileSync(join(stateDir(env), 'test-terminals', `${own.terminal}.json`), 'utf8')) as { pid: number }).pid;
+      backend.close(own);
+      const end = Date.now() + 10_000;
+      const gone = () => { try { process.kill(ownPid, 0); return false; } catch { return true; } };
+      while (!gone() && Date.now() < end) await new Promise((r) => setTimeout(r, 100));
+      assert.ok(gone(), "close must end the terminal's own process");
     } finally {
       cleanup(dir);
     }
