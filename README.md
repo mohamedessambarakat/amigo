@@ -121,6 +121,12 @@ amigo: your right hand. Runs the squad.
   amigo approve-policy                              approve the policy as it is now (needs a terminal and your typed yes)
   amigo confirm-gates <project>                     confirm a project's checks, risky paths, live commands and watch items as they are now, so --self and the briefing may rely on them (terminal + typed yes)
   amigo undo <id>                                   take back a self-approved commit: delete its branch (never a pushed one)
+  amigo digest [--again]                            the session-start digest: take the session lock, drain wakes, show the fleet (once per session)
+  amigo wake (drain | ack --through <seq> --generation <n> | status)
+                                                    the durable wake queue: show it, acknowledge what was handled, or count it
+  amigo watch                                       run one watcher cycle here and print the wake it closes on (the Stop hook does this itself)
+  amigo check (add <name> [--every <s>] [--cwd <dir>] -- <command>... | rm <name> | list)
+                                                    commands the watcher runs on an interval; anything they print wakes amigo
   amigo help                                        this text (-h or --help anywhere in a command prints it too)
   amigo --version                                   print the version
 

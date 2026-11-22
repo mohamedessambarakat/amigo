@@ -3,6 +3,7 @@ import os from 'node:os';
 import { basename, dirname, join, resolve, sep, win32 } from 'node:path';
 import { sleepSync, withLock, writeJsonAtomic } from './fsx.ts';
 import { cliPath, lockPath } from './paths.ts';
+import { amigoHooks } from './supervise.ts';
 
 /**
  * Claude Code squad members run as interactive sessions in their tab: named amigo-<id>, with hooks that record each turn's
@@ -83,9 +84,9 @@ export function claudeAmigoTemplate(template: string[], settingsFile: string, pr
   return [cmd, '--name', AMIGO_NAME, '--settings', settingsFile, '--append-system-prompt-file', promptFile, ...args];
 }
 
-/** Amigo's settings: accept messages from squad members. */
+/** Amigo's settings: accept messages from squad members, and the supervision hooks (supervise.ts). */
 export function amigoSettings(): Record<string, unknown> {
-  return { crossSessionInbound: 'accept' };
+  return { crossSessionInbound: 'accept', hooks: amigoHooks() };
 }
 
 /**

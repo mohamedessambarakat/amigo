@@ -1,3 +1,4 @@
+import { amigoHooks } from '../src/supervise.ts';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import os from 'node:os';
@@ -497,7 +498,7 @@ describe('Claude Code squad members', () => {
     const hooks = (memberSettings() as { hooks: Record<string, [{ hooks: [{ command: string }] }]> }).hooks;
     assert.match(hooks.Stop![0].hooks[0].command, /^node "[^"\\]+cli\.ts" _hook stop$/);
     assert.match(hooks.UserPromptSubmit![0].hooks[0].command, / _hook prompt$/);
-    assert.deepEqual(amigoSettings(), { crossSessionInbound: 'accept' }, 'amigo only accepts messages: no status line of its own');
+    assert.deepEqual(amigoSettings(), { crossSessionInbound: 'accept', hooks: amigoHooks() }, 'amigo accepts messages and runs the supervision hooks: no status line of its own');
   });
 
   it('keeps the short first prompt and --append-system-prompt-file for direct Claude binaries and Windows .cmd shims, without affecting other agents', () => {

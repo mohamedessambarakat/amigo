@@ -1,3 +1,4 @@
+import { amigoHooks } from '../src/supervise.ts';
 import assert from 'node:assert/strict';
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { delimiter, isAbsolute, join } from 'node:path';
@@ -160,7 +161,7 @@ describe('help and the bare command', () => {
       const claudeSeen = JSON.parse(readFileSync(claudeOut, 'utf8')) as { argv: string[]; promptText: string | null; settingsText: string | null };
       assert.deepEqual(claudeSeen.argv, ['--name', 'amigo', '--settings', settingsPath, '--append-system-prompt-file', promptPath, 'Brief me.']);
       assert.match(claudeSeen.promptText ?? '', /^# You are amigo[\s\S]*## Briefing/, 'amigo-prompt.md was written before launching Claude');
-      assert.deepEqual(JSON.parse(claudeSeen.settingsText ?? 'null'), { crossSessionInbound: 'accept' });
+      assert.deepEqual(JSON.parse(claudeSeen.settingsText ?? 'null'), { crossSessionInbound: 'accept', hooks: amigoHooks() });
     } finally {
       cleanup(dir);
     }
