@@ -10,6 +10,7 @@ import { movePath } from '../src/migrate.ts';
 import { codeRoot, home, scratchDir } from '../src/paths.ts';
 import { listTasks, getTask, beat, clearBeat } from '../src/tasks.ts';
 import { beginNotice, finishNotice, noticesPending, takeNotices, touchNotice } from '../src/notices.ts';
+import { amigoPrompt, inbox, waitForMembers } from '../src/squad.ts';
 import { moveTrust } from '../src/claude.ts';
 import { pointerLine, resolveExecutable } from '../src/command.ts';
 import { noticesPath } from '../src/paths.ts';
@@ -747,6 +748,32 @@ describe('background results (notices)', () => {
       cleanup(dir);
     }
   });
+
+  it('wait returns pending or unseen notices, and stops once inbox has consumed them', async () => {
+    const { dir, env } = makeHome();
+    try {
+      // Unseen finished notice: wait returns it immediately and marks it seen.
+      const id1 = beginNotice('briefing: live checks', env);
+      finishNotice(id1, 'FIRST-LIVE', env);
+      const immediate = await waitForMembers([], 5_000, env, 50);
+      assert.match(immediate, /briefing: live checks[\s\S]*FIRST-LIVE/);
+      assert.equal(inbox(env), 'Inbox empty.', 'wait marked the notice seen');
+
+      // Pending notice: wait polls until it finishes, then returns it.
+      const id2 = beginNotice('briefing: live checks', env);
+      const pending = waitForMembers([], 5_000, env, 50);
+      setTimeout(() => finishNotice(id2, 'SECOND-LIVE', env), 100);
+      assert.match(await pending, /briefing: live checks[\s\S]*SECOND-LIVE/);
+
+      // Already consumed by inbox: wait sees nothing pending and returns immediately.
+      const id3 = beginNotice('briefing: live checks', env);
+      finishNotice(id3, 'THIRD-LIVE', env);
+      assert.match(inbox(env), /THIRD-LIVE/);
+      assert.equal(await waitForMembers([], 5_000, env, 50), 'Nothing is running or queued, and nothing new has finished.');
+    } finally {
+      cleanup(dir);
+    }
+  });
 });
 
 describe('help anywhere and the version', () => {
@@ -768,7 +795,7 @@ describe('help anywhere and the version', () => {
 });
 
 describe('the briefing text in the instructions', () => {
-  it('mentions live checks, and amigo wait for them, only when some will run', () => {
+  it('mentions live checks only when some will run, and gates amigo wait on pending work', () => {
     const { dir, env: base } = makeHome();
     const gh = fakeGhEnv(dir);
     const env = { ...base, ...gh.env };
@@ -777,9 +804,20 @@ describe('the briefing text in the instructions', () => {
       cli(env, ['add', repo]);
       const none = cli(env, ['brief', '--agent', 'fake']);
       assert.doesNotMatch(none.out, /live checks/i, 'no origin on GitHub: no live checks, no mention');
+      assert.match(none.out, /after you handle a result while anything is still running or queued/);
       git(repo, 'remote', 'add', 'origin', 'https://github.com/example/repo.git');
       const some = cli(env, ['brief', '--agent', 'fake']);
-      assert.match(some.out, /Live checks are running in the background: run `amigo wait` in the background for their result, like any other/);
+      assert.match(
+        some.out,
+        /Live checks are running in the background: run `amigo wait` in the background only if their result has not already arrived in `amigo inbox` \(or squad members are still running or queued\), and mention it when it arrives\./,
+      );
+      assert.doesNotMatch(some.out, /run `amigo wait` in the background for their result, like any other/);
+
+      // Direct amigoPrompt check for opts.live true vs false.
+      const promptWithLive = amigoPrompt('fake', env, '1 project registered.', { live: true });
+      const promptWithoutLive = amigoPrompt('fake', env, '1 project registered.', { live: false });
+      assert.match(promptWithLive, /only if their result has not already arrived in `amigo inbox` \(or squad members are still running or queued\)/);
+      assert.doesNotMatch(promptWithoutLive, /live checks/i);
     } finally {
       cleanup(dir);
     }
