@@ -38,10 +38,23 @@ export interface Endpoint {
 export type Liveness = 'live' | 'finished' | 'absent' | 'foreign' | 'unreadable';
 /** busy: the agent in the terminal is working on a turn. idle: it settled. unknown: no agent status is reported. */
 export type Busy = 'busy' | 'idle' | 'unknown';
+/** How long an agent's status word must stand before amigo types into it: see EndpointState.input. */
+export const AGENT_SETTLE_MS = 3000;
+/**
+ * Whether typed input reaches the agent now. ready: its status word (working, idle, done or error) has stood for
+ * AGENT_SETTLE_MS. settling: it said that word only a moment ago; Claude Code says idle, or briefly working, while it still
+ * starts. dialog: it waits on a dialog (a permission or a question), which hc does not type into. no-status: the terminal
+ * reports no agent status: its shell or an agent still starting, where text typed in is lost or left unsent and hc send waits
+ * for the busy starting screen to go quiet, past amigo's timeout; or an agent herdr-app never recognises, which never says
+ * more. The caller tells these two apart by how long ago the crew member started. Measured on herdr-app 0.1.16 with hc 0.1.21.
+ */
+export type InputState = 'ready' | 'settling' | 'dialog' | 'no-status';
 
 export interface EndpointState {
   liveness: Liveness;
   busy: Busy;
+  /** Whether typed input reaches the agent now (meaningful while live). The test backend's live terminals are ready. */
+  input: InputState;
 }
 
 export interface ListedEndpoint {
@@ -123,7 +136,7 @@ const REFUSAL = 'amigo runs only inside the herdr desktop app (herdr-app). Open 
  * The backend for this process. AMIGO_TERMINAL=test is the fake; a carried herdr-app is trusted (a crew member's tab is a
  * herdr-app terminal); otherwise this process must run inside a herdr-app terminal, or amigo refuses with the reason.
  */
-export function terminalBackend(env: NodeJS.ProcessEnv, opts: { runner?: Runner; platform?: NodeJS.Platform; insideApp?: (id: string) => boolean; warn?: (line: string) => void } = {}): TerminalBackend {
+export function terminalBackend(env: NodeJS.ProcessEnv, opts: { runner?: Runner; platform?: NodeJS.Platform; insideApp?: (id: string) => boolean; warn?: (line: string) => void; now?: () => number } = {}): TerminalBackend {
   if (env.AMIGO_TERMINAL === 'test') return testBackend(env);
   const runner = opts.runner ?? quickRun;
   const warn = opts.warn ?? warnLine;
@@ -135,7 +148,7 @@ export function terminalBackend(env: NodeJS.ProcessEnv, opts: { runner?: Runner;
     if (env.TERM_PROGRAM && env.TERM_PROGRAM !== 'ghostty') throw new Error(`${REFUSAL}: this terminal is ${env.TERM_PROGRAM}, started from a herdr-app terminal but not one itself.`);
     if (!inside(env.HC_TERMINAL_ID)) throw new Error(`${REFUSAL}: this process does not run in herdr-app terminal ${env.HC_TERMINAL_ID}${why.length ? ` (${why.join('; ')})` : ''}.`);
   }
-  return herdrAppBackend(env, runner, warn);
+  return herdrAppBackend(env, runner, warn, opts.now ?? Date.now);
 }
 
 /**
@@ -337,7 +350,7 @@ const livenessOf = (state: unknown): Liveness => (state === 'live' ? 'live' : st
  * its task and home through `hc label`, and its shell is given the tab script's line with `hc send`. The app closes the tab when
  * that shell exits, and a space with its last tab. Reads and input go through `hc` against the recorded terminal address.
  */
-function herdrAppBackend(env: NodeJS.ProcessEnv, runner: Runner, warn: (line: string) => void): TerminalBackend {
+function herdrAppBackend(env: NodeJS.ProcessEnv, runner: Runner, warn: (line: string) => void, now: () => number): TerminalBackend {
   const tag = homeTag(env);
   const app = (args: string[]) => herdrCli(runner, 'herdr-app', ['do', ...args]);
   const read = (ep: Pick<Endpoint, 'terminal' | 'task'>): { liveness: Liveness; terminal: Json } => {
@@ -420,7 +433,10 @@ function herdrAppBackend(env: NodeJS.ProcessEnv, runner: Runner, warn: (line: st
       const s = read(ep);
       const status = obj(s.terminal.status).state;
       const busy: Busy = s.liveness !== 'live' ? 'unknown' : status === 'working' ? 'busy' : status === 'idle' || status === 'done' ? 'idle' : 'unknown';
-      return { liveness: s.liveness, busy };
+      // hc's status_ms is when the status word last changed; without it the word is taken as settled.
+      const since = typeof s.terminal.status_ms === 'number' ? s.terminal.status_ms : 0;
+      const input: InputState = s.liveness !== 'live' || typeof status !== 'string' || !status ? 'no-status' : status === 'blocked' ? 'dialog' : now() - since >= AGENT_SETTLE_MS ? 'ready' : 'settling';
+      return { liveness: s.liveness, busy, input };
     },
     close(ep) {
       const before = read(ep).liveness;
@@ -523,7 +539,10 @@ function testBackend(env: NodeJS.ProcessEnv): TerminalBackend {
       if (l !== 'live') throw new Error(`Cannot interrupt ${ep.task}: its terminal ${ep.terminal} is ${l}`);
       appendFileSync(join(dir, `${ep.terminal}.input`), '<interrupt>\n');
     },
-    state: (ep) => ({ liveness: liveness(ep), busy: 'unknown' }),
+    state: (ep) => {
+      const l = liveness(ep);
+      return { liveness: l, busy: 'unknown', input: l === 'live' ? 'ready' : 'no-status' };
+    },
     close(ep) {
       const l = liveness(ep);
       if (l === 'absent') return;

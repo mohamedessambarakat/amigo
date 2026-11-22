@@ -211,11 +211,11 @@ export const stoppedResponding = (t: Task): boolean =>
   t.status === 'failed' && /stopped without reporting|session ended in the middle of a turn|tab closed/i.test(t.summary ?? '');
 
 const endpointState = (t: Task, env: NodeJS.ProcessEnv): EndpointState => {
-  if (!t.endpoint) return { liveness: 'absent', busy: 'unknown' };
+  if (!t.endpoint) return { liveness: 'absent', busy: 'unknown', input: 'no-status' };
   try {
     return terminalBackend(env).state(t.endpoint);
   } catch {
-    return { liveness: 'unreadable', busy: 'unknown' };
+    return { liveness: 'unreadable', busy: 'unknown', input: 'no-status' };
   }
 };
 
