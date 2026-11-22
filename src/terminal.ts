@@ -96,7 +96,12 @@ export type Runner = (cmd: string, args: string[]) => RunResult;
 
 /** How long a herdr-app or hc command may take before amigo gives up on it: a hung herdr must not hang amigo. */
 export const HERDR_TIMEOUT_MS = 3000;
-const quickRun: Runner = (cmd, args) => run(cmd, args, { timeoutMs: HERDR_TIMEOUT_MS });
+/**
+ * hc routes by these variables: inherited from amigo's own terminal they would wrap every message amigo sends as coming
+ * from that terminal (<hc from="tNN">), and HC_SOCKET could point at another core. herdr-app and hc never get them.
+ */
+export const HC_ROUTING_ENV = ['HC_TERMINAL_ID', 'HC_TERMINAL_SOCKET', 'HC_SCOPE', 'HC_SOCKET'] as const;
+const quickRun: Runner = (cmd, args) => run(cmd, args, { timeoutMs: HERDR_TIMEOUT_MS, unset: HC_ROUTING_ENV });
 
 const warnLine = (line: string): void => {
   process.stderr.write(`${line}\n`);

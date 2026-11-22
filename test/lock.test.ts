@@ -46,3 +46,19 @@ describe('withLock', () => {
     }
   });
 });
+
+describe('run', () => {
+  it('removes the unset variables from the command environment (hc never sees amigo terminal routing)', async () => {
+    const { run } = await import('../src/proc.ts');
+    const { HC_ROUTING_ENV } = await import('../src/terminal.ts');
+    const was = process.env.HC_TERMINAL_ID;
+    process.env.HC_TERMINAL_ID = 't9';
+    try {
+      const r = run(process.execPath, ['-e', 'process.stdout.write(String(process.env.HC_TERMINAL_ID))'], { unset: HC_ROUTING_ENV });
+      assert.equal(r.stdout, 'undefined');
+    } finally {
+      if (was === undefined) delete process.env.HC_TERMINAL_ID;
+      else process.env.HC_TERMINAL_ID = was;
+    }
+  });
+});
