@@ -12,6 +12,8 @@ export interface RunOptions {
   cwd?: string;
   /** Added to this process's environment. */
   env?: NodeJS.ProcessEnv;
+  /** Kill the command after this long; the result then carries a "timed out" error. */
+  timeoutMs?: number;
 }
 
 export function run(cmd: string, args: string[], opts: RunOptions = {}): RunResult {
@@ -21,8 +23,11 @@ export function run(cmd: string, args: string[], opts: RunOptions = {}): RunResu
     maxBuffer: 64 * 1024 * 1024,
     ...(opts.cwd ? { cwd: opts.cwd } : {}),
     ...(opts.env ? { env: { ...process.env, ...opts.env } } : {}),
+    ...(opts.timeoutMs ? { timeout: opts.timeoutMs } : {}),
   });
-  return { status: r.status, stdout: r.stdout ?? '', stderr: r.stderr ?? '', error: r.error };
+  const timedOut = (r.error as NodeJS.ErrnoException | undefined)?.code === 'ETIMEDOUT';
+  const error = timedOut ? new Error(`${cmd} ${args[0] ?? ''} timed out after ${(opts.timeoutMs ?? 0) / 1000}s`.replace('  ', ' ')) : r.error;
+  return { status: r.status, stdout: r.stdout ?? '', stderr: r.stderr ?? '', error };
 }
 
 export function runOrThrow(cmd: string, args: string[], opts: RunOptions = {}): string {
