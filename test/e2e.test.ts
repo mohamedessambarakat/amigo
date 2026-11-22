@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { describe, it } from 'node:test';
 import { cliPath, codeRoot, home } from '../src/paths.ts';
 import { getTask } from '../src/tasks.ts';
-import { cleanup, cli, cloneOf, fakeAgent, git, idFrom, makeHome, makeRepo, releaseHeld, tmpDir, waitFor } from './helpers.ts';
+import { cleanup, cli, cloneOf, fakeAgent, git, idFrom, makeHome, makeRepo, releaseHeld, tmpDir, waitFor, waitForTabExit } from './helpers.ts';
 
 describe('end to end with a fake agent', () => {
   it('local-only build: spawn, question, inbox message, relaunch, review, merge on the Boss word, landed cleanup', async () => {
@@ -28,7 +28,8 @@ describe('end to end with a fake agent', () => {
       assert.match(cli(env, ['inbox']).out, new RegExp(`${id}  question`));
       assert.equal(cli(env, ['inbox']).out.trim(), 'Inbox empty.', 'inbox shows each result once');
 
-      // send is the data plane: a durable inbox record. The run-once agent has exited, so nothing is rung.
+      // send is the data plane: a durable inbox record. Once the run-once agent's tab has exited, nothing is rung.
+      await waitForTabExit(id, env);
       const answer = join(dir, 'answer.md');
       writeFileSync(answer, 'use blue');
       const sent = cli(env, ['send', id, '--file', answer]);

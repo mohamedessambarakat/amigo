@@ -178,8 +178,16 @@ describe('watcher classification', () => {
     try {
       const id = idFrom(cli(env, ['spawn', '--scratch', '--agent', 'fake'], 'Title: Held\nMODE:hold\nDone when: released').out);
       const t = await waitFor(id, env, ['running']);
-      for (let i = 0; i < 100 && !mutateTask(id, () => null, env).endpoint; i++) await new Promise((r) => setTimeout(r, 100));
-      terminalBackend(env).close(mutateTask(id, () => null, env).endpoint!);
+      for (let i = 0; i < 100 && !(mutateTask(id, () => null, env).endpoint && mutateTask(id, () => null, env).pid); i++) await new Promise((r) => setTimeout(r, 100));
+      const { endpoint, pid: agent } = mutateTask(id, () => null, env);
+      // The tab dies first and at once: killing the tree together (taskkill /T) ends it in no set order, and a tab that outlives
+      // its agent by a moment records a failed run instead of vanishing mid-turn. On Windows the agent goes with it (Node puts
+      // its children in a kill-on-close job), so killing it again could hit a recycled pid; elsewhere it lives on, orphaned.
+      const tab = (JSON.parse(readFileSync(join(env.AMIGO_HOME!, 'state', 'test-terminals', `${endpoint!.terminal}.json`), 'utf8')) as { pid: number }).pid;
+      process.kill(tab, 'SIGKILL');
+      if (process.platform !== 'win32') process.kill(agent!, 'SIGKILL');
+      for (let i = 0; i < 100 && terminalBackend(env).state(endpoint!).liveness === 'live'; i++) await new Promise((r) => setTimeout(r, 50));
+      assert.equal(terminalBackend(env).state(endpoint!).liveness, 'finished', 'the tab is gone');
       // The tab's heartbeat lapses and it has run past its startup grace.
       rmSync(join(env.AMIGO_HOME!, 'state', 'tasks', id, 'heartbeat'), { force: true });
       mutateTask(id, () => ({ startedAt: new Date(Date.now() - 120_000).toISOString() }), env);

@@ -4,6 +4,7 @@ import os from 'node:os';
 import { join } from 'node:path';
 import { cliPath, codeRoot } from '../src/paths.ts';
 import { getTask, type Status, type Task } from '../src/tasks.ts';
+import { terminalBackend } from '../src/terminal.ts';
 
 export const fakeAgent = join(codeRoot, 'test', 'fake-agent.mjs');
 
@@ -125,12 +126,19 @@ export function asBuildBrief(text: string): string {
 export function cli(env: NodeJS.ProcessEnv, args: string[], input?: string): { code: number; out: string; err: string } {
   const build = args[0] === 'spawn' && (args.includes('--project') || args.includes('--after') || args.includes('--task')) && !args.includes('--survey') && !args.includes('--review') && input !== undefined;
   const r = spawnSync(process.execPath, [cliPath, ...args], { env, input: build ? asBuildBrief(input) : (input ?? ''), encoding: 'utf8' });
-  return { code: r.status ?? -1, out: r.stdout, err: r.stderr };
+  lastCli = { args, code: r.status ?? -1, out: r.stdout, err: r.stderr };
+  return { code: lastCli.code, out: lastCli.out, err: lastCli.err };
 }
+
+/** The last cli call, so a failed idFrom(cli(...).out) can say why the command printed no task id. */
+let lastCli: { args: string[]; code: number; out: string; err: string } | null = null;
 
 export function idFrom(out: string): string {
   const m = /task:\s+(\S+)/.exec(out);
-  if (!m) throw new Error(`no task id in: ${out}`);
+  if (!m) {
+    const why = lastCli && lastCli.out === out ? ` (amigo ${lastCli.args.join(' ')} exited ${lastCli.code}; stderr: ${lastCli.err.trim() || 'empty'})` : '';
+    throw new Error(`no task id in: ${out}${why}`);
+  }
   return m[1] as string;
 }
 
@@ -141,6 +149,22 @@ export async function waitFor(id: string, env: NodeJS.ProcessEnv, statuses: Stat
     if (t && statuses.includes(t.status)) return t;
     if (Date.now() > end) throw new Error(`${id} did not reach ${statuses.join('/')} (now ${t?.status})`);
     await new Promise((r) => setTimeout(r, 200));
+  }
+}
+
+/**
+ * Waits until a crew member's tab process has exited. A run-once crew member reports its status before its tab finishes
+ * (the tab still clears its heartbeat and drains the queue), so a reported status alone does not mean the tab is gone.
+ */
+export async function waitForTabExit(id: string, env: NodeJS.ProcessEnv, timeoutMs = 30_000): Promise<void> {
+  const end = Date.now() + timeoutMs;
+  for (;;) {
+    const ep = getTask(id, env)?.endpoint;
+    if (!ep) throw new Error(`${id} has no terminal`);
+    const liveness = terminalBackend(env).state(ep).liveness;
+    if (liveness !== 'live') return;
+    if (Date.now() > end) throw new Error(`${id}'s tab did not exit (its terminal is ${liveness})`);
+    await new Promise((r) => setTimeout(r, 100));
   }
 }
 
