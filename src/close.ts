@@ -62,7 +62,12 @@ export function closeMember(id: string, opts: CloseOptions = {}, env: NodeJS.Pro
     // A runner with no endpoint (an older record) is stopped by its process tree instead.
     if (t.endpoint) {
       try {
-        terminalBackend(env).close(t.endpoint);
+        const backend = terminalBackend(env);
+        backend.close(t.endpoint);
+        // A relaunch opens a new terminal: the ones of earlier runs, ended or not, carry the task's labels and go with it.
+        for (const old of backend.list().filter((e) => e.task === id && e.terminal !== t.endpoint!.terminal)) {
+          backend.close({ backend: t.endpoint.backend, task: id, space: old.space, tab: old.tab, terminal: old.terminal });
+        }
       } catch (err) {
         throw new Error(`${id} was not torn down: its terminal could not be closed (${(err as Error).message}). Close it by hand, then run amigo close ${id} again.`);
       }

@@ -14,7 +14,7 @@ import { descendants, run as runCmd } from '../src/proc.ts';
 import { beat, saveTask, type Task } from '../src/tasks.ts';
 import { TESTED_VERSIONS, ancestry, backendVersionWarnings, herdrLabel, homeTag, installedVersions, insideAppTerminal, tabScript, tabShellLine, terminalBackend, versionWarnings, type Placement } from '../src/terminal.ts';
 import type { RunResult } from '../src/proc.ts';
-import { cleanup, cli, makeHome, makeRepo, releaseHeld, tmpDir, waitFor } from './helpers.ts';
+import { cleanup, cli, idFrom, makeHome, makeRepo, releaseHeld, tmpDir, waitFor } from './helpers.ts';
 
 const platform = process.platform;
 const scriptName = platform === 'win32' ? 'tab.cmd' : 'tab.sh';
@@ -494,6 +494,29 @@ describe('herdr-app backend', () => {
       const resumed = relaunch('6-kept', kept);
       assert.deepEqual([resumed.saved.sessionId, resumed.saved.sessionStarted, resumed.saved.transcriptPath], ['S-old', true, kept]);
       assert.match(resumed.prompt, /^Follow-up from amigo:\n\nstart from the top\n/);
+    } finally {
+      cleanup(dir);
+    }
+  });
+
+  it('close removes the terminal of every run, not only the last one', async () => {
+    const { dir, env } = makeHome();
+    try {
+      const id = idFrom(cli(env, ['spawn', '--scratch'], 'Title: Ask first\nMODE:question\nDone when: a file exists').out);
+      assert.equal((await waitFor(id, env, ['question'])).status, 'question');
+      const backend = terminalBackend(env);
+      const mine = () => backend.list().filter((e) => e.task === id);
+      const settled = async (n: number) => {
+        for (let i = 0; i < 300 && !(mine().length === n && mine().every((e) => e.liveness === 'finished')); i++) await new Promise((r) => setTimeout(r, 100));
+        assert.equal(mine().filter((e) => e.liveness === 'finished').length, n, `${n} finished terminal(s) of ${id}`);
+      };
+      await settled(1);
+      assert.equal(cli(env, ['control', id, 'relaunch', '--note', 'use blue']).code, 0);
+      assert.equal((await waitFor(id, env, ['done'])).status, 'done');
+      await settled(2);
+      const closed = cli(env, ['close', id]);
+      assert.equal(closed.code, 0, closed.err);
+      assert.deepEqual(mine(), [], 'the first run\'s terminal went too');
     } finally {
       cleanup(dir);
     }
