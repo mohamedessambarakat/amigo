@@ -132,10 +132,13 @@ export interface Drained {
   generation: number;
 }
 
-/** The newest row of each key, oldest first: an older row about the same thing is covered by the newer one. */
+/**
+ * The newest row of each kind and key, oldest first: an older row about the same thing is covered by the newer one. A
+ * check row is the event itself, so check rows collapse only when their text is identical (as fm_wake_print_deduped).
+ */
 export function latestPerKey(rows: WakeRow[]): WakeRow[] {
   const newest = new Map<string, WakeRow>();
-  for (const r of rows) newest.set(r.key, r);
+  for (const r of rows) newest.set(r.kind === 'check' ? `${r.kind}|${r.key}|${r.reason}` : `${r.kind}|${r.key}`, r);
   return [...newest.values()].sort((a, b) => a.seq - b.seq);
 }
 

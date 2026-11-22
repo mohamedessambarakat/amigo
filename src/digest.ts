@@ -15,7 +15,7 @@ import { syncProjects } from './sync.ts';
 import { FINISHED, listTasks, type Task } from './tasks.ts';
 import { backendVersionWarnings } from './terminal.ts';
 import { appendWake, describeDrain, drainWakes } from './wakes.ts';
-import { crewState, listChecks, stoppedResponding, supervisionNeed, watcherHealthy } from './watch.ts';
+import { crewState, goneAtRest, listChecks, stoppedResponding, supervisionNeed, watcherHealthy } from './watch.ts';
 import { treehousePath } from './worktree.ts';
 
 /**
@@ -105,6 +105,8 @@ const SUPERVISION = [
   '5. Waiting on the watcher is silent: no idle progress messages.',
 ].join('\n');
 
+const AT_REST_WORDS: Partial<Record<Task['status'], string>> = { done: 'at its handoff', blocked: 'while blocked', question: 'while waiting on a question' };
+
 const age = (iso: string | null | undefined, now = Date.now()): string => {
   const s = Math.max(0, Math.floor((now - (Date.parse(iso ?? '') || now)) / 1000));
   return s < 60 ? `${s}s` : s < 3600 ? `${Math.floor(s / 60)}m` : s < 86_400 ? `${Math.floor(s / 3600)}h` : `${Math.floor(s / 86_400)}d`;
@@ -118,12 +120,12 @@ export function fleetState(env: NodeJS.ProcessEnv): string {
     const where = t.worktree ? ` · worktree ${t.worktree}${existsSync(t.worktree) ? '' : ' (MISSING)'}${t.branch ? ` on ${t.branch}` : ''}` : '';
     return `- ${t.id} [${t.project}] ${t.status}, updated ${age(t.updatedAt)} ago · ${crewState(t, env)}${where}`;
   });
-  const recover = open.filter((t) => stoppedResponding(t) || (/^state: stopped/.test(crewState(t, env)) && (t.status === 'running' || t.status === 'verifying')));
+  const recover = open.filter((t) => stoppedResponding(t) || goneAtRest(t, env) !== null || (/^state: stopped/.test(crewState(t, env)) && (t.status === 'running' || t.status === 'verifying')));
   const unread = open.filter((t) => FINISHED.includes(t.status) && !t.seen);
   return [
     `FLEET STATE (${open.length} open; the endpoint read is a presence check, not proof the work is gone):`,
     ...lines,
-    ...recover.map((t) => `RECOVER ${t.id}: it stopped responding mid-turn. Its work stays in ${t.worktree ?? t.cwd}. Follow the recovery rules.`),
+    ...recover.map((t) => `RECOVER ${t.id}: it stopped responding ${AT_REST_WORDS[t.status] ?? 'mid-turn'}. Its work stays in ${t.worktree ?? t.cwd}. Follow the recovery rules.`),
     ...(unread.length ? [`UNREAD RESULTS: ${unread.map((t) => t.id).join(', ')} (amigo inbox shows them)`] : []),
     ...(recover.length ? ['', RECOVERY_RULES] : []),
   ].join('\n');

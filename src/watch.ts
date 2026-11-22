@@ -107,11 +107,13 @@ interface Memory {
   checks: Record<string, number>;
   /** task id -> the PR state last surfaced, and when the PR was last read. */
   prs: Record<string, { sig: string; at: number }>;
+  /** task id -> the `<status>|<updatedAt>` of a finished turn whose session was already reported gone. */
+  gone: Record<string, string>;
 }
 
 const loadMemory = (env: NodeJS.ProcessEnv): Memory => {
   const m = readJson<Partial<Memory>>(memoryPath(env), {});
-  return { surfaced: m.surfaced ?? {}, stale: m.stale ?? {}, heartbeat: m.heartbeat ?? { at: 0, interval: 0, unread: '' }, checks: m.checks ?? {}, prs: m.prs ?? {} };
+  return { surfaced: m.surfaced ?? {}, stale: m.stale ?? {}, heartbeat: m.heartbeat ?? { at: 0, interval: 0, unread: '' }, checks: m.checks ?? {}, prs: m.prs ?? {}, gone: m.gone ?? {} };
 };
 
 // ---------- registered checks ----------
@@ -217,6 +219,19 @@ const endpointState = (t: Task, env: NodeJS.ProcessEnv): EndpointState => {
   }
 };
 
+const AT_REST: readonly Task['status'][] = ['done', 'blocked', 'question'];
+
+/**
+ * A Claude crew member that reported (done at its handoff, blocked, or a question) keeps its session open for amigo's next
+ * message. When its runner and its tab are both gone it stopped responding at rest: the endpoint state, else null. An
+ * unreadable endpoint is not proof it is gone. Other agents run once and exit after reporting, so they never count.
+ */
+export function goneAtRest(t: Task, env: NodeJS.ProcessEnv): EndpointState | null {
+  if (!AT_REST.includes(t.status) || t.sessionStarted !== true || !t.endpoint || runnerAlive(t.id, env)) return null;
+  const ep = endpointState(t, env);
+  return ep.liveness === 'live' || ep.liveness === 'unreadable' ? null : ep;
+}
+
 /**
  * One line of a crew member's current state (fm-crew-state): the hooks' record, its terminal, and its progress.
  * `state: working|done|blocked|paused|failed|stopped|queued|closed|unknown · <detail>`.
@@ -232,6 +247,7 @@ export function crewState(t: Task, env: NodeJS.ProcessEnv, now = Date.now()): st
     return `state: working · ${tab}; last progress ${idle}s ago`;
   }
   if (stoppedResponding(t)) return `state: stopped · ${tab}; ${t.summary}`;
+  if (goneAtRest(t, env)) return `state: stopped · ${tab}; its session ended while it waited (${t.status}) - recover it`;
   if (FINISHED.includes(t.status)) return `state: ${t.status} · ${tab}; ${t.summary ?? ''}`.trim();
   return `state: ${t.status} · ${tab}`;
 }
@@ -257,8 +273,8 @@ function runRegisteredCheck(c: CheckSpec, timeoutSecs: number): string | null {
 }
 
 /**
- * Classify the fleet once. Returns the actionable wakes (empty: absorb and keep sleeping). The memory of what was already
- * surfaced is updated only for what is returned, under the caller's watcher lock.
+ * Classify the fleet once. Returns the actionable wakes (empty: absorb and keep sleeping), already appended to the durable
+ * wake queue. The memory of what was already surfaced is written after that append, under the caller's watcher lock.
  */
 export function scan(env: NodeJS.ProcessEnv, now = Date.now()): Wake[] {
   const tun = tunables(env);
@@ -274,6 +290,15 @@ export function scan(env: NodeJS.ProcessEnv, now = Date.now()): Wake[] {
   const wakes: Wake[] = [];
 
   for (const t of tasks) {
+    // A session gone while the crew member waits at rest (handoff, blocked, question): surfaced once per finished turn.
+    const gone = goneAtRest(t, env);
+    if (gone) {
+      const sig = `${t.status}|${t.updatedAt}`;
+      if (mem.gone[t.id] !== sig) {
+        mem.gone[t.id] = sig;
+        wakes.push({ kind: 'stale', key: `task:${t.id}`, reason: `stale: ${t.id} (stopped responding: tab ${gone.liveness} and runner gone while it waited at ${t.status}. Its worktree and commits are kept; recover it, never spawn a fresh copy)` });
+      }
+    } else delete mem.gone[t.id];
     // Signals: a finished turn amigo has not read, surfaced once per distinct record.
     if (FINISHED.includes(t.status) && !t.seen) {
       const sig = `${t.status}|${t.updatedAt}`;
@@ -322,6 +347,7 @@ export function scan(env: NodeJS.ProcessEnv, now = Date.now()): Wake[] {
     wakes.push({ kind: 'stale', key: `task:${t.id}`, reason: `stale: ${t.id} (stopped responding: no progress for ${Math.round(idle)}s, ${what}, escalation ${count}${deep})` });
   }
   for (const id of Object.keys(mem.surfaced)) if (!tasks.some((t) => t.id === id)) delete mem.surfaced[id];
+  for (const id of Object.keys(mem.gone)) if (!tasks.some((t) => t.id === id)) delete mem.gone[id];
 
   // Checks: each runs on its own interval; whatever it prints wakes amigo.
   for (const c of listChecks(env)) {
@@ -368,6 +394,8 @@ export function scan(env: NodeJS.ProcessEnv, now = Date.now()): Wake[] {
     }
   }
 
+  // Queue first, then memory: a watcher killed between the two re-surfaces a wake, and never loses one.
+  for (const w of wakes) appendWake(w.kind, w.key, w.reason, env);
   writeJsonAtomic(memoryPath(env), mem);
   return wakes;
 }
@@ -499,8 +527,8 @@ export async function watchCycle(env: NodeJS.ProcessEnv, opts: { signal?: AbortS
         writeFileSync(beaconPath(env), String(Date.now()));
         wakes = [...wakes, ...scan(env)];
       }
+      // scan() already queued them durably.
       if (wakes.length) {
-        for (const w of wakes) appendWake(w.kind, w.key, w.reason, env);
         return deliver(wakes.map((w) => w.reason).join('\n'));
       }
       if (Date.now() > deadline) {

@@ -8,7 +8,7 @@ import { acquireSessionLock, controlRefusal, identity, lockState } from '../src/
 import { amigoHooks, autoArm, turnEndGuard } from '../src/supervise.ts';
 import { beat, claimTaskDir, mutateTask, saveTask, type Task } from '../src/tasks.ts';
 import { terminalBackend } from '../src/terminal.ts';
-import { ackWakes, appendWake, drainWakes, queuePath, readQueue, takeRecovery } from '../src/wakes.ts';
+import { ackWakes, appendWake, drainWakes, latestPerKey, queuePath, readQueue, takeRecovery } from '../src/wakes.ts';
 import { declaredWait, registerCheck, scan, supervisionNeed, watchCycle, watcherHealthy } from '../src/watch.ts';
 import { appendStatus, formatStatusLine } from '../src/status.ts';
 import { cleanup, cli, idFrom, makeHome, waitFor } from './helpers.ts';
@@ -38,6 +38,22 @@ function fakeTask(env: NodeJS.ProcessEnv, id: string, patch: Partial<Task> = {})
 }
 
 describe('wake queue', () => {
+  it('a drain covers only an older row of the same kind and key, and never a different check output', () => {
+    const { dir, env } = makeHome();
+    try {
+      appendWake('check', 'check:deploy', 'check: deploy: FAILED prod deploy 1', env);
+      appendWake('check', 'check:deploy', 'check: deploy: disk 95% full', env);
+      appendWake('signal', 'task:b1', 'signal: b1 done', env);
+      appendWake('stale', 'task:b1', 'stale: b1', env);
+      appendWake('heartbeat', 'heartbeat', 'heartbeat: 1', env);
+      appendWake('heartbeat', 'heartbeat', 'heartbeat: 2', env);
+      const shown = latestPerKey(drainWakes(env).rows).map((r) => r.reason);
+      assert.deepEqual(shown, ['check: deploy: FAILED prod deploy 1', 'check: deploy: disk 95% full', 'signal: b1 done', 'stale: b1', 'heartbeat: 2']);
+    } finally {
+      cleanup(dir);
+    }
+  });
+
   it('consumes by sequence, closes the episode by generation, and announces queued wakes once', () => {
     const { dir, env } = makeHome();
     try {
@@ -180,6 +196,39 @@ describe('watcher classification', () => {
     }
   });
 
+  it('a Claude crew member whose tab dies while it waits at its handoff raises "stopped responding" once', () => {
+    const { dir, env: base } = makeHome();
+    const env = fast(base);
+    try {
+      const endpoint = { backend: 'test' as const, task: '1-handoff', space: null, tab: null, terminal: 'ttgone' };
+      fakeTask(env, '1-handoff', { status: 'done', seen: true, sessionStarted: true, endpoint, summary: 'PR ready' });
+      // A crew member on another agent runs once and exits after reporting: a gone tab is normal there.
+      fakeTask(env, '2-once', { status: 'done', seen: true, endpoint: { ...endpoint, task: '2-once' }, summary: 'ok' });
+      const wakes = scan(env);
+      assert.equal(wakes.length, 1);
+      assert.match(wakes[0]!.reason, /^stale: 1-handoff \(stopped responding: tab absent and runner gone while it waited at done/);
+      assert.equal(readQueue(env).rows.length, 1, 'scan queues the wake before it remembers it');
+      assert.deepEqual(scan(env), [], 'one loss is surfaced once');
+      assert.match(sessionDigest(asSession(env)), /RECOVER 1-handoff: it stopped responding at its handoff/);
+    } finally {
+      cleanup(dir);
+    }
+  });
+
+  it('a wake is queued before the watcher remembers it, so a killed watcher loses nothing', () => {
+    const { dir, env: base } = makeHome();
+    const env = fast(base);
+    try {
+      fakeTask(env, '1-fin', { status: 'done', seen: false, summary: 'PR ready' });
+      assert.match(scan(env)[0]?.reason ?? '', /^signal: 1-fin done/);
+      // The watcher dies here, before it prints: the next one finds the wake queued and announces it.
+      assert.deepEqual(scan(env), []);
+      assert.match(takeRecovery(env) ?? '', /^recovery: 1 queued wake/);
+    } finally {
+      cleanup(dir);
+    }
+  });
+
   it('a registered check that prints something wakes amigo', async () => {
     const { dir, env: base } = makeHome();
     const env = fast(base);
@@ -240,6 +289,22 @@ describe('Stop hooks', () => {
       writeFileSync(join(env.AMIGO_HOME!, 'state', 'watcher-beat'), '1');
       assert.ok(watcherHealthy(env));
       assert.equal((await turnEndGuard({ session_id: 's1' }, env)).code, 0);
+    } finally {
+      cleanup(dir);
+    }
+  });
+
+  it('the guard reclaims a stale session lock instead of blocking a resumed session', async () => {
+    const { dir, env: base } = makeHome();
+    const env = asSession(fast(base));
+    try {
+      fakeTask(env, '1-run');
+      mkdirSync(join(env.AMIGO_HOME!, 'state'), { recursive: true });
+      writeFileSync(join(env.AMIGO_HOME!, 'state', 'session.lock'), JSON.stringify({ pid: 999_999_99, started: null, session: 's0', at: 'x', home: env.AMIGO_HOME }));
+      writeFileSync(join(env.AMIGO_HOME!, 'state', 'watch.lock'), JSON.stringify({ pid: process.pid, token: 't', started: null, startedAt: new Date().toISOString() }));
+      writeFileSync(join(env.AMIGO_HOME!, 'state', 'watcher-beat'), '1');
+      assert.equal((await turnEndGuard({ session_id: 's1' }, env)).code, 0);
+      assert.equal(lockState(env, identity(env)).state, 'owned');
     } finally {
       cleanup(dir);
     }

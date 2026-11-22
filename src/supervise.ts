@@ -163,7 +163,9 @@ const guardPath = (env: NodeJS.ProcessEnv): string => join(stateDir(env), 'turne
 export async function turnEndGuard(payload: HookPayload, env: NodeJS.ProcessEnv): Promise<HookResult> {
   const me = identity(env, payload.session_id);
   if (env.AMIGO_TASK) return { code: 0 };
-  const s = lockState(env, me);
+  let s = lockState(env, me);
+  // A stale lock (this session resumed with a new process, or its old owner is gone) is reclaimed here, as the Stop hook does.
+  if (s.state === 'stale' && controls(env, me)) s = lockState(env, me);
   // Another live session controls the home: this one cannot arm, so blocking it would loop. The owner keeps supervision.
   if (s.state === 'foreign') return { code: 0 };
   const reset = () => writeJsonAtomic(guardPath(env), { blocks: 0 });
@@ -174,6 +176,9 @@ export async function turnEndGuard(payload: HookPayload, env: NodeJS.ProcessEnv)
   const waitMs = num(env.AMIGO_GUARD_SYNC_WAIT_MS, 2000);
   const until = Date.now() + waitMs;
   for (;;) {
+    // Re-read each pass: the parallel Stop hook may reclaim a stale lock (a resumed session) and arm while this waits.
+    s = lockState(env, me);
+    if (s.state === 'foreign') return { code: 0 };
     if (s.state === 'owned' && (watcherHealthy(env) || claimOpen(readClaim(env), env, me.session))) {
       reset();
       return { code: 0 };
