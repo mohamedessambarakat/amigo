@@ -182,21 +182,29 @@ function runsInTerminal(program: number, pid: number, platform: NodeJS.Platform,
   if (platform === 'win32') {
     const r = runner('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', processScript(pid)]);
     if (r.error) unchecked(r.error.message);
+    else if (r.status !== 0) unchecked(`the process query exited ${r.status}: ${firstOutputLine(r)}`);
     if (r.error || r.status !== 0) return false;
     const [consoleLine = '', ancestorLine = ''] = r.stdout.trim().split(/\r?\n/);
     const ids = (line: string) => line.trim().split(/\s+/).map(Number);
-    return ids(consoleLine).includes(program) || ids(ancestorLine).includes(program);
+    if (ids(consoleLine).includes(program) || ids(ancestorLine).includes(program)) return true;
+    unchecked(`its program ${program} is neither on this process's console (${consoleLine.trim() || 'none'}) nor among its ancestors (${ancestorLine.trim() || 'none'})`);
+    return false;
   }
   const r = runner('ps', ['-A', '-o', 'pid=,ppid=,tty=']);
   if (r.error) unchecked(r.error.message);
+  else if (r.status !== 0) unchecked(`ps exited ${r.status}: ${firstOutputLine(r)}`);
   if (r.error || r.status !== 0) return false;
   const rows = r.stdout.split('\n').map((l) => l.trim().split(/\s+/)).filter((f) => f.length === 3);
   const parent = new Map(rows.map(([p, pp]) => [Number(p), Number(pp)]));
   const tty = new Map(rows.map(([p, , t]) => [Number(p), t!]));
   const mine = tty.get(pid);
   const sharedTty = Boolean(mine) && !/^\?+$/.test(mine!) && tty.get(program) === mine;
-  return sharedTty || ancestry(pid, parent).includes(program);
+  if (sharedTty || ancestry(pid, parent).includes(program)) return true;
+  unchecked(`its program ${program} shares no tty with this process and is not among its ancestors (${ancestry(pid, parent).join(' ')})`);
+  return false;
 }
+
+const firstOutputLine = (r: { stdout: string; stderr: string }): string => (r.stderr || r.stdout).trim().split(/\r?\n/)[0] || 'no output';
 
 /** A JSON object as herdr-app and hc print it; fields are read through str/num/obj, which narrow what they find. */
 type Json = Record<string, unknown>;
@@ -207,7 +215,7 @@ const str = (v: unknown): string | null => (typeof v === 'string' && v ? v : nul
  * Whether this process runs inside the herdr-app terminal `id`: herdr-core knows it as live, the app shows it (it carries a
  * herdr.space label, which the app stamps on every terminal it makes), and this process runs in it (see runsInTerminal).
  * HC_TERMINAL_ID alone proves nothing: it leaks into anything that copies an environment. A command that fails or times out
- * means no; `unchecked` hears why.
+ * means no. Every no tells `unchecked` why, so a refusal names its cause.
  */
 export function insideAppTerminal(id: string, runner: Runner = quickRun, pid: number = process.pid, platform: NodeJS.Platform = process.platform, unchecked: (why: string) => void = () => {}): boolean {
   const r = hcCli(runner, ['get', id, '--json']);
@@ -216,8 +224,14 @@ export function insideAppTerminal(id: string, runner: Runner = quickRun, pid: nu
     return false;
   }
   const program = r.result.pid;
-  if (r.result.state !== 'live' || typeof program !== 'number') return false;
-  if (!str(obj(r.result.labels)['herdr.space'])) return false;
+  if (r.result.state !== 'live' || typeof program !== 'number') {
+    unchecked(`hc says terminal ${id} is ${str(r.result.state) ?? 'in no known state'}${typeof program === 'number' ? '' : ', with no program'}`);
+    return false;
+  }
+  if (!str(obj(r.result.labels)['herdr.space'])) {
+    unchecked(`terminal ${id} has no herdr.space label, so herdr-app does not show it`);
+    return false;
+  }
   return runsInTerminal(program, pid, platform, runner, unchecked);
 }
 

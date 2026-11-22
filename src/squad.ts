@@ -30,7 +30,7 @@ import { freeMemMb, ramAllows } from './ram.ts';
 import { eventsThisTurn, ingestStatus } from './report.ts';
 import { describeStatus, declaredWait, latestEvent, readStatus, statusFile, TERMINAL_VERBS } from './status.ts';
 import { inboxDir, pendingMessages } from './steer.ts';
-import { herdrLabel, terminalBackend, type Placement, type Runner } from './terminal.ts';
+import { herdrLabel, terminalBackend, type BackendName, type Placement, type Runner } from './terminal.ts';
 import {
   FINISHED,
   HEARTBEAT_MS,
@@ -931,8 +931,17 @@ export function amigoPrompt(agent: string, env: NodeJS.ProcessEnv = process.env,
   ].join('\n\n') + '\n';
 }
 
+/**
+ * The environment of amigo's own agent session. The backend checked at the start is carried, as into a crew member's tab: on
+ * Windows the agent's shell tool can run amigo through a POSIX shim (Git Bash running npm's `amigo` script), whose exec cuts the
+ * process chain back to the herdr-app terminal, so a fresh check from inside the session would refuse every ring and close.
+ */
+export function leadSessionEnv(env: NodeJS.ProcessEnv, backend?: BackendName): NodeJS.ProcessEnv {
+  return { ...env, AMIGO_HOME: home(env), [LEAD_MARKER]: '1', ...(backend ? { AMIGO_TERMINAL: backend } : {}) };
+}
+
 /** Start amigo in this terminal and wait for it to exit. */
-export async function runAmigo(agentName: string | undefined, opts: { dryRun?: boolean; briefing?: string; live?: boolean }, env: NodeJS.ProcessEnv = process.env): Promise<number> {
+export async function runAmigo(agentName: string | undefined, opts: { dryRun?: boolean; briefing?: string; live?: boolean; backend?: BackendName }, env: NodeJS.ProcessEnv = process.env): Promise<number> {
   const config = loadConfig(env);
   const agent = leadAgent(config, agentName, env);
   const template = config.agents[agent]!.amigo!;
@@ -946,7 +955,7 @@ export async function runAmigo(agentName: string | undefined, opts: { dryRun?: b
   }
   writeFileSync(file, prompt);
   writeJsonAtomic(amigoSettingsFile, amigoSettings());
-  const childEnv = { ...env, AMIGO_HOME: home(env), [LEAD_MARKER]: '1' };
+  const childEnv = leadSessionEnv(env, opts.backend);
   const child = spawnAgent(launch, { cwd: home(env), stdio: 'inherit', env: childEnv });
   return await new Promise((done, fail) => {
     child.on('error', fail);

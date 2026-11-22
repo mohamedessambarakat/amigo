@@ -5,7 +5,7 @@ import os from 'node:os';
 import { existsSync, mkdirSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { describe, it } from 'node:test';
-import { applyHook, memberPrompt, followUpPrompt, herdrPlacement, startMember, tabEnvArgs } from '../src/squad.ts';
+import { applyHook, memberPrompt, followUpPrompt, herdrPlacement, leadSessionEnv, startMember, tabEnvArgs } from '../src/squad.ts';
 import { INLINE_LIMIT, buildLaunch, pointerLine, quoteForCmd } from '../src/command.ts';
 import { loadConfig } from '../src/config.ts';
 import { memberSettings, guessTranscriptPath, amigoSettings, claudeMemberNotes, claudeMemberTemplate, claudeAmigoTemplate, claudeJsonPath, dropTrust, isClaude, mergeTrust, ownSessionEnv, reportReason, sessionAddress, turnMessagedAmigo } from '../src/claude.ts';
@@ -184,6 +184,39 @@ describe('terminal backend selection', () => {
     assert.match(ps.calls[1]!.at(-1)!, /AttachConsole\(900\)/, 'the console asked about is this process');
     assert.match(ps.calls[1]!.at(-1)!, /\[uint32\]900;/, 'the ancestors asked about are this process');
     assert.deepEqual(ancestry(9, new Map([[9, 8], [8, 7], [7, 9]])), [9, 8, 7], 'a parent loop ends the walk');
+  });
+
+  it("amigo's own session carries the herdr-app check, so a shell shim that cuts the process chain still rings and closes", () => {
+    const lead = leadSessionEnv({ HC_TERMINAL_ID: 't1', TERM_PROGRAM: 'ghostty', AMIGO_HOME: 'h' }, 'herdr-app');
+    assert.equal(lead.AMIGO_TERMINAL, 'herdr-app');
+    assert.equal(lead.AMIGO_LEAD_SESSION, '1');
+    // A command run from the session through Git Bash: its ancestors stop short of the terminal's program.
+    const cut = fakeOs(live);
+    assert.equal(terminalBackend(lead, { runner: cut.runner, insideApp: (id) => insideAppTerminal(id, cut.runner, 800, 'win32') }).name, 'herdr-app');
+    assert.ok(!cut.calls.some((c) => c[0] === 'powershell.exe'), 'the carried check is not repeated');
+    assert.throws(() => terminalBackend({ HC_TERMINAL_ID: 't1', TERM_PROGRAM: 'ghostty' }, { runner: cut.runner, insideApp: (id) => insideAppTerminal(id, cut.runner, 800, 'win32') }), /does not run in herdr-app terminal t1/, 'without it the same process is refused');
+    assert.equal(leadSessionEnv({ AMIGO_HOME: 'h' }).AMIGO_TERMINAL, undefined, 'nothing is carried when nothing was checked');
+  });
+
+  it('every no names its cause, so a refused ring or spawn can be diagnosed', () => {
+    const cases: [object | null, number, NodeJS.Platform, RegExp][] = [
+      [live, 800, 'win32', /program 500 is neither on this process's console \(800 801\) nor among its ancestors \(800 7\)/],
+      [live, 800, 'linux', /program 500 shares no tty with this process and is not among its ancestors \(800 7\)/],
+      [{ ...live, state: 'finished' }, 900, 'win32', /terminal t1 is finished/],
+      [{ ...live, pid: null }, 900, 'win32', /terminal t1 is live, with no program/],
+      [{ ...live, labels: {} }, 900, 'linux', /no herdr\.space label/],
+      [null, 900, 'win32', /hc get t1: no terminal "t1"/],
+    ];
+    for (const [hc, pid, os, want] of cases) {
+      const why: string[] = [];
+      assert.equal(insideAppTerminal('t1', fakeOs(hc).runner, pid, os, (w) => why.push(w)), false);
+      assert.equal(why.length, 1, `one reason for ${want}`);
+      assert.match(why[0]!, want);
+    }
+    const why: string[] = [];
+    const queryFails = (cmd: string, args: string[]): RunResult => (cmd === 'hc' ? fakeOs(live).runner(cmd, args) : { status: 1, stdout: '', stderr: 'Get-CimInstance: Quota violation\r\nmore' });
+    assert.equal(insideAppTerminal('t1', queryFails, 900, 'win32', (w) => why.push(w)), false);
+    assert.deepEqual(why, ['the process query exited 1: Get-CimInstance: Quota violation']);
   });
 
   it('a hung hc or console query means not inside, and says why', () => {

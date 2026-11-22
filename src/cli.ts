@@ -197,10 +197,10 @@ export async function main(argv: string[], rawEnv: NodeJS.ProcessEnv = process.e
       const { values } = parse(rest, { agent: { type: 'string' }, 'dry-run': { type: 'boolean' } });
       const dryRun = Boolean(values['dry-run']);
       // amigo starts only inside herdr-app: this throws with the reason anywhere else, before the briefing starts anything.
-      terminalBackend(env);
+      const backend = terminalBackend(env).name;
       const agent = leadAgent(loadConfig(env), values.agent as string | undefined, env);
       const briefing = startBriefing(agent, env, { dryRun });
-      return await runAmigo(agent, { dryRun, briefing: briefing.text, live: briefing.live }, env);
+      return await runAmigo(agent, { dryRun, briefing: briefing.text, live: briefing.live, backend }, env);
     }
 
     case 'brief': {
