@@ -306,7 +306,7 @@ describe('amigo instructions', () => {
 
 describe('secret files', () => {
   it('flags secret-looking names but not examples', () => {
-    for (const p of ['.env', 'app/.env.local', 'keys\\server.pem', 'id_ed25519', 'config/credentials.json', 'secrets.yaml', '.netrc']) assert.ok(looksSecret(p), p);
-    for (const p of ['.env.example', 'src/env.ts', 'README.md', 'keyboard.ts', 'docs/secrets.md']) assert.ok(!looksSecret(p), p);
+    for (const p of ['.env', 'app/.env.local', 'keys\\server.pem', 'id_ed25519', 'config/credentials.json', 'secrets.yaml', '.netrc', '.envrc', '.env-prod', '.env_local', '.env.', 'deploy/.ENV.PRODUCTION']) assert.ok(looksSecret(p), p);
+    for (const p of ['.env.example', '.env-sample', '.env_template', '.env.dist', '.environment.ts', 'src/env.ts', 'README.md', 'keyboard.ts', 'docs/secrets.md']) assert.ok(!looksSecret(p), p);
   });
 });

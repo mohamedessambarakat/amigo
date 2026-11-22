@@ -36,11 +36,13 @@ export interface PrView {
   mergeStateStatus: string;
   headRefOid: string;
   baseRefName: string;
+  /** The base branch's commit; empty when gh did not give one (then a merge refuses). */
+  baseRefOid: string;
   statusCheckRollup: RollupEntry[];
   mergeCommit?: { oid?: string } | null;
 }
 
-const VIEW_FIELDS = 'state,isDraft,mergeable,mergeStateStatus,headRefOid,baseRefName,statusCheckRollup,mergeCommit';
+const VIEW_FIELDS = 'state,isDraft,mergeable,mergeStateStatus,headRefOid,baseRefName,baseRefOid,statusCheckRollup,mergeCommit';
 
 function gh(args: string[], cwd: string, env: NodeJS.ProcessEnv): { ok: boolean; out: string; err: string } {
   const r = runGh(args, cwd, env);
@@ -68,6 +70,7 @@ export function viewPr(url: string, cwd: string, env: NodeJS.ProcessEnv): PrView
     mergeStateStatus: String(j.mergeStateStatus ?? ''),
     headRefOid: j.headRefOid,
     baseRefName: j.baseRefName,
+    baseRefOid: typeof j.baseRefOid === 'string' ? j.baseRefOid : '',
     statusCheckRollup: j.statusCheckRollup,
     mergeCommit: j.mergeCommit ?? null,
   };
@@ -235,57 +238,64 @@ export function verifyMergeable(view: PrView, required: RequiredChecks, opts: { 
   return { refusals, unknownOnly, head: view.headRefOid, red, pending: pendingChecks(view.statusCheckRollup), unreported };
 }
 
-/** GitHub's caps: a file list (of a PR or a commit) this long, or a PR commit list this long, may be cut short. */
-const FILES_CAP = 3000;
-const COMMITS_CAP = 250;
+/**
+ * GitHub's caps: a compare lists at most 300 files and 250 commits, and a commit at most 3000 files. A list at its cap may be
+ * cut short, so it is not a complete read.
+ */
+const COMPARE_FILES_CAP = 300;
+const COMPARE_COMMITS_CAP = 250;
+const COMMIT_FILES_CAP = 3000;
+const SHA = /^[0-9a-f]{40}([0-9a-f]{24})?$/;
 
-/** gh's JSON lines, one per item: throws `fail` on a failed read or any line that is not JSON. */
-function jsonLines(args: string[], fail: (why: string) => Error, cwd: string, env: NodeJS.ProcessEnv): Record<string, unknown>[] {
+/** The added or changed paths of a file list (removed files left out; a rename counts by its new path). */
+function addedOrChanged(files: unknown, fail: (why: string) => Error): string[] {
+  if (!Array.isArray(files)) throw fail('unexpected answer');
+  const list = files as { filename?: unknown; status?: unknown }[];
+  if (list.some((f) => !f || typeof f.filename !== 'string' || !f.filename || typeof f.status !== 'string')) throw fail('unexpected answer');
+  return list.filter((f) => f.status !== 'removed').map((f) => f.filename as string);
+}
+
+/** One gh read printing a single JSON value. */
+function ghJson(args: string[], fail: (why: string) => Error, cwd: string, env: NodeJS.ProcessEnv): unknown {
   const r = gh(args, cwd, env);
   if (!r.ok) throw fail(r.err || 'gh failed');
-  return r.out
-    .split(/\r?\n/)
-    .filter((l) => l.trim())
-    .map((line) => {
-      try {
-        const v = JSON.parse(line) as unknown;
-        if (v && typeof v === 'object' && !Array.isArray(v)) return v as Record<string, unknown>;
-      } catch {
-        // fall through
-      }
+  try {
+    return JSON.parse(r.out) as unknown;
+  } catch {
+    throw fail('unexpected answer');
+  }
+}
+
+/**
+ * What a merge of a PR would land, read live and pinned to commits (never to the PR's current base, which can be retargeted,
+ * nor to a file list that may lag a fresh push): `files`, the paths the PR adds or changes from `base` to `head` overall, and
+ * `history`, the paths any of its commits adds or changes, a file a later commit deletes again included. Throws when any list
+ * cannot be read in full: a merge never proceeds on a guess.
+ */
+export function prLandedFiles(ref: PrRef, base: string, head: string, cwd: string, env: NodeJS.ProcessEnv): { files: string[]; history: string[] } {
+  const fail = (why: string) => new Error(`could not read the files and commits of ${ref.url} (${base.slice(0, 12)}...${head.slice(0, 12)}): ${why}`);
+  if (!SHA.test(base) || !SHA.test(head)) throw fail('its base or head commit is unknown');
+  const cmp = ghJson(['api', `repos/${ref.owner}/${ref.repo}/compare/${base}...${head}`, '--jq', '{total: .total_commits, commits: [.commits[]?.sha], files: .files}'], fail, cwd, env) as { total?: unknown; commits?: unknown; files?: unknown };
+  if (!cmp || typeof cmp.total !== 'number' || !Array.isArray(cmp.commits) || cmp.commits.some((s) => typeof s !== 'string' || !SHA.test(s))) throw fail('unexpected answer');
+  const shas = cmp.commits as string[];
+  if (cmp.total >= COMPARE_COMMITS_CAP || shas.length !== cmp.total) throw fail(`GitHub lists at most ${COMPARE_COMMITS_CAP} commits, so the list may be incomplete`);
+  if (!shas.includes(head)) throw fail(`the head ${head} is not among the listed commits`);
+  const files = addedOrChanged(cmp.files, fail);
+  if ((cmp.files as unknown[]).length >= COMPARE_FILES_CAP) throw fail(`GitHub lists at most ${COMPARE_FILES_CAP} files, so the list may be incomplete`);
+  const history = shas.flatMap((sha) => {
+    const r = gh(['api', '--paginate', `repos/${ref.owner}/${ref.repo}/commits/${sha}?per_page=100`, '--jq', '.files[] | {filename, status}'], cwd, env);
+    if (!r.ok) throw fail(r.err || 'gh failed');
+    const lines = r.out.split(/\r?\n/).filter((l) => l.trim());
+    let list: unknown[];
+    try {
+      list = lines.map((l) => JSON.parse(l) as unknown);
+    } catch {
       throw fail('unexpected answer');
-    });
-}
-
-/** The added or changed paths of a file list read with pagination (removed files left out; a rename counts by its new path). */
-function addedOrChanged(endpoint: string, jq: string, fail: (why: string) => Error, cwd: string, env: NodeJS.ProcessEnv): string[] {
-  const files = jsonLines(['api', '--paginate', endpoint, '--jq', jq], fail, cwd, env);
-  if (files.some((f) => typeof f.filename !== 'string' || !f.filename || typeof f.status !== 'string')) throw fail('unexpected answer');
-  if (files.length >= FILES_CAP) throw fail(`GitHub lists at most ${FILES_CAP} files, so the list may be incomplete`);
-  return files.filter((f) => f.status !== 'removed').map((f) => f.filename as string);
-}
-
-/**
- * The paths a PR adds or changes overall, read live with pagination: what a squash merge lands. Throws when the list cannot be
- * read in full: a merge never proceeds on a guess.
- */
-export function prChangedFiles(ref: PrRef, cwd: string, env: NodeJS.ProcessEnv): string[] {
-  const fail = (why: string) => new Error(`could not read the changed files of ${ref.url}: ${why}`);
-  return addedOrChanged(`repos/${ref.owner}/${ref.repo}/pulls/${ref.number}/files?per_page=100`, '.[] | {filename, status}', fail, cwd, env);
-}
-
-/**
- * The paths any commit of a PR adds or changes, a file deleted again by a later commit included: what a merge or rebase lands
- * (the whole history). The commit list must hold `head`, the head the merge pins. Throws when any list cannot be read in full.
- */
-export function prCommitFiles(ref: PrRef, head: string, cwd: string, env: NodeJS.ProcessEnv): string[] {
-  const fail = (why: string) => new Error(`could not read the commits of ${ref.url}: ${why}`);
-  const commits = jsonLines(['api', '--paginate', `repos/${ref.owner}/${ref.repo}/pulls/${ref.number}/commits?per_page=100`, '--jq', '.[] | {sha}'], fail, cwd, env);
-  const shas = commits.map((c) => c.sha);
-  if (!shas.length || shas.some((s) => typeof s !== 'string' || !/^[0-9a-f]{40}([0-9a-f]{24})?$/.test(s))) throw fail('unexpected answer');
-  if (shas.length >= COMMITS_CAP) throw fail(`GitHub lists at most ${COMMITS_CAP} commits, so the list may be incomplete`);
-  if (!shas.includes(head)) throw fail(`the verified head ${head} is not among its commits (the PR moved)`);
-  return (shas as string[]).flatMap((sha) => addedOrChanged(`repos/${ref.owner}/${ref.repo}/commits/${sha}?per_page=100`, '.files[] | {filename, status}', fail, cwd, env));
+    }
+    if (list.length >= COMMIT_FILES_CAP) throw fail(`GitHub lists at most ${COMMIT_FILES_CAP} files of a commit, so the list may be incomplete`);
+    return addedOrChanged(list, fail);
+  });
+  return { files, history };
 }
 
 /** Merge with the verified head pinned: a push that lands between the read and the merge fails the merge. */

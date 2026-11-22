@@ -65,30 +65,30 @@ if (args[0] === 'api' && args.some((a) => /\/check-runs$/.test(a))) {
   process.stdout.write(process.env.FAKE_GH_CHECK_RUNS ?? '');
   process.exit(0);
 }
-if (args[0] === 'api' && args.some((a) => /\/pulls\/\d+\/files(\?|$)/.test(a))) {
-  // FAKE_GH_PR_FILES: JSON lines {filename, status}, as amigo's --jq filter prints them; "fail" fails the read. Unset: no files.
-  if (process.env.FAKE_GH_PR_FILES === 'fail') {
-    console.error('gh: Server Error (HTTP 502)');
-    process.exit(1);
-  }
-  process.stdout.write(process.env.FAKE_GH_PR_FILES ?? '');
-  process.exit(0);
-}
-// FAKE_GH_PR_COMMITS: a JSON object {sha: [{filename, status}, ...]} in commit order, or "fail" (both reads fail). The PR's commit
-// list prints {sha} lines, and each commit read prints its files, as amigo's --jq filters do.
-const prCommits = () => {
-  if (process.env.FAKE_GH_PR_COMMITS === 'fail') {
-    console.error('gh: Server Error (HTTP 502)');
-    process.exit(1);
-  }
-  return JSON.parse(process.env.FAKE_GH_PR_COMMITS ?? '{}');
+// What a merge would land, for the compare read and each commit read, as amigo's --jq filters print them.
+// FAKE_GH_PR_FILES: JSON lines {filename, status}, the PR's final files; "fail" fails the compare read. Unset: no files.
+// FAKE_GH_PR_COMMITS: a JSON object {sha: [{filename, status}, ...]} in commit order; "fail" fails each commit read. Unset: one
+// commit, the PR's head, holding the final files.
+const fail = () => {
+  console.error('gh: Server Error (HTTP 502)');
+  process.exit(1);
 };
-if (args[0] === 'api' && args.some((a) => /\/pulls\/\d+\/commits(\?|$)/.test(a))) {
-  process.stdout.write(Object.keys(prCommits()).map((sha) => JSON.stringify({ sha })).join('\n'));
+const finalFiles = () => (process.env.FAKE_GH_PR_FILES ?? '').split('\n').filter((l) => l.trim()).map((l) => JSON.parse(l));
+const prCommits = () => {
+  if (process.env.FAKE_GH_PR_COMMITS === 'fail') fail();
+  return process.env.FAKE_GH_PR_COMMITS ? JSON.parse(process.env.FAKE_GH_PR_COMMITS) : { [readPr().headRefOid]: finalFiles() };
+};
+const compareArg = args.find((a) => /\/compare\/[0-9a-f]+\.\.\.[0-9a-f]+$/.test(a));
+if (args[0] === 'api' && compareArg && prFile) {
+  if (process.env.FAKE_GH_PR_FILES === 'fail') fail();
+  const commits = Object.keys(prCommits());
+  // FAKE_GH_AFTER_COMPARE: JSON fields the PR takes right after this read (a base that moves or is retargeted meanwhile).
+  if (process.env.FAKE_GH_AFTER_COMPARE) writeFileSync(prFile, JSON.stringify({ ...readPr(), ...JSON.parse(process.env.FAKE_GH_AFTER_COMPARE) }));
+  console.log(JSON.stringify({ total: commits.length, commits, files: finalFiles() }));
   process.exit(0);
 }
 const commitArg = args.find((a) => /\/commits\/[0-9a-f]{40}(\?|$)/.test(a));
-if (args[0] === 'api' && commitArg) {
+if (args[0] === 'api' && commitArg && prFile) {
   const files = prCommits()[/\/commits\/([0-9a-f]{40})/.exec(commitArg)[1]];
   if (!files) {
     console.error('gh: Not Found (HTTP 404)');
