@@ -1,12 +1,13 @@
 import assert from 'node:assert/strict';
-import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { describe, it } from 'node:test';
 import { classifyDone, dodBlock, parseBriefInput, renderBrief } from '../src/delivery.ts';
-import { checksNotGreen, readProducers, requiredChecks, verifyMergeable, type PrView } from '../src/pr.ts';
+import { checksNotGreen, parsePrUrl, prLandedFiles, readProducers, requiredChecks, verifyMergeable, type PrView } from '../src/pr.ts';
 import { declaredWait, describeStatus, formatStatusLine, openItems, parseStatusLine, readStatus, statusFile } from '../src/status.ts';
+import { mergeLocal } from '../src/landing.ts';
 import { inboxBody, pendingMessages, writeInbox } from '../src/steer.ts';
-import { getTask } from '../src/tasks.ts';
+import { getTask, type Task } from '../src/tasks.ts';
 import { scan } from '../src/watch.ts';
 import { addOrigin, cleanup, cli, cloneOf, fakeGhEnv, ghCalls, git, idFrom, makeHome, makeRepo, releaseHeld, waitFor } from './helpers.ts';
 
@@ -156,6 +157,7 @@ function prState(head: string, more: Partial<PrView> = {}): PrView {
     mergeStateStatus: 'CLEAN',
     headRefOid: head,
     baseRefName: 'main',
+    baseRefOid: 'b'.repeat(40),
     statusCheckRollup: [{ __typename: 'CheckRun', name: 'test', status: 'COMPLETED', conclusion: 'SUCCESS', startedAt: '2026-11-22T10:00:00Z' }],
     ...more,
   };
@@ -252,10 +254,44 @@ describe('direct-PR delivery, merge and cleanup', () => {
 
       writeFileSync(prFile, JSON.stringify(prState(head)));
       assert.match(cli(env, ['pr-check', id]).out, /open, CI green, mergeable MERGEABLE/);
+      // Secret-looking files refuse the merge even on the Boss's word, and so does a list that cannot be read.
+      const files = (...f: [string, string][]) => f.map(([filename, status]) => JSON.stringify({ filename, status })).join('\n');
+      const envFile = cli({ ...env, FAKE_GH_PR_FILES: files(['member-output.txt', 'added'], ['.env', 'added']) }, ['merge', id, '--boss']);
+      assert.match(envFile.err, /refusing to land .*it adds or changes files that may hold secrets: \.env\. .*not waivable, not even with --boss; the Boss can still merge by hand on GitHub/);
+      assert.match(cli({ ...env, FAKE_GH_PR_FILES: files(['config/credentials.json', 'modified']) }, ['merge', id, '--boss']).err, /may hold secrets: config\/credentials\.json\./);
+      assert.match(cli({ ...env, FAKE_GH_PR_FILES: 'fail' }, ['merge', id, '--boss']).err, /could not read the files and commits of https:\/\/github\.com\/example\/repo\/pull\/7 .*: gh: Server Error/);
+      const baseSha = 'b'.repeat(40);
+      assert.ok(ghCalls(gh.log).some((c) => c.args.includes(`repos/example/repo/compare/${baseSha}...${head}`)), 'the read is pinned to the base and head commits');
+      // Every commit is read, whatever the method (a merge queue picks its own): a .env added and deleted again refuses, though
+      // the PR's final files are clean.
+      const first = 'c'.repeat(40);
+      const history = JSON.stringify({ [first]: [{ filename: 'member-output.txt', status: 'added' }, { filename: '.env', status: 'added' }], [head]: [{ filename: '.env', status: 'removed' }] });
+      const viaHistory = { ...env, FAKE_GH_PR_FILES: files(['member-output.txt', 'added']), FAKE_GH_PR_COMMITS: history };
+      for (const method of ['squash', 'rebase', 'merge']) {
+        assert.match(cli(viaHistory, ['merge', id, '--boss', '--method', method]).err, /its history contains files that may hold secrets, even where a later commit deletes them: \.env\. .*not waivable, not even with --boss/, method);
+      }
+      assert.match(cli({ ...viaHistory, FAKE_GH_PR_COMMITS: 'fail' }, ['merge', id]).err, /could not read the files and commits of .*pull\/7 .*: gh: Server Error/);
+      assert.match(cli({ ...viaHistory, FAKE_GH_PR_COMMITS: JSON.stringify({ [first]: [] }) }, ['merge', id]).err, new RegExp(`the head ${head} is not among the listed commits`));
+      const many = Object.fromEntries([...Array.from({ length: 249 }, (_, i) => [i.toString(16).padStart(40, '0'), []]), [head, []]]);
+      assert.match(cli({ ...viaHistory, FAKE_GH_PR_COMMITS: JSON.stringify(many) }, ['merge', id]).err, /GitHub lists at most 250 commits/);
+      const wide = files(...Array.from({ length: 300 }, (_, i): [string, string] => [`f${i}.txt`, 'added']));
+      assert.match(cli({ ...env, FAKE_GH_PR_FILES: wide }, ['merge', id]).err, /GitHub lists at most 300 files/);
+      const clean = prLandedFiles(parsePrUrl('https://github.com/example/repo/pull/7'), baseSha, head, dir, { ...viaHistory, FAKE_GH_PR_FILES: files(['a.txt', 'added'], ['b.txt', 'added']), FAKE_GH_PR_COMMITS: JSON.stringify({ [first]: [{ filename: 'a.txt', status: 'added' }, { filename: 'old.key', status: 'removed' }], [head]: [{ filename: 'b.txt', status: 'modified' }] }) });
+      assert.deepEqual(clean, { files: ['a.txt', 'b.txt'], history: ['a.txt', 'b.txt'] }, 'a clean history reads every commit, deletions left out');
+      // The PR is read again after the lists: a moved base commit or a retargeted base refuses, as does an unknown base commit.
+      assert.match(cli({ ...env, FAKE_GH_AFTER_COMPARE: JSON.stringify({ baseRefOid: 'd'.repeat(40) }) }, ['merge', id]).err, new RegExp(`its base main moved from ${baseSha} to d{40} while its files were read`));
+      writeFileSync(prFile, JSON.stringify(prState(head)));
+      assert.match(cli({ ...env, FAKE_GH_AFTER_COMPARE: JSON.stringify({ baseRefName: 'release' }) }, ['merge', id]).err, /its base branch changed from main to release while its files were read/);
+      writeFileSync(prFile, JSON.stringify(prState(head, { baseRefOid: '' })));
+      assert.match(cli(env, ['merge', id]).err, /its base or head commit is unknown/);
+      writeFileSync(prFile, JSON.stringify(prState(head)));
+      assert.equal(ghCalls(gh.log).find((c) => c.args[1] === 'merge'), undefined, 'gh pr merge never ran');
+      assert.equal(getTask(id, env)?.merge, undefined, 'nothing was recorded');
       git(repo, 'checkout', '-q', 'main');
-      const merged = cli({ ...env, FAKE_GH_UNKNOWN_READS: '1' }, ['merge', id]);
+      // An example env file and a removed key are fine.
+      const merged = cli({ ...env, FAKE_GH_UNKNOWN_READS: '1', FAKE_GH_PR_FILES: files(['.env.example', 'added'], ['id_rsa', 'removed'], ['member-output.txt', 'added']) }, ['merge', id]);
       assert.equal(merged.code, 0, merged.err);
-      assert.match(merged.out, new RegExp(`verified: .* green at head ${head}`));
+      assert.match(merged.out, new RegExp(`verified: .* green at head ${head}, and no secret-looking files in it or any of its commits`));
       assert.match(merged.out, /authority: yolo/);
       assert.match(merged.out, /clone: repo: synced/);
       assert.match(merged.out, /live .*: fast-forwarded/);
@@ -341,6 +377,49 @@ describe('direct-PR delivery, merge and cleanup', () => {
       assert.deepEqual(prWakes(), [], 'a closed task is no longer read');
     } finally {
       delete process.env.FAKE_GH_PR;
+      cleanup(dir);
+    }
+  });
+});
+
+describe('local-only landing', () => {
+  it('refuses commits that add a secret-looking file, even one deleted again, and lands clean work', () => {
+    const { dir, env } = makeHome();
+    try {
+      const repo = makeRepo(join(dir, 'repo'));
+      const main = git(repo, 'rev-parse', 'main').trim();
+      const build = (id: string, files: string[], deleteAgain = false): Task => {
+        git(repo, 'checkout', '-q', '-b', `amigo/${id}`, 'main');
+        for (const f of files) {
+          mkdirSync(dirname(join(repo, f)), { recursive: true });
+          writeFileSync(join(repo, f), 'x\n');
+        }
+        git(repo, 'add', '-A');
+        git(repo, 'commit', '-q', '-m', 'add files');
+        if (deleteAgain) {
+          git(repo, 'rm', '-q', files[0] as string);
+          git(repo, 'commit', '-q', '-m', 'remove it');
+        }
+        const head = git(repo, 'rev-parse', 'HEAD').trim();
+        git(repo, 'checkout', '-q', 'main');
+        return { id, project: 'repo', mode: 'local-only', repo, branch: `amigo/${id}`, localDoneHead: head } as Task;
+      };
+      assert.throws(() => mergeLocal(build('1-key', ['notes.txt', 'keys/id_rsa']), env), /refusing to land amigo\/1-key: .*may hold secrets: keys\/id_rsa\. .*not waivable, not even with --boss/);
+      assert.throws(() => mergeLocal(build('2-env', ['app/.env.local'], true), env), /its history contains files that may hold secrets, even where a later commit deletes them: app\/\.env\.local\./);
+      // A replace ref that shows an innocent commit in place of the real one hides nothing: the real objects are read.
+      const hidden = build('4-hidden', ['keys/id_rsa']);
+      const innocent = build('5-innocent', ['notes.txt']).localDoneHead as string;
+      git(repo, 'replace', hidden.localDoneHead as string, innocent);
+      assert.match(git(repo, 'log', '--name-only', '--format=', `main..${hidden.localDoneHead}`), /notes\.txt/, 'plain git log is fooled');
+      assert.throws(() => mergeLocal(hidden, env), /may hold secrets: keys\/id_rsa\./);
+      git(repo, 'replace', '-d', hidden.localDoneHead as string);
+      // A grafts file rewrites history too, so it refuses outright.
+      writeFileSync(join(repo, '.git', 'info', 'grafts'), '');
+      assert.throws(() => mergeLocal(build('6-graft', ['notes.txt']), env), /has a grafts file/);
+      rmSync(join(repo, '.git', 'info', 'grafts'));
+      assert.equal(git(repo, 'rev-parse', 'main').trim(), main, 'main did not move');
+      assert.match(mergeLocal(build('3-clean', ['.env.example', 'src/env.ts']), env), /merged amigo\/3-clean into local main/);
+    } finally {
       cleanup(dir);
     }
   });

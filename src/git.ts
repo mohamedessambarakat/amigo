@@ -111,6 +111,32 @@ export function worktreeGit(repo: string, worktree: string, args: string[], opts
   return runOrThrow('git', worktreeGitArgs(repo, worktree, args, gitDir), runOpts);
 }
 
+/**
+ * File names that usually hold secrets: .env files (.env, .env.local, .env-prod, .env_local, .envrc; not .env.example and the
+ * like), private keys, certificates and credential files. amigo never merges or lands work that adds or changes one (see
+ * secretRefusal).
+ */
+export function looksSecret(path: string): boolean {
+  const name = path.replace(/\\/g, '/').split('/').pop()!.toLowerCase();
+  if (/^\.env([._-].*|rc)?$/.test(name)) return !/[._-](example|sample|template|dist)$/.test(name);
+  return /\.(pem|key|p12|pfx|keystore|jks)$/.test(name) || /^id_(rsa|dsa|ecdsa|ed25519)$/.test(name) || /^(credentials|secrets?)\.(json|ya?ml|toml)$/.test(name) || name === '.netrc';
+}
+
+/**
+ * The refusal for work whose final files (`paths`) or any of whose commits (`history`) add or change secret-looking files, or
+ * null when none does. Not a waivable check: --boss does not bypass it.
+ */
+export function secretRefusal(what: string, paths: string[], history: string[] = []): string | null {
+  const now = [...new Set(paths.filter(looksSecret))];
+  const past = [...new Set(history.filter(looksSecret))].filter((p) => !now.includes(p));
+  if (!now.length && !past.length) return null;
+  const found = [
+    now.length ? `it adds or changes files that may hold secrets: ${now.join(', ')}` : '',
+    past.length ? `its history contains files that may hold secrets, even where a later commit deletes them: ${past.join(', ')}` : '',
+  ].filter(Boolean);
+  return `refusing to land ${what}: ${found.join('; ')}. Have the crew member remove them from the branch, rewriting its commits when the history holds them (and rotate the secret if it was real), then merge again. This check is not waivable, not even with --boss; the Boss can still merge by hand on GitHub. Nothing was merged.`;
+}
+
 /** A build's branch: the project's registered prefix (amigo/ unless it names another) and the task id. */
 export const branchName = (id: string, prefix = 'amigo/'): string => `${prefix}${id}`;
 

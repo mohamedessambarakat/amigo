@@ -1,9 +1,10 @@
 import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
+import { isAbsolute, join } from 'node:path';
 import type { Project } from './config.ts';
 import { classifyDone } from './delivery.ts';
 import { withLock } from './fsx.ts';
-import { assertWorktreeIntact, branchSha, worktreeRun } from './git.ts';
+import { assertWorktreeIntact, branchSha, secretRefusal, worktreeRun } from './git.ts';
 import { lockPath } from './paths.ts';
 import { run } from './proc.ts';
 import { defaultBranch } from './projects.ts';
@@ -159,19 +160,34 @@ export function mergeLocal(t: Task, env: NodeJS.ProcessEnv): string {
     if (cur !== def) throw new Error(`${clone} is on '${cur || 'a detached HEAD'}', expected its default branch '${def}'; cannot merge safely`);
     if (git(clone, ['status', '--porcelain']).stdout.trim()) throw new Error(`${clone} has a dirty working tree; refusing to merge into it`);
     const before = git(clone, ['rev-parse', `refs/heads/${def}`]).stdout.trim();
-    if (git(clone, ['merge-base', '--is-ancestor', before, head]).status !== 0) {
+    // Every read and write below sees the real objects: a replace ref or a graft could otherwise show innocent commits while the
+    // real ones land. Replace refs are ignored; a grafts file refuses.
+    const real = (args: string[]) => git(clone, ['--no-replace-objects', ...args]);
+    const grafts = git(clone, ['rev-parse', '--git-path', 'info/grafts']).stdout.trim();
+    if (!grafts || existsSync(isAbsolute(grafts) ? grafts : join(clone, grafts))) throw new Error(`${clone} has a grafts file (or its path could not be read), which rewrites history; refusing to merge into it`);
+    if (real(['merge-base', '--is-ancestor', before, head]).status !== 0) {
       throw new Error(`REFUSED: ${branch} is not a fast-forward of ${def} (it has diverged). Have the crew member rebase ${branch} onto ${def} and report done again.`);
     }
+    // Not a waivable check: commits that add or change a secret-looking file never land, not even on the Boss's word. The final
+    // files and every commit are read (merges against each parent), so a secret added and later deleted still refuses: the
+    // history lands too.
+    const names = (args: string[]): string[] => {
+      const r = real([...args, '--no-renames', '--diff-filter=d', '--name-only', '-z']);
+      if (r.status !== 0) throw new Error(`Could not read the files ${branch} changes in ${clone}: ${firstLine(r.stderr || r.stdout)}. Nothing was merged.`);
+      return r.stdout.split(/[\0\r\n]+/).filter(Boolean);
+    };
+    const secrets = secretRefusal(branch, names(['diff', before, head]), names(['log', '-m', '--format=', `${before}..${head}`]));
+    if (secrets) throw new Error(secrets);
     // The two-tree checkout stages the fast-forward and refuses obstructing files; the transaction moves the ref only if the branch still holds the head.
-    const staged = git(clone, ['read-tree', '-m', '-u', before, head]);
+    const staged = real(['read-tree', '-m', '-u', before, head]);
     if (staged.status !== 0) throw new Error(`Could not stage the fast-forward in ${clone}: ${firstLine(staged.stderr || staged.stdout)}`);
-    const tx = spawnSync('git', ['-C', clone, 'update-ref', '-m', `merge ${branch}: Fast-forward`, '--stdin'], {
+    const tx = spawnSync('git', ['-C', clone, '--no-replace-objects', 'update-ref', '-m', `merge ${branch}: Fast-forward`, '--stdin'], {
       input: `start\nverify refs/heads/${branch} ${head}\nupdate refs/heads/${def} ${head} ${before}\nprepare\ncommit\n`,
       encoding: 'utf8',
       windowsHide: true,
     });
     if (tx.status !== 0) {
-      git(clone, ['read-tree', '-m', '-u', head, before]);
+      real(['read-tree', '-m', '-u', head, before]);
       throw new Error(`The local merge was refused and ${def} left as it was: ${firstLine(tx.stderr || tx.stdout || String(tx.error ?? ''))}`);
     }
     return `merged ${branch} into local ${def} (${before.slice(0, 7)} -> ${head.slice(0, 7)}) in ${clone}`;

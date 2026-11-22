@@ -65,6 +65,38 @@ if (args[0] === 'api' && args.some((a) => /\/check-runs$/.test(a))) {
   process.stdout.write(process.env.FAKE_GH_CHECK_RUNS ?? '');
   process.exit(0);
 }
+// What a merge would land, for the compare read and each commit read, as amigo's --jq filters print them.
+// FAKE_GH_PR_FILES: JSON lines {filename, status}, the PR's final files; "fail" fails the compare read. Unset: no files.
+// FAKE_GH_PR_COMMITS: a JSON object {sha: [{filename, status}, ...]} in commit order; "fail" fails each commit read. Unset: one
+// commit, the PR's head, holding the final files.
+const fail = () => {
+  console.error('gh: Server Error (HTTP 502)');
+  process.exit(1);
+};
+const finalFiles = () => (process.env.FAKE_GH_PR_FILES ?? '').split('\n').filter((l) => l.trim()).map((l) => JSON.parse(l));
+const prCommits = () => {
+  if (process.env.FAKE_GH_PR_COMMITS === 'fail') fail();
+  return process.env.FAKE_GH_PR_COMMITS ? JSON.parse(process.env.FAKE_GH_PR_COMMITS) : { [readPr().headRefOid]: finalFiles() };
+};
+const compareArg = args.find((a) => /\/compare\/[0-9a-f]+\.\.\.[0-9a-f]+$/.test(a));
+if (args[0] === 'api' && compareArg && prFile) {
+  if (process.env.FAKE_GH_PR_FILES === 'fail') fail();
+  const commits = Object.keys(prCommits());
+  // FAKE_GH_AFTER_COMPARE: JSON fields the PR takes right after this read (a base that moves or is retargeted meanwhile).
+  if (process.env.FAKE_GH_AFTER_COMPARE) writeFileSync(prFile, JSON.stringify({ ...readPr(), ...JSON.parse(process.env.FAKE_GH_AFTER_COMPARE) }));
+  console.log(JSON.stringify({ total: commits.length, commits, files: finalFiles() }));
+  process.exit(0);
+}
+const commitArg = args.find((a) => /\/commits\/[0-9a-f]{40}(\?|$)/.test(a));
+if (args[0] === 'api' && commitArg && prFile) {
+  const files = prCommits()[/\/commits\/([0-9a-f]{40})/.exec(commitArg)[1]];
+  if (!files) {
+    console.error('gh: Not Found (HTTP 404)');
+    process.exit(1);
+  }
+  process.stdout.write(files.map((f) => JSON.stringify(f)).join('\n'));
+  process.exit(0);
+}
 if (args[0] === 'api' && /\/rules\/branches\//.test(args.at(-1))) {
   // FAKE_GH_RULES_ERR: the rules read fails with this message (a 404, or GitHub's plan-gated 403).
   if (process.env.FAKE_GH_RULES_ERR) {
