@@ -119,7 +119,7 @@ amigo: your right hand. Runs the crew.
   amigo wake (drain | ack --through <seq> --generation <n> | status)
                                                     the durable wake queue: show it, acknowledge what was handled, or count it
   amigo watch                                       run one watcher cycle here and print the wake it closes on (the Stop hook does this itself)
-  amigo daemon                                      read the shared no-mistakes daemon; start it only when it is positively down
+  amigo daemon                                      read the shared no-mistakes daemon; on Windows start it only when it is positively down
   amigo check (add <name> [--every <s>] [--cwd <dir>] -- <command>... | rm <name> | list)
                                                     commands the watcher runs on an interval; anything they print wakes amigo
   amigo backlog [<tasks-axi command> [args...]]     the work queue (data/backlog.md) through tasks-axi: list, ready, add, show, update...

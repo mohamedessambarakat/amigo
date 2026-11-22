@@ -26,7 +26,7 @@ import { autoArm, turnEndGuard, type HookPayload } from './supervise.ts';
 import { ackWakes, describeDrain, drainWakes, readQueue } from './wakes.ts';
 import { listChecks, registerCheck, removeCheck, supervisionNeed, watchCycle, watcherHealthy } from './watch.ts';
 import { planCommand } from './plan-commands.ts';
-import { describeEnsure, ensureDaemon, openPipelineBuilds } from './nmdaemon.ts';
+import { describeTend, ensureDaemon, openPipelineBuilds } from './nmdaemon.ts';
 import { AWAY_MODES, describeAway, enterAway, leaveAway, readAway, type AwayMode } from './away.ts';
 import { updateAmigo } from './update.ts';
 
@@ -69,7 +69,7 @@ export const HELP = `amigo: your right hand. Runs the crew.
   amigo wake (drain | ack --through <seq> --generation <n> | status)
                                                     the durable wake queue: show it, acknowledge what was handled, or count it
   amigo watch                                       run one watcher cycle here and print the wake it closes on (the Stop hook does this itself)
-  amigo daemon                                      read the shared no-mistakes daemon; start it only when it is positively down
+  amigo daemon                                      read the shared no-mistakes daemon; on Windows start it only when it is positively down
   amigo check (add <name> [--every <s>] [--cwd <dir>] -- <command>... | rm <name> | list)
                                                     commands the watcher runs on an interval; anything they print wakes amigo
   amigo backlog [<tasks-axi command> [args...]]     the work queue (data/backlog.md) through tasks-axi: list, ready, add, show, update...
@@ -542,8 +542,8 @@ export async function main(argv: string[], rawEnv: NodeJS.ProcessEnv = process.e
     case 'daemon': {
       parse(rest, {});
       const r = ensureDaemon(env);
-      out(describeEnsure(r, openPipelineBuilds(env)));
-      return r.action === 'failed' ? 1 : 0;
+      out(describeTend(r, openPipelineBuilds(env)));
+      return r.kind === 'failed' || r.kind === 'keeps-dying' ? 1 : 0;
     }
 
     case 'check': {
