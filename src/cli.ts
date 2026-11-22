@@ -154,7 +154,8 @@ export async function main(argv: string[], rawEnv: NodeJS.ProcessEnv = process.e
   }
   if (cmd === '_ring') {
     // amigo send's detached worker: rings a crew member that was still starting once its agent is up.
-    await ringWhenReady(rest[0] ?? '', env);
+    const { values, positionals } = parse(rest, { token: { type: 'string' } });
+    await ringWhenReady(positionals[0] ?? '', env, values.token ? { token: values.token as string } : {});
     return 0;
   }
   if (cmd === '_netcheck') {

@@ -38,20 +38,23 @@ export interface Endpoint {
 export type Liveness = 'live' | 'finished' | 'absent' | 'foreign' | 'unreadable';
 /** busy: the agent in the terminal is working on a turn. idle: it settled. unknown: no agent status is reported. */
 export type Busy = 'busy' | 'idle' | 'unknown';
-/** How long an agent's status word must stand before amigo types into it: see EndpointState.takesInput. */
+/** How long an agent's status word must stand before amigo types into it: see EndpointState.input. */
 export const AGENT_SETTLE_MS = 3000;
+/**
+ * Whether typed input reaches the agent now. ready: its status word (working, idle, done or error) has stood for
+ * AGENT_SETTLE_MS. settling: it said that word only a moment ago; Claude Code says idle, or briefly working, while it still
+ * starts. dialog: it waits on a dialog (a permission or a question), which hc does not type into. no-status: the terminal
+ * reports no agent status: its shell or an agent still starting, where text typed in is lost or left unsent and hc send waits
+ * for the busy starting screen to go quiet, past amigo's timeout; or an agent herdr-app never recognises, which never says
+ * more. The caller tells these two apart by how long ago the crew member started. Measured on herdr-app 0.1.16 with hc 0.1.21.
+ */
+export type InputState = 'ready' | 'settling' | 'dialog' | 'no-status';
 
 export interface EndpointState {
   liveness: Liveness;
   busy: Busy;
-  /**
-   * The agent is up and takes typed input. herdr-app: the terminal is live and its agent's status word (working, idle or done)
-   * has stood for AGENT_SETTLE_MS. Until then the crew member is still starting. In its shell, before any agent status, text
-   * typed in is lost or left unsent, and hc send waits for the busy starting screen to go quiet, past amigo's timeout. Claude
-   * Code also says idle, or briefly working, while it is still starting, so its word must stand a moment first. Measured on
-   * herdr-app 0.1.16 with hc 0.1.21.
-   */
-  takesInput: boolean;
+  /** Whether typed input reaches the agent now (meaningful while live). The test backend's live terminals are ready. */
+  input: InputState;
 }
 
 export interface ListedEndpoint {
@@ -432,7 +435,8 @@ function herdrAppBackend(env: NodeJS.ProcessEnv, runner: Runner, warn: (line: st
       const busy: Busy = s.liveness !== 'live' ? 'unknown' : status === 'working' ? 'busy' : status === 'idle' || status === 'done' ? 'idle' : 'unknown';
       // hc's status_ms is when the status word last changed; without it the word is taken as settled.
       const since = typeof s.terminal.status_ms === 'number' ? s.terminal.status_ms : 0;
-      return { liveness: s.liveness, busy, takesInput: busy !== 'unknown' && now() - since >= AGENT_SETTLE_MS };
+      const input: InputState = s.liveness !== 'live' || typeof status !== 'string' || !status ? 'no-status' : status === 'blocked' ? 'dialog' : now() - since >= AGENT_SETTLE_MS ? 'ready' : 'settling';
+      return { liveness: s.liveness, busy, input };
     },
     close(ep) {
       const before = read(ep).liveness;
@@ -537,7 +541,7 @@ function testBackend(env: NodeJS.ProcessEnv): TerminalBackend {
     },
     state: (ep) => {
       const l = liveness(ep);
-      return { liveness: l, busy: 'unknown', takesInput: l === 'live' };
+      return { liveness: l, busy: 'unknown', input: l === 'live' ? 'ready' : 'no-status' };
     },
     close(ep) {
       const l = liveness(ep);

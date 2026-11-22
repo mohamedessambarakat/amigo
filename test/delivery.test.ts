@@ -5,7 +5,7 @@ import { describe, it } from 'node:test';
 import { classifyDone, dodBlock, parseBriefInput, renderBrief } from '../src/delivery.ts';
 import { checksNotGreen, readProducers, requiredChecks, verifyMergeable, type PrView } from '../src/pr.ts';
 import { declaredWait, describeStatus, formatStatusLine, openItems, parseStatusLine, readStatus, statusFile } from '../src/status.ts';
-import { inboxBody, pendingMessages } from '../src/steer.ts';
+import { inboxBody, pendingMessages, writeInbox } from '../src/steer.ts';
 import { getTask } from '../src/tasks.ts';
 import { scan } from '../src/watch.ts';
 import { addOrigin, cleanup, cli, cloneOf, fakeGhEnv, ghCalls, git, idFrom, makeHome, makeRepo, releaseHeld, waitFor } from './helpers.ts';
@@ -116,6 +116,31 @@ describe('steering inbox and control', () => {
       const stopped = await waitFor(id, env, ['blocked']);
       assert.match(stopped.summary ?? '', /Stopped by amigo \(control exit\)/);
       assert.match(cli({ ...env, AMIGO_TASK: id }, ['send', id, 'x']).err, /only amigo can send/);
+    } finally {
+      releaseHeld(env);
+      cleanup(dir);
+    }
+  });
+});
+
+describe('queued ring', () => {
+  it('amigo _ring rings a ready crew member once and removes only the marker that holds its token', () => {
+    const { dir, env } = makeHome();
+    try {
+      const id = idFrom(cli(env, ['spawn', '--scratch'], 'Title: Held\nMODE:hold').out);
+      const t = getTask(id, env)!;
+      const marker = join(env.AMIGO_HOME as string, 'state', 'tasks', id, 'ring.pending');
+      const input = join(env.AMIGO_HOME as string, 'state', 'test-terminals', `${t.endpoint!.terminal}.input`);
+      writeInbox(id, 'look again', env);
+      writeFileSync(marker, `${process.pid} other`);
+      const kept = cli(env, ['_ring', id, '--token', 'mine']);
+      assert.equal(kept.code, 0, kept.err);
+      assert.equal(readFileSync(marker, 'utf8'), `${process.pid} other`, "another worker's marker stays");
+      assert.equal(readFileSync(input, 'utf8').split('\n').filter((l) => l.startsWith('amigo: an instruction is waiting')).length, 1);
+      writeFileSync(marker, `${process.pid} mine`);
+      assert.equal(cli(env, ['_ring', id, '--token', 'mine']).code, 0);
+      assert.ok(!existsSync(marker), 'its own marker is removed');
+      assert.match(readFileSync(join(env.AMIGO_HOME as string, 'state', 'tasks', id, 'output.log'), 'utf8'), /queued doorbell for the inbox: rang the terminal once its agent was ready/);
     } finally {
       releaseHeld(env);
       cleanup(dir);
