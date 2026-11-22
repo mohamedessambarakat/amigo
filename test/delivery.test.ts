@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from '
 import { dirname, join } from 'node:path';
 import { describe, it } from 'node:test';
 import { classifyDone, dodBlock, parseBriefInput, renderBrief } from '../src/delivery.ts';
-import { checksNotGreen, readProducers, requiredChecks, verifyMergeable, type PrView } from '../src/pr.ts';
+import { checksNotGreen, parsePrUrl, prCommitFiles, readProducers, requiredChecks, verifyMergeable, type PrView } from '../src/pr.ts';
 import { declaredWait, describeStatus, formatStatusLine, openItems, parseStatusLine, readStatus, statusFile } from '../src/status.ts';
 import { mergeLocal } from '../src/landing.ts';
 import { inboxBody, pendingMessages, writeInbox } from '../src/steer.ts';
@@ -259,11 +259,28 @@ describe('direct-PR delivery, merge and cleanup', () => {
       assert.match(envFile.err, /refusing to land .*files that may hold secrets: \.env\. .*not waivable, not even with --boss; the Boss can still merge by hand on GitHub/);
       assert.match(cli({ ...env, FAKE_GH_PR_FILES: files(['config/credentials.json', 'modified']) }, ['merge', id, '--boss']).err, /may hold secrets: config\/credentials\.json\./);
       assert.match(cli({ ...env, FAKE_GH_PR_FILES: 'fail' }, ['merge', id, '--boss']).err, /could not read the changed files of https:\/\/github\.com\/example\/repo\/pull\/7: gh: Server Error/);
+      // A merge or rebase lands every commit: a .env added and deleted again refuses, though the PR's final files are clean.
+      const first = 'c'.repeat(40);
+      const history = JSON.stringify({ [first]: [{ filename: 'member-output.txt', status: 'added' }, { filename: '.env', status: 'added' }], [head]: [{ filename: '.env', status: 'removed' }] });
+      const cleanFiles = files(['member-output.txt', 'added']);
+      const viaHistory = { ...env, FAKE_GH_PR_FILES: cleanFiles, FAKE_GH_PR_COMMITS: history };
+      for (const method of ['rebase', 'merge']) {
+        assert.match(cli(viaHistory, ['merge', id, '--boss', '--method', method]).err, /may hold secrets: \.env\. .*not waivable, not even with --boss/, method);
+      }
+      assert.match(cli({ ...viaHistory, FAKE_GH_PR_COMMITS: 'fail' }, ['merge', id, '--method', 'rebase']).err, /could not read the commits of .*pull\/7: gh: Server Error/);
+      assert.match(cli({ ...viaHistory, FAKE_GH_PR_COMMITS: JSON.stringify({ [first]: [] }) }, ['merge', id, '--method', 'rebase']).err, new RegExp(`the verified head ${head} is not among its commits`));
+      const many = Object.fromEntries([...Array.from({ length: 249 }, (_, i) => [i.toString(16).padStart(40, '0'), []]), [head, []]]);
+      assert.match(cli({ ...viaHistory, FAKE_GH_PR_COMMITS: JSON.stringify(many) }, ['merge', id, '--method', 'merge']).err, /GitHub lists at most 250 commits/);
+      const clean = prCommitFiles(parsePrUrl('https://github.com/example/repo/pull/7'), head, dir, { ...viaHistory, FAKE_GH_PR_COMMITS: JSON.stringify({ [first]: [{ filename: 'a.txt', status: 'added' }, { filename: 'old.key', status: 'removed' }], [head]: [{ filename: 'b.txt', status: 'modified' }] }) });
+      assert.deepEqual(clean, ['a.txt', 'b.txt'], 'a clean history reads every commit, deletions left out');
       assert.equal(ghCalls(gh.log).find((c) => c.args[1] === 'merge'), undefined, 'gh pr merge never ran');
       assert.equal(getTask(id, env)?.merge, undefined, 'nothing was recorded');
       git(repo, 'checkout', '-q', 'main');
-      // An example env file and a removed key are fine.
-      const merged = cli({ ...env, FAKE_GH_UNKNOWN_READS: '1', FAKE_GH_PR_FILES: files(['.env.example', 'added'], ['id_rsa', 'removed'], ['member-output.txt', 'added']) }, ['merge', id]);
+      // A squash lands only the final tree, so that same history merges; an example env file and a removed key are fine.
+      const commitReads = () => ghCalls(gh.log).filter((c) => c.args.some((a) => /\/pulls\/7\/commits/.test(a))).length;
+      const readsBefore = commitReads();
+      const merged = cli({ ...viaHistory, FAKE_GH_UNKNOWN_READS: '1', FAKE_GH_PR_FILES: files(['.env.example', 'added'], ['id_rsa', 'removed'], ['member-output.txt', 'added']) }, ['merge', id]);
+      assert.equal(commitReads(), readsBefore, 'a squash does not read the commits');
       assert.equal(merged.code, 0, merged.err);
       assert.match(merged.out, new RegExp(`verified: .* green at head ${head}, and no secret-looking files`));
       assert.match(merged.out, /authority: yolo/);

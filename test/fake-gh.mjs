@@ -74,6 +74,29 @@ if (args[0] === 'api' && args.some((a) => /\/pulls\/\d+\/files(\?|$)/.test(a))) 
   process.stdout.write(process.env.FAKE_GH_PR_FILES ?? '');
   process.exit(0);
 }
+// FAKE_GH_PR_COMMITS: a JSON object {sha: [{filename, status}, ...]} in commit order, or "fail" (both reads fail). The PR's commit
+// list prints {sha} lines, and each commit read prints its files, as amigo's --jq filters do.
+const prCommits = () => {
+  if (process.env.FAKE_GH_PR_COMMITS === 'fail') {
+    console.error('gh: Server Error (HTTP 502)');
+    process.exit(1);
+  }
+  return JSON.parse(process.env.FAKE_GH_PR_COMMITS ?? '{}');
+};
+if (args[0] === 'api' && args.some((a) => /\/pulls\/\d+\/commits(\?|$)/.test(a))) {
+  process.stdout.write(Object.keys(prCommits()).map((sha) => JSON.stringify({ sha })).join('\n'));
+  process.exit(0);
+}
+const commitArg = args.find((a) => /\/commits\/[0-9a-f]{40}(\?|$)/.test(a));
+if (args[0] === 'api' && commitArg) {
+  const files = prCommits()[/\/commits\/([0-9a-f]{40})/.exec(commitArg)[1]];
+  if (!files) {
+    console.error('gh: Not Found (HTTP 404)');
+    process.exit(1);
+  }
+  process.stdout.write(files.map((f) => JSON.stringify(f)).join('\n'));
+  process.exit(0);
+}
 if (args[0] === 'api' && /\/rules\/branches\//.test(args.at(-1))) {
   // FAKE_GH_RULES_ERR: the rules read fails with this message (a 404, or GitHub's plan-gated 403).
   if (process.env.FAKE_GH_RULES_ERR) {

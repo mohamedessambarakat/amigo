@@ -3,7 +3,7 @@ import { closeMember } from './close.ts';
 import { loadProjects, type Project } from './config.ts';
 import { secretRefusal } from './git.ts';
 import { fastForwardLive, mergeLocal } from './landing.ts';
-import { describePr, mergePinned, parsePrUrl, prChangedFiles, readProducers, requiredChecks, verifyMergeable, viewPr, type PrView } from './pr.ts';
+import { describePr, mergePinned, parsePrUrl, prChangedFiles, prCommitFiles, readProducers, requiredChecks, verifyMergeable, viewPr, type PrView } from './pr.ts';
 import { appendStatus, formatStatusLine } from './status.ts';
 import { syncProject } from './sync.ts';
 import { isActive } from './squad.ts';
@@ -91,14 +91,16 @@ export function mergeTask(id: string, opts: MergeOptions, env: NodeJS.ProcessEnv
     const pending = checks.unknownOnly ? ' (GitHub is still computing mergeability: run the merge again shortly)' : '';
     throw new Error(`refusing to merge ${url}${pending}:\n${checks.refusals.map((r) => `  - ${r}`).join('\n')}`);
   }
-  // Not a waivable check: secret-looking files refuse even on the Boss's word. The list is read after the head was verified and
-  // the head is read again after it, so the list belongs to the head the merge pins.
-  const secrets = secretRefusal(url, prChangedFiles(ref, cwd, env));
+  // Not a waivable check: secret-looking files refuse even on the Boss's word. A squash lands only the PR's final tree; a merge
+  // or rebase lands every commit, so then each commit is read too (a secret deleted again stays in the history). The lists are
+  // read after the head was verified and the head is read again after them, so they belong to the head the merge pins.
+  const method = opts.method ?? 'squash';
+  const paths = [...prChangedFiles(ref, cwd, env), ...(method === 'squash' ? [] : prCommitFiles(ref, checks.head, cwd, env))];
+  const secrets = secretRefusal(url, paths);
   if (secrets) throw new Error(secrets);
   const recheck = viewPr(url, cwd, env).headRefOid;
   if (recheck !== checks.head) throw new Error(`refusing to merge ${url}: its head moved from ${checks.head} to ${recheck} while its files were read. Nothing was merged; run the merge again.`);
-  out.push(`verified: ${url} is open and mergeable, with every unwaived required check reported and every unwaived check green at head ${checks.head}, and no secret-looking files`);
-  const method = opts.method ?? 'squash';
+  out.push(`verified: ${url} is open and mergeable, with every unwaived required check reported and every unwaived check green at head ${checks.head}, and no secret-looking files${method === 'squash' ? '' : ' in any commit'}`);
   const merged = mergePinned(url, checks.head, method, cwd, env);
   const after = viewPr(url, cwd, env);
   if (after.state.toUpperCase() !== 'MERGED') {

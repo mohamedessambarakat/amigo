@@ -235,32 +235,57 @@ export function verifyMergeable(view: PrView, required: RequiredChecks, opts: { 
   return { refusals, unknownOnly, head: view.headRefOid, red, pending: pendingChecks(view.statusCheckRollup), unreported };
 }
 
-/** GitHub's cap on a pull request's file list: a list this long may be cut short, so it is not a complete read. */
-const PR_FILES_CAP = 3000;
+/** GitHub's caps: a file list (of a PR or a commit) this long, or a PR commit list this long, may be cut short. */
+const FILES_CAP = 3000;
+const COMMITS_CAP = 250;
+
+/** gh's JSON lines, one per item: throws `fail` on a failed read or any line that is not JSON. */
+function jsonLines(args: string[], fail: (why: string) => Error, cwd: string, env: NodeJS.ProcessEnv): Record<string, unknown>[] {
+  const r = gh(args, cwd, env);
+  if (!r.ok) throw fail(r.err || 'gh failed');
+  return r.out
+    .split(/\r?\n/)
+    .filter((l) => l.trim())
+    .map((line) => {
+      try {
+        const v = JSON.parse(line) as unknown;
+        if (v && typeof v === 'object' && !Array.isArray(v)) return v as Record<string, unknown>;
+      } catch {
+        // fall through
+      }
+      throw fail('unexpected answer');
+    });
+}
+
+/** The added or changed paths of a file list read with pagination (removed files left out; a rename counts by its new path). */
+function addedOrChanged(endpoint: string, jq: string, fail: (why: string) => Error, cwd: string, env: NodeJS.ProcessEnv): string[] {
+  const files = jsonLines(['api', '--paginate', endpoint, '--jq', jq], fail, cwd, env);
+  if (files.some((f) => typeof f.filename !== 'string' || !f.filename || typeof f.status !== 'string')) throw fail('unexpected answer');
+  if (files.length >= FILES_CAP) throw fail(`GitHub lists at most ${FILES_CAP} files, so the list may be incomplete`);
+  return files.filter((f) => f.status !== 'removed').map((f) => f.filename as string);
+}
 
 /**
- * The paths a PR adds or changes (removed files left out; a rename counts by its new path), read live with pagination. Throws
- * when the list cannot be read in full: a merge never proceeds on a guess.
+ * The paths a PR adds or changes overall, read live with pagination: what a squash merge lands. Throws when the list cannot be
+ * read in full: a merge never proceeds on a guess.
  */
 export function prChangedFiles(ref: PrRef, cwd: string, env: NodeJS.ProcessEnv): string[] {
   const fail = (why: string) => new Error(`could not read the changed files of ${ref.url}: ${why}`);
-  const r = gh(['api', '--paginate', `repos/${ref.owner}/${ref.repo}/pulls/${ref.number}/files?per_page=100`, '--jq', '.[] | {filename, status}'], cwd, env);
-  if (!r.ok) throw fail(r.err || 'gh failed');
-  const paths: string[] = [];
-  let count = 0;
-  for (const line of r.out.split(/\r?\n/).filter((l) => l.trim())) {
-    let f: { filename?: unknown; status?: unknown };
-    try {
-      f = JSON.parse(line) as typeof f;
-    } catch {
-      throw fail('unexpected answer');
-    }
-    if (typeof f.filename !== 'string' || !f.filename || typeof f.status !== 'string') throw fail('unexpected answer');
-    count++;
-    if (f.status !== 'removed') paths.push(f.filename);
-  }
-  if (count >= PR_FILES_CAP) throw fail(`GitHub lists at most ${PR_FILES_CAP} files, so the list may be incomplete`);
-  return paths;
+  return addedOrChanged(`repos/${ref.owner}/${ref.repo}/pulls/${ref.number}/files?per_page=100`, '.[] | {filename, status}', fail, cwd, env);
+}
+
+/**
+ * The paths any commit of a PR adds or changes, a file deleted again by a later commit included: what a merge or rebase lands
+ * (the whole history). The commit list must hold `head`, the head the merge pins. Throws when any list cannot be read in full.
+ */
+export function prCommitFiles(ref: PrRef, head: string, cwd: string, env: NodeJS.ProcessEnv): string[] {
+  const fail = (why: string) => new Error(`could not read the commits of ${ref.url}: ${why}`);
+  const commits = jsonLines(['api', '--paginate', `repos/${ref.owner}/${ref.repo}/pulls/${ref.number}/commits?per_page=100`, '--jq', '.[] | {sha}'], fail, cwd, env);
+  const shas = commits.map((c) => c.sha);
+  if (!shas.length || shas.some((s) => typeof s !== 'string' || !/^[0-9a-f]{40}([0-9a-f]{24})?$/.test(s))) throw fail('unexpected answer');
+  if (shas.length >= COMMITS_CAP) throw fail(`GitHub lists at most ${COMMITS_CAP} commits, so the list may be incomplete`);
+  if (!shas.includes(head)) throw fail(`the verified head ${head} is not among its commits (the PR moved)`);
+  return (shas as string[]).flatMap((sha) => addedOrChanged(`repos/${ref.owner}/${ref.repo}/commits/${sha}?per_page=100`, '.files[] | {filename, status}', fail, cwd, env));
 }
 
 /** Merge with the verified head pinned: a push that lands between the read and the merge fails the merge. */
