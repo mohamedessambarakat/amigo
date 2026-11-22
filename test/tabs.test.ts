@@ -9,9 +9,9 @@ import { INLINE_LIMIT, buildLaunch, pointerLine, quoteForCmd } from '../src/comm
 import { loadConfig } from '../src/config.ts';
 import { memberSettings, guessTranscriptPath, amigoSettings, claudeMemberNotes, claudeMemberTemplate, claudeAmigoTemplate, claudeJsonPath, dropTrust, isClaude, mergeTrust, ownSessionEnv, reportReason, sessionAddress, turnMessagedAmigo } from '../src/claude.ts';
 import { parseVmStat, ramAllows } from '../src/ram.ts';
-import { descendants } from '../src/proc.ts';
+import { descendants, run as runCmd } from '../src/proc.ts';
 import { beat, saveTask, type Task } from '../src/tasks.ts';
-import { detectTerminal, amigoHerdrWorkspace, herdrLabel, openTab, planTab, selectTerminal, tabScript, warpTabConfig, type HerdrPlacement } from '../src/terminal.ts';
+import { detectTerminal, amigoHerdrAppSpace, amigoHerdrWorkspace, insideHcTerminal, herdrLabel, openTab, planTab, selectTerminal, tabScript, warpTabConfig, type HerdrPlacement } from '../src/terminal.ts';
 import type { RunResult } from '../src/proc.ts';
 import { cleanup, cli, makeHome, releaseHeld, tmpDir, waitFor } from './helpers.ts';
 
@@ -50,6 +50,103 @@ describe('terminal tabs', () => {
     assert.equal(selectTerminal({ env: { AMIGO_TERMINAL: 'wt', TERM_PROGRAM: 'WezTerm' }, platform: 'win32', find: none }), 'wt', "a squad member's tab keeps amigo's terminal");
     assert.equal(selectTerminal({ env: { AMIGO_TERMINAL: 'herdr', TERM_PROGRAM: 'herdr' }, platform: 'win32', find: none }), 'herdr');
     assert.equal(selectTerminal({ env: { AMIGO_TERMINAL: 'nonsense', TERM_PROGRAM: 'WezTerm' }, platform: 'linux', find: none }), 'wezterm', 'a bad carried value falls back to detection');
+  });
+
+  it('finds the herdr app from what it sets (HC_TERMINAL_ID, TERM_PROGRAM=ghostty), with no HERDR_* variable', () => {
+    const app = { HC_TERMINAL_SOCKET: '\\\\.\\pipe\\herdr-core-u-default.sock', HC_TERMINAL_ID: 't1', TERM_PROGRAM: 'ghostty' };
+    const inside = (id: string) => id === 't1';
+    assert.equal(detectTerminal(app, 'win32', inside), 'herdr-app');
+    assert.equal(detectTerminal({ HC_TERMINAL_ID: 't1' }, 'linux', inside), 'herdr-app', 'the terminal id alone is enough when it is our ancestor');
+    assert.equal(detectTerminal({ ...app, TERM_PROGRAM: 'vscode' }, 'win32', inside), 'window', 'a terminal started from a herdr app terminal keeps its own identity');
+    assert.equal(detectTerminal({ ...app, TMUX: '/tmp/t' }, 'linux', inside), 'tmux', 'tmux inside the herdr app opens tmux windows');
+    assert.equal(detectTerminal({ TERM_PROGRAM: 'herdr', HERDR_PANE_ID: 'w1:p1', HC_TERMINAL_ID: 't1' }, 'linux', inside), 'herdr', 'the herdr TUI run inside the app is the herdr TUI');
+    assert.equal(selectTerminal({ env: { AMIGO_TERMINAL: 'herdr-app' }, platform: 'win32' }), 'herdr-app', 'the carried value is kept');
+    assert.equal(selectTerminal({ env: app, platform: 'win32', insideHc: inside }), 'herdr-app');
+  });
+
+  it('ignores HC_TERMINAL_ID leaked from a herdr app terminal into a process that does not run inside it', () => {
+    const leaked = { HC_TERMINAL_SOCKET: '\\\\.\\pipe\\herdr-core-u-default.sock', HC_TERMINAL_ID: 't1', TERM_PROGRAM: 'ghostty' };
+    const outside = () => false;
+    assert.equal(detectTerminal(leaked, 'win32', outside), 'window', 'a console window opened from a herdr terminal is a console window');
+    assert.equal(detectTerminal({ ...leaked, WT_SESSION: 'x' }, 'win32', outside), 'wt', 'Windows Terminal opened from a herdr terminal is Windows Terminal');
+    assert.equal(detectTerminal({ WT_SESSION: 'x', HC_TERMINAL_ID: 't1' }, 'win32', outside), 'wt');
+    assert.equal(detectTerminal(leaked, 'darwin', outside), 'terminal');
+    assert.equal(selectTerminal({ env: { ...leaked, WT_SESSION: 'x' }, platform: 'win32', insideHc: outside }), 'wt');
+    assert.equal(detectTerminal({ ...leaked, WT_SESSION: 'x' }, 'win32', () => true), 'herdr-app', 'herdr app started from Windows Terminal is still the herdr app');
+  });
+
+  /**
+   * hc knows t1 (program pid 500). The OS answers like this: on Windows the processes attached to the asked process's console
+   * (500, 700 and 900 share the terminal's console; 800 was opened from it with Start-Process and has a console of its own,
+   * with its own conhost 801); elsewhere each process's controlling tty.
+   */
+  const fakeOs = (hc: object | null, opts: { consoles?: Record<number, string>; ttys?: Record<number, string>; hang?: boolean } = {}) => {
+    const calls: string[][] = [];
+    const consoles = opts.consoles ?? { 500: '500 700 900 501', 700: '500 700 900 501', 900: '500 700 900 501', 800: '800 801' };
+    const ttys = opts.ttys ?? { 500: 'pts/3', 900: 'pts/3', 800: 'pts/7', 600: '?' };
+    const runner = (cmd: string, args: string[]): RunResult => {
+      calls.push([cmd, ...args]);
+      if (opts.hang) return { status: null, stdout: '', stderr: '', error: new Error(`${cmd} ${args[0]} timed out after 3s`) };
+      if (cmd === 'hc') return hc ? { status: 0, stdout: JSON.stringify(hc), stderr: '' } : { status: 3, stdout: JSON.stringify({ error: { message: 'no terminal "t1"' } }), stderr: '' };
+      if (cmd === 'powershell.exe') {
+        const pid = Number(/AttachConsole\((\d+)\)\)/.exec(args.at(-1)!)?.[1]);
+        return { status: 0, stdout: `${consoles[pid] ?? 'none'}\r\n`, stderr: '' };
+      }
+      assert.equal(cmd, 'ps');
+      const pids = args.at(-1)!.split(',').map(Number);
+      return { status: 0, stdout: pids.filter((p) => ttys[p]).map((p) => `  ${p} ${ttys[p]}\n`).join(''), stderr: '' };
+    };
+    return { calls, runner };
+  };
+  const live = { address: 't1', state: 'live', pid: 500 };
+
+  it("counts a herdr-core terminal as ours only when it is live and this process shares its program's console (or tty)", () => {
+    for (const platform of ['win32', 'linux'] as const) {
+      const f = fakeOs(live);
+      assert.equal(insideHcTerminal('t1', f.runner, 900, platform), true, `a process in the terminal (${platform})`);
+      assert.deepEqual(f.calls.map((c) => c[0]), ['hc', platform === 'win32' ? 'powershell.exe' : 'ps']);
+      assert.equal(insideHcTerminal('t1', fakeOs(live).runner, 500, platform), true, 'the terminal program itself (hc run node ...)');
+      assert.equal(insideHcTerminal('t1', fakeOs(live).runner, 800, platform), false, 'a window opened from the terminal (a descendant with a console or tty of its own)');
+      assert.equal(insideHcTerminal('t1', fakeOs({ ...live, state: 'finished' }).runner, 900, platform), false, 'a finished terminal');
+      assert.equal(insideHcTerminal('t1', fakeOs(null).runner, 900, platform), false, 'herdr-core does not know it (or is not running)');
+    }
+    assert.equal(insideHcTerminal('t1', fakeOs(live).runner, 123, 'win32'), false, 'a process with no console to attach to');
+    assert.equal(insideHcTerminal('t1', fakeOs(live, { ttys: { 500: '?', 600: '?' } }).runner, 600, 'linux'), false, 'no controlling tty on either side is not a shared terminal');
+    const ps = fakeOs(live);
+    insideHcTerminal('t1', ps.runner, 900, 'win32');
+    assert.match(ps.calls[1]!.at(-1)!, /AttachConsole\(900\)/, 'the console asked about is this process');
+  });
+
+  it('a hung hc or console query means not inside: detection falls through and nothing waits on it', () => {
+    const warned: string[] = [];
+    const warn = (line: string) => warned.push(line);
+    const hung = fakeOs(live, { hang: true });
+    assert.equal(insideHcTerminal('t1', hung.runner, 900, 'win32', warn), false);
+    assert.deepEqual(hung.calls.map((c) => c[0]), ['hc'], 'no further command after hc timed out');
+    assert.deepEqual(warned, ['amigo: could not check whether it runs in herdr terminal t1 (hc get timed out after 3s); squad members open as if outside herdr'], 'one warning line naming the timeout');
+    const env = { HC_TERMINAL_ID: 't1', TERM_PROGRAM: 'ghostty', WT_SESSION: 'x' };
+    assert.equal(detectTerminal(env, 'win32', (id) => insideHcTerminal(id, hung.runner, 900, 'win32', warn)), 'wt');
+    let n = 0;
+    const consoleHangs = (cmd: string, args: string[]): RunResult => (n++ === 0 ? fakeOs(live).runner(cmd, args) : { status: null, stdout: '', stderr: '', error: new Error('powershell.exe timed out after 3s') });
+    warned.length = 0;
+    assert.equal(insideHcTerminal('t1', consoleHangs, 900, 'win32', warn), false);
+    assert.deepEqual(warned, ['amigo: could not check whether it runs in herdr terminal t1 (powershell.exe timed out after 3s); squad members open as if outside herdr'], 'a slow cold-start console query is not silent');
+    warned.length = 0;
+    assert.equal(amigoHerdrAppSpace({ HC_TERMINAL_ID: 't1' }, hung.runner, warn), null);
+    assert.equal(warned.length, 1);
+    assert.match(warned[0]!, /timed out after 3s/);
+    warned.length = 0;
+    assert.equal(insideHcTerminal('t1', fakeOs(null).runner, 900, 'win32', warn), false);
+    assert.equal(insideHcTerminal('t1', fakeOs(live).runner, 800, 'win32', warn), false);
+    assert.deepEqual(warned, [], 'an answered "no" (unknown terminal, other console) is silent');
+  });
+
+  it('run() kills a command that takes longer than its timeout and says so', () => {
+    const t0 = Date.now();
+    const r = runCmd(process.execPath, ['-e', 'setTimeout(() => {}, 20000)'], { timeoutMs: 300 });
+    assert.ok(Date.now() - t0 < 5000, `took ${Date.now() - t0}ms`);
+    assert.match(r.error?.message ?? '', /timed out after 0\.3s/);
+    assert.equal(runCmd(process.execPath, ['-e', 'process.stdout.write("ok")'], { timeoutMs: 5000 }).stdout, 'ok');
   });
 
   it('opens a WezTerm tab in amigo window, or a new console window elsewhere', () => {
@@ -282,6 +379,162 @@ describe('herdr tabs', () => {
     try {
       assert.throws(() => openTab('herdr', { ...req(process.platform), dir, herdr: { label, ownWorkspace: false, workspaces: ['w1'] } }, h.runner), /pane w1:p1 not found/);
       assert.deepEqual(h.calls.at(-1), ['tab', 'close', 'w1:t1'], 'the empty tab it made is closed again');
+    } finally {
+      cleanup(dir);
+    }
+  });
+});
+
+/** A herdr app (herdr-app and hc) that answers from a list of fake spaces, recording every call. amigo's terminal t1 is in space sp1. */
+function fakeHerdrApp(spaces: string[], opts: { failCreate?: string; failSend?: boolean; wrongShape?: string[]; noLabel?: boolean } = {}) {
+  const calls: string[][] = [];
+  const ok = (body: unknown): RunResult => ({ status: 0, stdout: JSON.stringify(body), stderr: '' });
+  const made = (space: string) => ok({ space, tab: `${space}:tb`, terminal: `${space}:t` });
+  const runner = (cmd: string, args: string[]): RunResult => {
+    calls.push([cmd, ...args]);
+    if (cmd === 'hc') {
+      if (args[0] === 'get') return ok({ address: args[1], state: 'live', pid: 4242, labels: opts.noLabel ? {} : { 'herdr.space': 'sp1', 'herdr.tab': 'tb1' } });
+      if (args[0] === 'send' && opts.failSend) return { status: 3, stdout: JSON.stringify({ error: { kind: 'not_found', message: `no terminal "${args[2]}"` } }), stderr: '' };
+      return ok({ started: null, status: null, turn: 0 });
+    }
+    // The OS: this test runs inside terminal t1, whose program has pid 4242 (same console, same tty).
+    if (cmd === 'powershell.exe') return { status: 0, stdout: `4242 ${process.pid} 4243\r\n`, stderr: '' };
+    if (cmd === 'ps') return { status: 0, stdout: `4242 pts/3\n${process.pid} pts/3\n`, stderr: '' };
+    assert.equal(cmd, 'herdr-app');
+    switch (args[1]) {
+      case 'space.new':
+        if (opts.failCreate) return { status: 1, stdout: JSON.stringify({ error: opts.failCreate }), stderr: '' };
+        if (opts.wrongShape?.includes('new')) return ok({ terminal: 't9' });
+        spaces.push('sp9');
+        return made('sp9');
+      case 'tab.new': {
+        const space = args[args.indexOf('--space') + 1] as string;
+        if (opts.wrongShape?.includes(space)) return ok({ ok: true });
+        return spaces.includes(space) ? made(space) : { status: 1, stdout: JSON.stringify({ error: `no space "${space}"` }), stderr: '' };
+      }
+      default:
+        return ok({ ok: true });
+    }
+  };
+  return { calls, runner };
+}
+
+describe('herdr app tabs', () => {
+  const label = '7-fix-footer · Fix the footer';
+  const open = (spaces: string[], herdr: HerdrPlacement, opts?: Parameters<typeof fakeHerdrApp>[1]) => {
+    const win = process.platform === 'win32';
+    const dir = tmpDir();
+    const h = fakeHerdrApp(spaces, opts);
+    try {
+      const r = openTab('herdr-app', { ...req(process.platform), dir, herdr }, h.runner);
+      return { ...h, ...r, line: win ? `& '${join(dir, 'tab.cmd')}'; exit` : `sh '${join(dir, 'tab.sh')}'; exit`, cwd: req(process.platform).cwd, written: readdirSync(dir) };
+    } finally {
+      cleanup(dir);
+    }
+  };
+
+  it('puts a squad member with a worktree in a space of its own, unfocused, and types the script into its shell', () => {
+    const r = open(['sp1'], { label, ownWorkspace: true, workspaces: ['sp1'] });
+    assert.deepEqual(r.calls, [
+      ['herdr-app', 'do', 'space.new', '--name', label, '--tab', label, '--folder', r.cwd, '--focus', 'false'],
+      ['hc', 'send', '--json', 'sp9:t', r.line],
+    ]);
+    assert.equal(r.herdrWorkspace, 'sp9');
+    assert.deepEqual(r.written, [process.platform === 'win32' ? 'tab.cmd' : 'tab.sh']);
+  });
+
+  it("puts a squad member without a worktree in a tab of amigo's space, unfocused", () => {
+    const r = open(['sp1'], { label, ownWorkspace: false, workspaces: ['sp1'] });
+    assert.deepEqual(r.calls, [
+      ['herdr-app', 'do', 'tab.new', '--space', 'sp1', '--name', label, '--folder', r.cwd, '--focus', 'false'],
+      ['hc', 'send', '--json', 'sp1:t', r.line],
+    ]);
+    assert.equal(r.herdrWorkspace, 'sp1');
+  });
+
+  it('tries the next space only when the app says a space is gone, else opens a new one', () => {
+    const place = { label, ownWorkspace: false, workspaces: ['sp4', 'sp1'] };
+    const gone = open(['sp1'], place);
+    assert.equal(gone.herdrWorkspace, 'sp1', '"no space sp4" falls through to the next space');
+    assert.deepEqual(gone.calls.map((c) => c.slice(0, c[0] === 'hc' ? 4 : 5).join(' ')), ['herdr-app do tab.new --space sp4', 'herdr-app do tab.new --space sp1', 'hc send --json sp1:t']);
+    assert.throws(() => open(['sp4', 'sp1'], place, { wrongShape: ['sp4'] }), /Could not open a herdr tab for the squad member: unexpected answer/, 'an odd answer may have made a tab: no second one');
+    const none = open([], place);
+    assert.equal(none.herdrWorkspace, 'sp9');
+    assert.deepEqual(none.calls.map((c) => c.slice(0, 3).join(' ')), ['herdr-app do tab.new', 'herdr-app do tab.new', 'herdr-app do space.new', 'hc send --json']);
+    assert.throws(() => open([], place, { wrongShape: ['new'] }), /Could not open a herdr space for the squad member: unexpected answer/);
+  });
+
+  it("fails with the app's own message, and closes the tab it made when the script cannot be started", () => {
+    assert.throws(() => open([], { label, ownWorkspace: true, workspaces: [] }, { failCreate: 'no window open' }), /Could not open a herdr space for the squad member: no window open/);
+    const dir = tmpDir();
+    const h = fakeHerdrApp(['sp1'], { failSend: true });
+    try {
+      assert.throws(() => openTab('herdr-app', { ...req(process.platform), dir, herdr: { label, ownWorkspace: false, workspaces: ['sp1'] } }, h.runner), /Could not start the squad member in its herdr tab: no terminal "sp1:t"/);
+      assert.deepEqual(h.calls.at(-1), ['herdr-app', 'do', 'tab.close', '--id', 'sp1:tb', '--confirmed', 'true']);
+    } finally {
+      cleanup(dir);
+    }
+  });
+
+  it('fails the squad member loudly when the herdr app or hc times out while its tab opens', () => {
+    const timedOut = (what: string): RunResult => ({ status: null, stdout: '', stderr: '', error: new Error(`${what} timed out after 3s`) });
+    const dir = tmpDir();
+    try {
+      const appCalls: string[][] = [];
+      const appHangs = (cmd: string, args: string[]): RunResult => {
+        appCalls.push([cmd, ...args]);
+        return cmd === 'herdr-app' && args[1] !== 'tab.close' ? timedOut('herdr-app do') : fakeHerdrApp(['sp1']).runner(cmd, args);
+      };
+      assert.throws(() => openTab('herdr-app', { ...req(process.platform), dir, herdr: { label, ownWorkspace: false, workspaces: ['sp4', 'sp1'] } }, appHangs), /Could not open a herdr tab for the squad member: herdr-app do timed out after 3s/);
+      assert.deepEqual(appCalls.map((c) => c.slice(0, 5).join(' ')), ['herdr-app do tab.new --space sp4'], 'one tab.new, then a clear error: no other space, no space.new (the slow app may still make that tab)');
+      appCalls.length = 0;
+      assert.throws(() => openTab('herdr-app', { ...req(process.platform), dir, herdr: { label, ownWorkspace: true, workspaces: [] } }, appHangs), /Could not open a herdr space for the squad member: herdr-app do timed out after 3s/);
+      assert.equal(appCalls.length, 1);
+      const h = fakeHerdrApp(['sp1']);
+      const sendHangs = (cmd: string, args: string[]): RunResult => (cmd === 'hc' && args[0] === 'send' ? (h.calls.push([cmd, ...args]), timedOut('hc send')) : h.runner(cmd, args));
+      assert.throws(() => openTab('herdr-app', { ...req(process.platform), dir, herdr: { label, ownWorkspace: true, workspaces: [] } }, sendHangs), /Could not start the squad member in its herdr tab: hc send timed out after 3s/);
+      assert.deepEqual(h.calls.at(-1), ['herdr-app', 'do', 'tab.close', '--id', 'sp9:tb', '--confirmed', 'true'], 'the tab it made is closed again');
+    } finally {
+      cleanup(dir);
+    }
+  });
+
+  it("finds amigo's space from the label herdr-core gives its terminal, unless one is carried", () => {
+    const h = fakeHerdrApp([]);
+    assert.equal(amigoHerdrAppSpace({ HC_TERMINAL_ID: 't1' }, h.runner), 'sp1');
+    assert.deepEqual(h.calls, [['hc', 'get', 't1', '--json']]);
+    assert.equal(amigoHerdrAppSpace({ HC_TERMINAL_ID: 't7', AMIGO_HERDR_WORKSPACE: 'sp4' }, h.runner), 'sp4');
+    assert.equal(amigoHerdrAppSpace({ HC_TERMINAL_ID: 't1' }, fakeHerdrApp([], { noLabel: true }).runner), null);
+    assert.equal(amigoHerdrAppSpace({}, h.runner), null);
+  });
+
+  it('spawning with the reported herdr app env opens a worktree squad member in a new space, any other in a tab of the amigo space', () => {
+    const { dir, env } = makeHome();
+    try {
+      const home = env.AMIGO_HOME as string;
+      const now = new Date().toISOString();
+      // What the herdr app on Windows sets in amigo's shell: no HERDR_* variable, and amigo has carried no terminal yet.
+      const appEnv = { ...env, AMIGO_TERMINAL: undefined, HC_TERMINAL_SOCKET: '\\\\.\\pipe\\herdr-core-u-default.sock', HC_TERMINAL_ID: 't1', TERM_PROGRAM: 'ghostty', TMUX: undefined, HERDR_PANE_ID: undefined, HERDR_WORKSPACE_ID: undefined };
+      const start = (id: string, worktree: string | null) => {
+        mkdirSync(join(home, 'tasks', id), { recursive: true });
+        writeFileSync(join(home, 'tasks', id, 'brief.md'), 'Title: g\n');
+        const t: Task = { id, title: 'g', project: 'p', agent: 'fake', cwd: dir, repo: null, worktree, branch: null, baseSha: null, status: 'queued', createdAt: now, updatedAt: now, runs: 0, followUps: [], seen: true };
+        saveTask(t, env);
+        const h = fakeHerdrApp(['sp1']);
+        assert.equal(startMember(t, loadConfig(appEnv), appEnv, h.runner), true);
+        const saved = JSON.parse(readFileSync(join(home, 'tasks', id, 'task.json'), 'utf8')) as Task;
+        const script = readFileSync(join(home, 'tasks', id, process.platform === 'win32' ? 'tab.cmd' : 'tab.sh'), 'utf8');
+        return { calls: h.calls.filter((c) => c[0] === 'hc' || c[0] === 'herdr-app').map((c) => c.slice(0, c[0] === 'hc' ? 4 : 5).join(' ')), saved, script };
+      };
+      const own = start('8-w', join(dir, 'wt'));
+      assert.deepEqual(own.calls, ['hc get t1 --json', 'hc get t1 --json', 'herdr-app do space.new --name 8-w · g', 'hc send --json sp9:t']);
+      assert.equal(own.saved.status, 'running');
+      assert.equal(own.saved.herdrWorkspace, 'sp9');
+      assert.match(own.script, /AMIGO_TERMINAL=herdr-app/);
+      assert.match(own.script, /AMIGO_HERDR_WORKSPACE=sp1/, 'queued squad members started from this tab still know the amigo space');
+      const tab = start('9-t', null);
+      assert.deepEqual(tab.calls, ['hc get t1 --json', 'hc get t1 --json', 'herdr-app do tab.new --space sp1', 'hc send --json sp1:t']);
+      assert.equal(tab.saved.herdrWorkspace, 'sp1');
     } finally {
       cleanup(dir);
     }

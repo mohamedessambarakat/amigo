@@ -29,7 +29,7 @@ import { noticesPending, takeNotices, type Notice } from './notices.ts';
 import { killTree } from './proc.ts';
 import { freeMemMb, ramAllows } from './ram.ts';
 import { assessChanges, describeRisk, snapshot } from './risk.ts';
-import { amigoHerdrWorkspace, herdrLabel, openTab, removeTabConfig, selectTerminal, type HerdrPlacement } from './terminal.ts';
+import { amigoHerdrAppSpace, amigoHerdrWorkspace, herdrLabel, insideHcTerminal, openTab, removeTabConfig, selectTerminal, type HerdrPlacement } from './terminal.ts';
 import {
   FINISHED,
   HEARTBEAT_MS,
@@ -333,9 +333,9 @@ export function tabEnvArgs(env: NodeJS.ProcessEnv): string[] {
 }
 
 /** A squad member with a worktree gets a herdr workspace of its own; any other squad member a tab beside its reviewed squad member's, else amigo's. */
-export function herdrPlacement(t: Task, env: NodeJS.ProcessEnv): HerdrPlacement {
+export function herdrPlacement(t: Task, env: NodeJS.ProcessEnv, amigoWorkspace: string | null = amigoHerdrWorkspace(env)): HerdrPlacement {
   const reviewed = t.reviewOf ? listTasks(env).find((x) => x.id === t.reviewOf)?.herdrWorkspace : null;
-  const workspaces = [reviewed, amigoHerdrWorkspace(env)].filter((w, i, all): w is string => Boolean(w) && all.indexOf(w) === i);
+  const workspaces = [reviewed, amigoWorkspace].filter((w, i, all): w is string => Boolean(w) && all.indexOf(w) === i);
   return { label: herdrLabel(t.id, t.title), ownWorkspace: Boolean(t.worktree), workspaces };
 }
 
@@ -351,7 +351,7 @@ export function startMember(t: Task, config: Config, env: NodeJS.ProcessEnv, run
       t = mutateTask(t.id, () => made, env);
     }
     const claude = isClaude(memberTemplate(t, config));
-    const terminal = selectTerminal({ env, platform: process.platform });
+    const terminal = selectTerminal({ env, platform: process.platform, ...(runner ? { insideHc: (id: string) => insideHcTerminal(id, runner) } : {}) });
     const resume = claude && t.sessionStarted === true;
     if (resume) {
       writeFileSync(promptFile(t.id, env), followUpPrompt(t));
@@ -378,7 +378,8 @@ export function startMember(t: Task, config: Config, env: NodeJS.ProcessEnv, run
       }),
       env,
     );
-    const amigoWorkspace = terminal === 'herdr' ? amigoHerdrWorkspace(env) : null;
+    const inHerdr = terminal === 'herdr' || terminal === 'herdr-app';
+    const amigoWorkspace = terminal === 'herdr' ? amigoHerdrWorkspace(env) : terminal === 'herdr-app' ? amigoHerdrAppSpace(env, runner) : null;
     const { tabConfig, herdrWorkspace } = openTab(terminal, {
       name: memberName(t.id),
       title: `amigo: ${t.title}`,
@@ -388,7 +389,7 @@ export function startMember(t: Task, config: Config, env: NodeJS.ProcessEnv, run
       dir: taskDir(t.id, env),
       platform: process.platform,
       env: { ...env, AMIGO_HOME: home(env) },
-      ...(terminal === 'herdr' ? { herdr: herdrPlacement(t, env) } : {}),
+      ...(inHerdr ? { herdr: herdrPlacement(t, env, amigoWorkspace) } : {}),
     }, runner);
     if (tabConfig || herdrWorkspace) mutateTask(t.id, () => ({ tabConfig, herdrWorkspace }), env);
     return true;
