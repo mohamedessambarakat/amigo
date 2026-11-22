@@ -5,6 +5,7 @@ import { landedWork } from './landing.ts';
 import { scratchDir } from './paths.ts';
 import { killTree } from './proc.ts';
 import { drain } from './squad.ts';
+import { terminalBackend } from './terminal.ts';
 import { listTasks, mutateTask, requireTask, runnerAlive, type Task } from './tasks.ts';
 import { listChecks, removeCheck } from './watch.ts';
 import { returnWorktree } from './worktree.ts';
@@ -57,7 +58,15 @@ export function closeMember(id: string, opts: CloseOptions = {}, env: NodeJS.Pro
   const out: string[] = [];
   let committed: string | undefined;
   try {
-    if (t.pid && runnerAlive(id, env)) killTree(t.pid);
+    // The crew member's terminal is closed and proven gone before its worktree is given back (a refusal stops the teardown).
+    // A runner with no endpoint (an older record) is stopped by its process tree instead.
+    if (t.endpoint) {
+      try {
+        terminalBackend(env).close(t.endpoint);
+      } catch (err) {
+        throw new Error(`${id} was not torn down: its terminal could not be closed (${(err as Error).message}). Close it by hand, then run amigo close ${id} again.`);
+      }
+    } else if (t.pid && runnerAlive(id, env)) killTree(t.pid);
     if (t.worktree && t.repo && t.branch) {
       if (!opts.force && t.kind !== 'survey') {
         const landed = landedWork(t);

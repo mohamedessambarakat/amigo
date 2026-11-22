@@ -347,6 +347,9 @@ describe('startup briefing', () => {
       assert.equal(closed.code, 0, closed.err);
       assert.match(closed.out, /Removed the briefing crew member's scratch folder/);
       assert.ok(!existsSync(t.cwd), 'the briefing scratch folder is gone');
+      const ep = getTask(t.id, env)!.endpoint;
+      assert.ok(ep, 'the crew member had a terminal');
+      assert.ok(!existsSync(join(env.AMIGO_HOME as string, 'state', 'test-terminals', `${ep.terminal}.json`)), 'teardown closed and removed its terminal');
       assert.equal(cli(env, ['close', other]).code, 0);
       assert.ok(existsSync(getTask(other, env)!.cwd), 'another scratch member keeps its folder');
       assert.match(cli(env, ['brief', '--agent', 'fake']).out, /Crew member \S+ \("Briefing checks"\) is checking/, 'a new one starts once the old one is closed');
