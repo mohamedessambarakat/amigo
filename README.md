@@ -29,7 +29,7 @@ amigo install-skill
 ```
 
 - `npm install -g .` links the `amigo` command to this folder, so keep the folder where it is (`git pull` or `/updateamigo` updates it). Installing straight from GitHub (`npm install -g github:...`) does not work: Node will not run TypeScript from inside `node_modules`.
-- `amigo install-skill` adds `/amigo` to every supported agent CLI it finds and adds that agent to your config. For Claude Code it also installs your commands inside an amigo session: `/catchup`, `/rundown`, `/remember`, `/updateamigo`, `/afk` and `/quiet`. It prints every file it writes, never overwrites a file it did not write, and `amigo install-skill --remove` takes them out again.
+- `amigo install-skill` adds every supported agent CLI it finds to your config. amigo itself runs only on Claude Code (its Stop hook runs the watcher and the turn-end guard), so only Claude Code gets `/amigo`, which reloads amigo's instructions inside a session the `amigo` command started; the other agents run crew members. For Claude Code it also installs your commands inside an amigo session: `/catchup`, `/rundown`, `/remember`, `/updateamigo`, `/afk` and `/quiet`. It prints every file it writes, never overwrites a file it did not write, and `amigo install-skill --remove` takes them out again.
 - Everything amigo stores lives in `~/.amigo/` (`AMIGO_HOME` puts it elsewhere): `config/` (local choices), `data/` (durable records: the project registry, `boss.md`, `learnings.md`, the backlog, briefs and survey reports), `state/` (runtime records, status events, the wake queue, the worktree pool) and `projects/` (amigo's own clones).
 - **Coming from an older amigo?** A home with `config.json` and `projects.json` at its top is refused until you convert it: close every open task, run `amigo migrate --dry-run` to see the plan, then `amigo migrate`. Each registered folder becomes a clone in `~/.amigo/projects/<name>` (registered `no-mistakes` with yolo on; a folder without an origin becomes `local-only`). `--live <project>` records the old folder as its live install, `--drop <project>` leaves one out. The old gate files are dropped; task history moves to `state/tasks/`.
 
@@ -46,7 +46,7 @@ amigo never writes to a clone except through `amigo sync` (a fast-forward from o
 
 ## Start working
 
-In a herdr-app terminal, run `amigo` (or type `/amigo` in a Claude Code session there). The session-start digest runs once: it takes the session lock (a second session is read-only and says why), checks your tools, presents queued notifications, shows every open task and reconciles anything that stopped while you were gone. Then you just talk:
+In a herdr-app terminal, run `amigo`. It starts Claude Code with amigo's hooks; an ordinary Claude Code session has none of them, so `/amigo` there refuses and tells you to start with `amigo`. The session-start digest runs once: it takes the session lock (a second session is read-only and says why), checks your tools, presents queued notifications, shows every open task and reconciles anything that stopped while you were gone. Then you just talk:
 
 ```
 > fix the broken footer link in my-app, and look into why the site build got slow
@@ -83,8 +83,8 @@ You can use every command yourself too:
 amigo: your right hand. Runs the crew.
 
   amigo [--agent <name>] [--dry-run]                start amigo in this terminal: a briefing first, then you just talk to it
-  amigo install-skill [<agent>] [--remove]          add /amigo to your agent CLIs (all found on PATH, or one)
-  amigo brief --agent <name>                        print amigo's instructions and the briefing (what /amigo runs)
+  amigo install-skill [<agent>] [--remove]          set up your agent CLIs: /amigo for Claude Code, crew templates for the rest
+  amigo brief --agent <name>                        print amigo's instructions and the briefing (what /amigo runs; only inside a session amigo started)
   amigo add <git url or path> [--name <name>] [--mode no-mistakes|direct-PR|local-only] [--yolo | --no-yolo] [--branch-prefix <p>]
             [--live <folder>] [--notes <text>] [--live-command <cmd>]... [--watch <text>]...
                                                     clone a project into projects/<name> and register it; the same name and source again updates it
@@ -141,7 +141,7 @@ Data lives in $AMIGO_HOME (default ~/.amigo): config/, data/, state/ and project
 
 ## Agents
 
-`~/.amigo/config/config.json` holds one entry per agent. `amigo` starts the session you talk to (Claude Code is the supported one: the Stop hook supervision and the user commands are Claude Code's). `member` starts a crew member: Claude Code runs it as an interactive session; other agents run one task and exit. `{prompt}` is replaced by the instructions. `install-skill` fills this in for you; edit it to change flags.
+`~/.amigo/config/config.json` holds one entry per agent. `amigo` starts the session you talk to, and only Claude Code has one: the Stop hook supervision and the user commands are Claude Code's, so `amigo` refuses another agent as the lead. `member` starts a crew member: Claude Code runs it as an interactive session; other agents run one task and exit. `{prompt}` is replaced by the instructions. `install-skill` fills this in for you; edit it to change flags.
 
 ```json
 {
@@ -159,10 +159,10 @@ Data lives in $AMIGO_HOME (default ~/.amigo): config/, data/, state/ and project
 | Agent | Slash command | `amigo` | `member` |
 |---|---|---|---|
 | Claude Code | `/amigo` | `["claude", "{prompt}"]` | `["claude", "--permission-mode", "auto", "{prompt}"]` |
-| Codex | `$amigo` | `["codex", "{prompt}"]` | `["codex", "exec", "--sandbox", "workspace-write", "--skip-git-repo-check", "{prompt}"]` |
-| Gemini CLI | `/amigo` | `["gemini", "-i", "{prompt}"]` | `["gemini", "--approval-mode", "auto_edit", "-p", "{prompt}"]` |
-| Antigravity | `/amigo` | `["agy", "-i", "{prompt}"]` | `["agy", "-p", "{prompt}"]` |
-| Grok | `/amigo` | none | `["grok", "-p", "--always-approve", "{prompt}"]` |
+| Codex | none | none | `["codex", "exec", "--sandbox", "workspace-write", "--skip-git-repo-check", "{prompt}"]` |
+| Gemini CLI | none | none | `["gemini", "--approval-mode", "auto_edit", "-p", "{prompt}"]` |
+| Antigravity | none | none | `["agy", "-p", "{prompt}"]` |
+| Grok | none | none | `["grok", "-p", "--always-approve", "{prompt}"]` |
 
 Flags come from each tool's documentation; check them against your installed version.
 

@@ -10,7 +10,7 @@ import { TEMPLATES } from './templates.ts';
 /** Marks files amigo wrote, so --remove never deletes anything else. */
 export const MARKER = 'installed by amigo';
 
-const DESCRIPTION = 'Turn this session into amigo, which hands tasks to the crew: parallel worker agents. Use only when the user runs /amigo or asks to start amigo.';
+const DESCRIPTION = "Reload amigo's instructions in a session started with the amigo command (it hands tasks to the crew: parallel worker agents). Use only when the user runs /amigo.";
 
 const skillMd = (body: string): string => `---\nname: amigo\ndescription: ${DESCRIPTION}\n---\n\n<!-- ${MARKER} -->\n\n${body}\n`;
 
@@ -26,37 +26,29 @@ interface SkillTarget {
 }
 
 /**
- * One file per agent CLI. Codex and Grok both read ~/.agents/skills, so they share one file that names both;
- * giving Grok its own copy in ~/.grok/skills would show it two skills with the same name.
+ * amigo runs as the lead only on Claude Code (its Stop hook arms the watcher and the turn-end guard), so /amigo exists only
+ * there. Other agent CLIs are crew-member templates: install-skill adds their template and writes no slash command.
  */
-const SHARED = (h: string) => join(h, '.agents', 'skills', 'amigo', 'SKILL.md');
-const sharedContent = () =>
-  skillMd(
-    'Run this shell command and follow the instructions it prints, exactly. Use `--agent codex` if you are Codex and `--agent grok` if you are Grok:\n\n    amigo brief --agent <codex or grok>',
-  );
-
 export const TARGETS: SkillTarget[] = [
   { agent: 'claude', invoke: '/amigo', file: (h) => join(h, '.claude', 'skills', 'amigo', 'SKILL.md'), content: () => skillMd(runLine('claude')) },
-  {
-    agent: 'gemini',
-    invoke: '/amigo',
-    file: (h) => join(h, '.gemini', 'commands', 'amigo.toml'),
-    content: () => `# ${MARKER}\ndescription = "Turn this session into amigo"\nprompt = """\n${runLine('gemini')}\n"""\n`,
-  },
-  { agent: 'antigravity', invoke: '/amigo', file: (h) => join(h, '.gemini', 'config', 'skills', 'amigo', 'SKILL.md'), content: () => skillMd(runLine('antigravity')) },
-  { agent: 'codex', invoke: '$amigo', file: SHARED, content: sharedContent },
-  { agent: 'grok', invoke: '/amigo', file: SHARED, content: sharedContent },
+];
+
+/** Slash commands older versions wrote for other agent CLIs: removed by --remove, never written again. */
+const LEGACY_FILES = (h: string): string[] => [
+  join(h, '.agents', 'skills', 'amigo', 'SKILL.md'),
+  join(h, '.gemini', 'commands', 'amigo.toml'),
+  join(h, '.gemini', 'config', 'skills', 'amigo', 'SKILL.md'),
 ];
 
 const commandOf = (agent: string): string => TEMPLATES[agent]?.member[0] ?? agent;
 
-export function targetsFor(agent: string | undefined, env: NodeJS.ProcessEnv = process.env): SkillTarget[] {
+/** The known agents to set up: one named, or every one found on PATH. */
+export function agentsFor(agent: string | undefined, env: NodeJS.ProcessEnv = process.env): string[] {
   if (agent) {
-    const t = TARGETS.find((x) => x.agent === agent);
-    if (!t) throw new Error(`No slash command support for "${agent}". Supported: ${TARGETS.map((x) => x.agent).join(', ')} (others can use: amigo --agent <name>)`);
-    return [t];
+    if (!TEMPLATES[agent]) throw new Error(`No built-in template for "${agent}". Known: ${Object.keys(TEMPLATES).join(', ')} (add others to config.json by hand)`);
+    return [agent];
   }
-  return TARGETS.filter((t) => resolveExecutable(commandOf(t.agent), env) !== null);
+  return Object.keys(TEMPLATES).filter((a) => resolveExecutable(commandOf(a), env) !== null);
 }
 
 const ours = (file: string): boolean => existsSync(file) && readFileSync(file, 'utf8').includes(MARKER);
@@ -90,27 +82,28 @@ function installUserSkills(userHome: string): string[] {
 
 /** Write the skill files (and a config entry for agents that have none). Returns one line per thing done. */
 export function installSkills(agent: string | undefined, env: NodeJS.ProcessEnv = process.env, userHome: string = os.homedir()): string[] {
-  const targets = targetsFor(agent, env);
-  if (!targets.length) return [`None of ${TARGETS.map((t) => commandOf(t.agent)).join(', ')} is on PATH. Name one to install anyway: amigo install-skill <agent>`];
+  const agents = agentsFor(agent, env);
+  if (!agents.length) return [`None of ${Object.keys(TEMPLATES).map(commandOf).join(', ')} is on PATH. Name one to install anyway: amigo install-skill <agent>`];
   const out: string[] = [];
-  const written = new Set<string>();
   const config = loadConfig(env);
   let configChanged = false;
-  for (const t of targets) {
-    const file = t.file(userHome);
-    if (!written.has(file)) {
+  for (const name of agents) {
+    const t = TARGETS.find((x) => x.agent === name);
+    if (t) {
+      const file = t.file(userHome);
       if (existsSync(file) && !ours(file)) throw new Error(`${file} exists and was not written by amigo; move it away first`);
       mkdirSync(dirname(file), { recursive: true });
       writeFileSync(file, t.content());
-      written.add(file);
+      out.push(`${t.agent}: wrote ${file} (type ${t.invoke} in a session started with amigo)`);
+      out.push(...installUserSkills(userHome));
+    } else {
+      out.push(`${name}: crew members only - amigo itself runs on Claude Code, so there is no slash command here`);
     }
-    out.push(`${t.agent}: wrote ${file} (type ${t.invoke} in ${commandOf(t.agent)})`);
-    if (t.agent === 'claude') out.push(...installUserSkills(userHome));
-    const configured = Object.entries(config.agents).some(([name, a]) => name === t.agent || a.member[0] === commandOf(t.agent));
-    if (!configured && TEMPLATES[t.agent]) {
-      config.agents[t.agent] = TEMPLATES[t.agent]!;
+    const configured = Object.entries(config.agents).some(([n, a]) => n === name || a.member[0] === commandOf(name));
+    if (!configured) {
+      config.agents[name] = TEMPLATES[name]!;
       configChanged = true;
-      out.push(`${t.agent}: added its template to ${configPath(env)} (member: ${TEMPLATES[t.agent]!.member.join(' ')})`);
+      out.push(`${name}: added its template to ${configPath(env)} (member: ${TEMPLATES[name]!.member.join(' ')})`);
     }
   }
   if (configChanged) writeJsonAtomic(configPath(env), config);
@@ -119,9 +112,10 @@ export function installSkills(agent: string | undefined, env: NodeJS.ProcessEnv 
 
 /** Delete only files amigo wrote, plus their folder when it is left empty. */
 export function removeSkills(agent: string | undefined, userHome: string = os.homedir()): string[] {
-  const targets = agent ? targetsFor(agent) : TARGETS;
+  agentsFor(agent ?? 'claude');
+  const targets = !agent || agent === 'claude' ? TARGETS : [];
   const out: string[] = [];
-  for (const file of new Set(targets.map((t) => t.file(userHome)))) {
+  for (const file of new Set([...targets.map((t) => t.file(userHome)), ...(agent && agent !== 'claude' ? [] : LEGACY_FILES(userHome))])) {
     if (!ours(file)) continue;
     rmSync(file);
     const dir = dirname(file);

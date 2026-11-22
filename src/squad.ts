@@ -434,7 +434,7 @@ export function drain(env: NodeJS.ProcessEnv = process.env): string[] {
  */
 export function tabEnvArgs(env: NodeJS.ProcessEnv): string[] {
   return Object.entries(env)
-    .filter(([k, v]) => k.startsWith('AMIGO_') && k !== 'AMIGO_HOME' && k !== 'AMIGO_TASK' && v)
+    .filter(([k, v]) => k.startsWith('AMIGO_') && k !== 'AMIGO_HOME' && k !== 'AMIGO_TASK' && k !== LEAD_MARKER && v)
     .flatMap(([k, v]) => ['--env', `${k}=${v}`]);
 }
 
@@ -884,44 +884,69 @@ const CLAUDE_AMIGO = `## Talking to crew members (you are Claude Code)
 - To answer a crew member whose session is still open, use SendMessage to \`amigo-<id>\`, or \`amigo send\`, which writes to its durable inbox and rings its tab. \`amigo control <id> relaunch\` restarts its session.
 - Messages from crew members can be held for the Boss's approval, so never rely on them alone: \`amigo wait\` and \`amigo inbox\` always have every result.`;
 
-/** An amigo on another agent CLI has no Stop hook watcher (supervise.ts): it hears about results by waiting itself. */
-const OTHER_AMIGO = `## Hearing about results (no Stop hook on this agent)
+/**
+ * Set only in the session runAmigo starts (Claude Code with amigo's SessionStart, Stop and StopFailure hooks). `amigo brief`
+ * (the /amigo skill) needs it: an ordinary Claude session has none of those hooks, so no watcher and no turn-end guard.
+ */
+export const LEAD_MARKER = 'AMIGO_LEAD_SESSION';
 
-- Run \`amigo inbox\` at the start of every reply to the Boss: crew members that finished a turn since you last looked.
-- \`amigo wait\` waits until a crew member finishes a turn and prints its result. After every spawn, and again after you handle a result while anything is still running or queued, run it in the background if you can run background commands, so you hear about results without the Boss asking.`;
+const leadOnly = (agent: string): string =>
+  `amigo runs as the lead only on Claude Code: its Stop hook arms the watcher and the turn-end guard. "${agent}" has no Claude Code "amigo" template. It can still run crew members: amigo spawn --agent ${agent}.`;
+
+/** The agent amigo itself runs on: the one named (it must be Claude Code), else the default when it is Claude Code, else the first Claude Code agent. */
+export function leadAgent(config: Config, wanted: string | undefined, env: NodeJS.ProcessEnv = process.env): string {
+  const lead = (a: string): boolean => isClaude(config.agents[a]?.amigo ?? []);
+  const picked = pickAgent(config, wanted, env);
+  if (lead(picked)) return picked;
+  if (wanted) throw new Error(leadOnly(wanted));
+  const claude = Object.keys(config.agents).find(lead);
+  if (!claude) throw new Error(leadOnly(picked));
+  return claude;
+}
+
+/** Why `amigo brief` must not run here (a session amigo did not start, without its hooks), or null. */
+export function leadSessionProblem(env: NodeJS.ProcessEnv): string | null {
+  return env[LEAD_MARKER] === '1'
+    ? null
+    : "This session was not started by the amigo command, so it has none of amigo's hooks: no zero-token watcher, no auto-arm and no turn-end guard. Tell the Boss to exit and start amigo with the amigo command in a herdr-app terminal; /amigo only reloads the instructions inside that session.";
+}
+
+/**
+ * How amigo opens a session (a fresh start or a restart). A restart is a non-event: open work carries on under the authority
+ * already recorded for it, and only a decision the Boss must make is put to the Boss.
+ */
+export const RESTART_RULE =
+  "Open your first reply with a short report from this briefing: what finished, what is under way, and anything you noticed. A restart is a non-event: reconcile each open task from its records, then carry on with every in-flight task's next step under the authority already recorded for it (for example, at a no-mistakes handoff of work the Boss ordered through to merge, send the validate step) without asking again. Put to the Boss only the decisions that are the Boss's to make, as options with your pick first. When none are open, say so in one line and carry on supervising.";
 
 /** Amigo's full instructions, for the bare `amigo` start and for the /amigo skill (`amigo brief`). */
 export function amigoPrompt(agent: string, env: NodeJS.ProcessEnv = process.env, briefing = '', opts: { live?: boolean } = {}): string {
   const config = loadConfig(env);
   const others = Object.keys(config.agents).filter((a) => a !== agent);
   const drafts = draftsDir(env);
-  const claude = isClaude(config.agents[agent]?.amigo ?? config.agents[agent]?.member ?? []);
   return [
     readPrompt('amigo.md'),
     `## Your setup\n\n- You run as the "${agent}" agent. Pass \`--agent ${agent}\` to every spawn so crew members use the same agent${others.length ? `, unless a task is better suited to another configured agent: ${others.join(', ')}` : ''}.\n- Write briefs and messages to new files in ${drafts} (create the folder if needed) and pass them with \`--brief-file\` or \`--file\`.\n- amigo's code folder is ${codeRoot.replaceAll('\\', '/')}: \`skills/agent/\`, \`prompts/\` and \`src/\` above are relative to it. Your home is ${home(env).replaceAll('\\', '/')}.`,
-    claude ? CLAUDE_AMIGO : OTHER_AMIGO,
-    `## Briefing\n\nOpen your first reply with a short report from this briefing: what finished, what is waiting on the Boss, anything you noticed, and what you would do next as options, your pick first. Then wait for the Boss.${opts.live ? ' Live checks are running in the background: run `amigo wait` in the background only if their result has not already arrived in `amigo inbox` (or crew members are still running or queued), and mention it when it arrives.' : ''}\n\n${briefing.trim() || '(no briefing)'}`,
+    CLAUDE_AMIGO,
+    `## Briefing\n\n${RESTART_RULE}${opts.live ? ' Live checks are running in the background: their result arrives in `amigo inbox`; mention it when it arrives.' : ''}\n\n${briefing.trim() || '(no briefing)'}`,
   ].join('\n\n') + '\n';
 }
 
 /** Start amigo in this terminal and wait for it to exit. */
 export async function runAmigo(agentName: string | undefined, opts: { dryRun?: boolean; briefing?: string; live?: boolean }, env: NodeJS.ProcessEnv = process.env): Promise<number> {
   const config = loadConfig(env);
-  const agent = pickAgent(config, agentName, env);
-  const template = config.agents[agent]!.amigo;
-  if (!template) throw new Error(`Agent "${agent}" has no "amigo" template: start amigo with /amigo inside it (amigo install-skill), or use --agent with another agent.`);
+  const agent = leadAgent(config, agentName, env);
+  const template = config.agents[agent]!.amigo!;
   const file = join(stateDir(env), 'amigo-prompt.md');
   const prompt = amigoPrompt(agent, env, opts.briefing, { live: opts.live });
   const amigoSettingsFile = join(stateDir(env), 'amigo-settings.json');
-  const claude = isClaude(template);
-  const launch = buildLaunch(claude ? claudeAmigoTemplate(template, amigoSettingsFile, file) : template, { prompt, promptFile: file }, env);
+  const launch = buildLaunch(claudeAmigoTemplate(template, amigoSettingsFile, file), { prompt, promptFile: file }, env);
   if (opts.dryRun) {
     process.stdout.write(`DRY RUN: would start amigo (${agent}) in ${home(env)}:\n${describeLaunch(launch)}\n`);
     return 0;
   }
   writeFileSync(file, prompt);
-  if (claude) writeJsonAtomic(amigoSettingsFile, amigoSettings());
-  const childEnv = { ...env, AMIGO_HOME: home(env) };
+  writeJsonAtomic(amigoSettingsFile, amigoSettings());
+  const childEnv = { ...env, AMIGO_HOME: home(env), [LEAD_MARKER]: '1' };
   const child = spawnAgent(launch, { cwd: home(env), stdio: 'inherit', env: childEnv });
   return await new Promise((done, fail) => {
     child.on('error', fail);

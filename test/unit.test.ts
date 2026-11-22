@@ -182,25 +182,28 @@ describe('agent templates and skills', () => {
       assert.deepEqual(JSON.parse(readFileSync(join(env.AMIGO_HOME as string, 'config', 'config.json'), 'utf8')).agents.claude, TEMPLATES.claude);
       assert.ok(!installSkills('claude', env, userHome).some((l) => l.includes('added its template')), 'never adds an agent twice');
 
-      installSkills('codex', env, userHome);
-      installSkills('grok', env, userHome);
-      const shared = join(userHome, '.agents', 'skills', 'amigo', 'SKILL.md');
-      assert.match(readFileSync(shared, 'utf8'), /--agent codex[\s\S]*--agent grok/);
+      // Other agent CLIs are crew members only: their template is added, and no slash command is written.
+      const legacy = join(userHome, '.agents', 'skills', 'amigo', 'SKILL.md');
+      mkdirSync(join(legacy, '..'), { recursive: true });
+      writeFileSync(legacy, '<!-- installed by amigo --> an older /amigo for codex');
+      const codex = installSkills('codex', env, userHome);
+      assert.ok(codex.some((l) => /codex: crew members only - amigo itself runs on Claude Code/.test(l)), codex.join('\n'));
+      assert.deepEqual(JSON.parse(readFileSync(join(env.AMIGO_HOME as string, 'config', 'config.json'), 'utf8')).agents.codex, TEMPLATES.codex);
+      assert.equal(TEMPLATES.codex!.amigo, undefined, 'no lead template for another agent');
       installSkills('gemini', env, userHome);
-      assert.match(readFileSync(join(userHome, '.gemini', 'commands', 'amigo.toml'), 'utf8'), /prompt = """\n[\s\S]*--agent gemini/);
+      assert.ok(!existsSync(join(userHome, '.gemini', 'commands', 'amigo.toml')));
 
       const foreign = join(userHome, '.gemini', 'config', 'skills', 'amigo', 'SKILL.md');
       mkdirSync(join(foreign, '..'), { recursive: true });
       writeFileSync(foreign, 'someone else');
-      assert.throws(() => installSkills('antigravity', env, userHome), /not written by amigo/);
 
       const removed = removeSkills(undefined, userHome);
-      assert.equal(removed.length, 3 + USER_SKILLS.length - 1, 'the amigo skills and every user skill but the foreign /afk');
+      assert.equal(removed.length, 2 + USER_SKILLS.length - 1, 'the /amigo skill, the older codex one, and every user skill but the foreign /afk');
       assert.equal(readFileSync(theirs, 'utf8'), 'their own afk');
       assert.ok(!existsSync(join(userHome, '.claude', 'skills', 'catchup')), 'an emptied skill folder goes too');
-      assert.ok(!existsSync(skill) && !existsSync(shared));
+      assert.ok(!existsSync(skill) && !existsSync(legacy));
       assert.equal(readFileSync(foreign, 'utf8'), 'someone else', 'foreign files are left alone');
-      assert.throws(() => installSkills('some-agent', env, userHome), /No slash command support for "some-agent"/);
+      assert.throws(() => installSkills('some-agent', env, userHome), /No built-in template for "some-agent"/);
     } finally {
       cleanup(dir);
     }
@@ -262,7 +265,8 @@ describe('amigo instructions', () => {
       const prompt = amigoPrompt('fake', env);
       assert.match(prompt, /^# You are amigo/);
       assert.match(prompt, /amigo's code folder is [^\n]*: `skills\/agent\/`/);
-      assert.match(prompt, /Hearing about results \(no Stop hook on this agent\)/, 'an amigo without the Stop hook waits for results itself');
+      assert.match(prompt, /Talking to crew members \(you are Claude Code\)/, 'amigo leads only on Claude Code');
+      assert.doesNotMatch(prompt, /no Stop hook on this agent/);
       assert.doesNotMatch(prompt, /amigo (show|hide|board)|background, with no window/);
     } finally {
       cleanup(dir);

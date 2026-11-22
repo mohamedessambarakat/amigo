@@ -3,7 +3,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { parseArgs, type ParseArgsOptionsConfig } from 'node:util';
 import { appendFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { applyHook, attach, amigoPrompt, inbox, runAmigo, runTab, spawnMember, statusText, waitForMembers } from './squad.ts';
+import { applyHook, attach, amigoPrompt, inbox, leadAgent, leadSessionProblem, runAmigo, runTab, spawnMember, statusText, waitForMembers } from './squad.ts';
 import { controlTask } from './control.ts';
 import { VALIDATE_MESSAGE } from './delivery.ts';
 import { landTask, mergeTask, prCheck } from './merge.ts';
@@ -15,7 +15,7 @@ import { migrateHome } from './migrate.ts';
 import { addProject, tangleBranch } from './projects.ts';
 import { syncProjects } from './sync.ts';
 import { closeMember } from './close.ts';
-import { addNote, ensureHome, loadConfig, loadProjects, pickAgent } from './config.ts';
+import { addNote, ensureHome, loadConfig, loadProjects } from './config.ts';
 import { resolveId } from './tasks.ts';
 import { codeRoot, configPath, home, stateDir } from './paths.ts';
 import { installSkills, removeSkills } from './skills.ts';
@@ -32,8 +32,8 @@ import { updateAmigo } from './update.ts';
 export const HELP = `amigo: your right hand. Runs the crew.
 
   amigo [--agent <name>] [--dry-run]                start amigo in this terminal: a briefing first, then you just talk to it
-  amigo install-skill [<agent>] [--remove]          add /amigo to your agent CLIs (all found on PATH, or one)
-  amigo brief --agent <name>                        print amigo's instructions and the briefing (what /amigo runs)
+  amigo install-skill [<agent>] [--remove]          set up your agent CLIs: /amigo for Claude Code, crew templates for the rest
+  amigo brief --agent <name>                        print amigo's instructions and the briefing (what /amigo runs; only inside a session amigo started)
   amigo add <git url or path> [--name <name>] [--mode no-mistakes|direct-PR|local-only] [--yolo | --no-yolo] [--branch-prefix <p>]
             [--live <folder>] [--notes <text>] [--live-command <cmd>]... [--watch <text>]...
                                                     clone a project into projects/<name> and register it; the same name and source again updates it
@@ -198,15 +198,17 @@ export async function main(argv: string[], rawEnv: NodeJS.ProcessEnv = process.e
       const dryRun = Boolean(values['dry-run']);
       // amigo starts only inside herdr-app: this throws with the reason anywhere else, before the briefing starts anything.
       terminalBackend(env);
-      const agent = pickAgent(loadConfig(env), values.agent as string | undefined, env);
+      const agent = leadAgent(loadConfig(env), values.agent as string | undefined, env);
       const briefing = startBriefing(agent, env, { dryRun });
       return await runAmigo(agent, { dryRun, briefing: briefing.text, live: briefing.live }, env);
     }
 
     case 'brief': {
       const { values } = parse(rest, { agent: { type: 'string' } });
+      const notLead = leadSessionProblem(env);
+      if (notLead) throw new Error(notLead);
       terminalBackend(env);
-      const agent = pickAgent(loadConfig(env), values.agent as string | undefined, env);
+      const agent = leadAgent(loadConfig(env), values.agent as string | undefined, env);
       const briefing = startBriefing(agent, env);
       out(amigoPrompt(agent, env, briefing.text, { live: briefing.live }));
       return 0;

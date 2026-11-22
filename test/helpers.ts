@@ -52,6 +52,14 @@ process.env.AMIGO_HOME = strayHome;
 process.env.AMIGO_CLAUDE_JSON = join(strayHome, 'claude.json');
 process.on('exit', () => rmSync(strayHome, { recursive: true, force: true }));
 
+/** A program named claude that runs the fake agent, so a lead template counts as Claude Code. */
+function leadShim(dir: string): string {
+  const win = process.platform === 'win32';
+  const shim = join(dir, win ? 'claude.cmd' : 'claude');
+  writeFileSync(shim, win ? `@echo off\r\n"${process.execPath}" "${fakeAgent}" %*\r\n` : `#!/bin/sh\nexec "${process.execPath}" "${fakeAgent}" "$@"\n`, { mode: 0o755 });
+  return shim;
+}
+
 /**
  * A home with the fake agent configured. Never the user's real ~/.amigo or ~/.claude.json. Crew member tabs open as
  * detached processes (AMIGO_TERMINAL=test). With members > 0, free memory is faked so exactly that many crew members fit.
@@ -60,8 +68,9 @@ export function makeHome(members = 0, member: string[] = [process.execPath, fake
   const dir = tmpDir();
   const home = join(dir, 'home');
   mkdirSync(join(home, 'config'), { recursive: true });
-  writeFileSync(join(home, 'config', 'config.json'), JSON.stringify({ agents: { fake: { amigo: [process.execPath, fakeAgent, '{prompt}'], member } }, memberMb: members ? 100 : 0, reserveMb: 0 }));
-  const env: NodeJS.ProcessEnv = { ...cleanEnv(), AMIGO_HOME: home, AMIGO_TERMINAL: 'test', AMIGO_CLAUDE_JSON: join(dir, 'claude.json'), AMIGO_FREE_MB: String(members ? members * 100 + 50 : 4096), ...fakeTreehouseEnv(dir), AMIGO_TASKS_AXI: fakeTasksAxi };
+  // amigo leads only on Claude Code: the fake agent's lead template is a `claude` shim (never run by these tests), its crew members the fake agent.
+  writeFileSync(join(home, 'config', 'config.json'), JSON.stringify({ agents: { fake: { amigo: [leadShim(dir), '{prompt}'], member } }, memberMb: members ? 100 : 0, reserveMb: 0 }));
+  const env: NodeJS.ProcessEnv = { ...cleanEnv(), AMIGO_LEAD_SESSION: '1', AMIGO_HOME: home, AMIGO_TERMINAL: 'test', AMIGO_CLAUDE_JSON: join(dir, 'claude.json'), AMIGO_FREE_MB: String(members ? members * 100 + 50 : 4096), ...fakeTreehouseEnv(dir), AMIGO_TASKS_AXI: fakeTasksAxi };
   return { dir, env };
 }
 

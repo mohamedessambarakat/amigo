@@ -222,10 +222,15 @@ describe('end to end with a fake agent', () => {
   it('bare amigo starts the session with the briefing in its prompt', () => {
     const { dir, env } = makeHome();
     try {
-      writeFileSync(join(home(env), 'config', 'config.json'), JSON.stringify({ agents: { fake: { amigo: [process.execPath, fakeAgent, 'MODE:amigo {prompt}'], member: [process.execPath, fakeAgent, '{prompt}'] } } }));
+      // A stand-in Claude Code that exits at once: the briefing goes into the prompt file it is started with.
+      const win = process.platform === 'win32';
+      const claude = join(dir, win ? 'claude.cmd' : 'claude');
+      writeFileSync(claude, win ? '@echo off\r\nexit /b 0\r\n' : '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+      writeFileSync(join(home(env), 'config', 'config.json'), JSON.stringify({ agents: { fake: { amigo: [claude, '{prompt}'], member: [process.execPath, fakeAgent, '{prompt}'] } } }));
       const r = cli(env, []);
       assert.equal(r.code, 0, r.err);
-      assert.match(r.out, /0 projects registered\.\nNothing finished, nothing waiting on you, nothing open\./);
+      const prompt = readFileSync(join(home(env), 'state', 'amigo-prompt.md'), 'utf8');
+      assert.match(prompt, /0 projects registered\.\nNothing finished, nothing waiting on you, nothing open\./);
     } finally {
       cleanup(dir);
     }

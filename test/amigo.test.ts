@@ -8,7 +8,7 @@ import { codeRoot, home, scratchDir } from '../src/paths.ts';
 import { listTasks, getTask } from '../src/tasks.ts';
 import { beginNotice, finishNotice, noticesPending, takeNotices, touchNotice } from '../src/notices.ts';
 import { amigoPrompt, inbox, waitForMembers } from '../src/squad.ts';
-import { pointerLine, resolveExecutable } from '../src/command.ts';
+import { resolveExecutable } from '../src/command.ts';
 import { noticesPath } from '../src/paths.ts';
 import { cleanup, cli, cloneOf, fakeAgent, fakeGhEnv, ghCalls, git, idFrom, makeHome, makeRepo, releaseHeld, tmpDir, waitFor } from './helpers.ts';
 
@@ -68,7 +68,7 @@ describe('help and the bare command', () => {
     }
   });
 
-  it('bare amigo passes Claude instructions via --append-system-prompt-file and a short first prompt, while keeping other agents unchanged', () => {
+  it('bare amigo passes Claude instructions via --append-system-prompt-file and a short first prompt, and refuses other agents as the lead', () => {
     const { dir, env } = makeHome();
     try {
       const win = process.platform === 'win32';
@@ -133,24 +133,15 @@ describe('help and the bare command', () => {
         assert.ok(dry.out.includes('"Brief me."'), dry.out);
         assert.doesNotMatch(dry.out, /Read the file|# You are amigo/);
       }
-      const fakeDry = cli(env, ['--agent', 'fake', '--dry-run']);
-      assert.equal(fakeDry.code, 0, fakeDry.err);
-      assert.doesNotMatch(fakeDry.out, /--append-system-prompt-file|--name|--settings|Brief me\./);
-      assert.match(fakeDry.out, /# You are amigo/);
-      const codexDry = cli(env, ['--agent', 'codex', '--dry-run']);
-      assert.equal(codexDry.code, 0, codexDry.err);
-      assert.doesNotMatch(codexDry.out, /--append-system-prompt-file|--name|--settings|Brief me\./);
-      assert.ok(win ? codexDry.out.includes(pointerLine(promptPath)) : codexDry.out.includes('# You are amigo'), codexDry.out);
+      // amigo leads only on Claude Code: another agent is refused by name, and never started.
+      for (const agent of ['fake', 'codex']) {
+        const refused = cli(env, ['--agent', agent, '--dry-run']);
+        assert.equal(refused.code, 1);
+        assert.match(refused.err, new RegExp(`amigo runs as the lead only on Claude Code[\\s\\S]*amigo spawn --agent ${agent}`));
+      }
+      assert.equal(cli(env, ['--agent', 'codex']).code, 1);
+      assert.ok(!existsSync(codexOut), 'a non-Claude lead is never started');
       assert.ok(!existsSync(promptPath) && !existsSync(settingsPath), 'dry run writes neither prompt nor settings');
-
-      // Real run for a non-Claude agent keeps its current prompt handling and writes no Claude settings.
-      const codexRun = cli(env, ['--agent', 'codex']);
-      assert.equal(codexRun.code, 0, codexRun.err);
-      const codexSeen = JSON.parse(readFileSync(codexOut, 'utf8')) as { argv: string[] };
-      assert.equal(codexSeen.argv.length, 1);
-      if (win) assert.equal(codexSeen.argv[0], pointerLine(promptPath));
-      else assert.match(codexSeen.argv[0] ?? '', /^# You are amigo[\s\S]*## Briefing/);
-      assert.ok(!existsSync(settingsPath), 'non-Claude agent writes no amigo-settings.json');
 
       // Real run for Claude writes amigo-prompt.md and amigo-settings.json before launching and sends only the short first prompt.
       const claudeRun = cli(env, ['--agent', 'claude']);
@@ -437,7 +428,7 @@ describe('help anywhere and the version', () => {
 });
 
 describe('the briefing text in the instructions', () => {
-  it('mentions live checks only when some will run, and gates amigo wait on pending work', () => {
+  it('mentions live checks only when some will run, and treats a restart as a non-event', () => {
     const { dir, env: base } = makeHome();
     const gh = fakeGhEnv(dir);
     const env = { ...base, ...gh.env };
@@ -446,20 +437,31 @@ describe('the briefing text in the instructions', () => {
       cli(env, ['add', repo]);
       const none = cli(env, ['brief', '--agent', 'fake']);
       assert.doesNotMatch(none.out, /live checks/i, 'no origin on GitHub: no live checks, no mention');
-      assert.match(none.out, /after you handle a result while anything is still running or queued/);
+      // A restart carries in-flight work on under its recorded authority; only the Boss's own decisions are asked.
+      assert.match(none.out, /A restart is a non-event: reconcile each open task from its records, then carry on with every in-flight task's next step under the authority already recorded for it/);
+      assert.doesNotMatch(none.out, /Then wait for the Boss/);
       git(cloneOf(env, 'repo'), 'remote', 'set-url', 'origin', 'https://github.com/example/repo.git');
       const some = cli(env, ['brief', '--agent', 'fake']);
-      assert.match(
-        some.out,
-        /Live checks are running in the background: run `amigo wait` in the background only if their result has not already arrived in `amigo inbox` \(or crew members are still running or queued\), and mention it when it arrives\./,
-      );
-      assert.doesNotMatch(some.out, /run `amigo wait` in the background for their result, like any other/);
+      assert.match(some.out, /Live checks are running in the background: their result arrives in `amigo inbox`; mention it when it arrives./);
 
       // Direct amigoPrompt check for opts.live true vs false.
       const promptWithLive = amigoPrompt('fake', env, '1 project registered.', { live: true });
       const promptWithoutLive = amigoPrompt('fake', env, '1 project registered.', { live: false });
-      assert.match(promptWithLive, /only if their result has not already arrived in `amigo inbox` \(or crew members are still running or queued\)/);
+      assert.match(promptWithLive, /Live checks are running in the background/);
       assert.doesNotMatch(promptWithoutLive, /live checks/i);
+    } finally {
+      cleanup(dir);
+    }
+  });
+
+  it('brief refuses a session the amigo command did not start (it has none of the hooks)', () => {
+    const { dir, env: base } = makeHome();
+    try {
+      const env = { ...base };
+      delete env.AMIGO_LEAD_SESSION;
+      const r = cli(env, ['brief', '--agent', 'fake']);
+      assert.equal(r.code, 1);
+      assert.match(r.err, /not started by the amigo command, so it has none of amigo's hooks/);
     } finally {
       cleanup(dir);
     }
