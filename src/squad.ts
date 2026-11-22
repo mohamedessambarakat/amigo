@@ -805,13 +805,14 @@ export async function runAmigo(agentName: string | undefined, opts: { dryRun?: b
   const file = join(home(env), 'amigo-prompt.md');
   const prompt = amigoPrompt(agent, env, opts.briefing, { live: opts.live });
   const amigoSettingsFile = join(home(env), 'amigo-settings.json');
-  const launch = buildLaunch(isClaude(template) ? claudeAmigoTemplate(template, amigoSettingsFile) : template, { prompt, promptFile: file }, env);
+  const claude = isClaude(template);
+  const launch = buildLaunch(claude ? claudeAmigoTemplate(template, amigoSettingsFile, file) : template, { prompt, promptFile: file }, env);
   if (opts.dryRun) {
     process.stdout.write(`DRY RUN: would start amigo (${agent}) in ${home(env)}:\n${describeLaunch(launch)}\n`);
     return 0;
   }
   writeFileSync(file, prompt);
-  if (isClaude(template)) writeJsonAtomic(amigoSettingsFile, amigoSettings());
+  if (claude) writeJsonAtomic(amigoSettingsFile, amigoSettings());
   const childEnv = { ...env, AMIGO_HOME: home(env) };
   const child = spawnAgent(launch, { cwd: home(env), stdio: 'inherit', env: childEnv });
   return await new Promise((done, fail) => {

@@ -5,6 +5,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, symlinkSync, writeFil
 import { dirname, join } from 'node:path';
 import { describe, it } from 'node:test';
 import { applyHook, memberPrompt, followUpPrompt, herdrPlacement, startMember, tabEnvArgs } from '../src/squad.ts';
+import { INLINE_LIMIT, buildLaunch, pointerLine, quoteForCmd } from '../src/command.ts';
 import { loadConfig } from '../src/config.ts';
 import { memberSettings, guessTranscriptPath, amigoSettings, claudeMemberNotes, claudeMemberTemplate, claudeAmigoTemplate, claudeJsonPath, dropTrust, isClaude, mergeTrust, ownSessionEnv, reportReason, sessionAddress, turnMessagedAmigo } from '../src/claude.ts';
 import { parseVmStat, ramAllows } from '../src/ram.ts';
@@ -298,11 +299,56 @@ describe('Claude Code squad members', () => {
     const t = claudeMemberTemplate(['claude', '-p', '--permission-mode', 'auto', '{prompt}'], { id: 'x-1', sessionId: 'S', resume: false, settingsFile: '/s.json' });
     assert.deepEqual(t, ['claude', '--name', 'amigo-x-1', '--session-id', 'S', '--settings', '/s.json', '--permission-mode', 'auto', '{prompt}']);
     assert.deepEqual(claudeMemberTemplate(['claude', '{prompt}'], { id: 'x-1', sessionId: 'S', resume: true, settingsFile: '/s.json' }).slice(3, 5), ['--resume', 'S']);
-    assert.deepEqual(claudeAmigoTemplate(['claude', '{prompt}'], '/h.json'), ['claude', '--name', 'amigo', '--settings', '/h.json', '{prompt}']);
+    assert.deepEqual(claudeAmigoTemplate(['claude', '{prompt}'], '/h.json', '/p.md'), ['claude', '--name', 'amigo', '--settings', '/h.json', '--append-system-prompt-file', '/p.md', 'Brief me.']);
+    assert.deepEqual(claudeAmigoTemplate(['claude', '--model', 'opus', '{prompt}'], '/h.json', '/p.md'), ['claude', '--name', 'amigo', '--settings', '/h.json', '--append-system-prompt-file', '/p.md', '--model', 'opus', 'Brief me.']);
     const hooks = (memberSettings() as { hooks: Record<string, [{ hooks: [{ command: string }] }]> }).hooks;
     assert.match(hooks.Stop![0].hooks[0].command, /^node "[^"\\]+cli\.ts" _hook stop$/);
     assert.match(hooks.UserPromptSubmit![0].hooks[0].command, / _hook prompt$/);
     assert.deepEqual(amigoSettings(), { crossSessionInbound: 'accept' }, 'amigo only accepts messages: no status line of its own');
+  });
+
+  it('keeps the short first prompt and --append-system-prompt-file for direct Claude binaries and Windows .cmd shims, without affecting other agents', () => {
+    const dir = tmpDir();
+    try {
+      const posixBin = join(dir, 'posix');
+      const exeBin = join(dir, 'exe');
+      const cmdBin = join(dir, 'cmd');
+      for (const d of [posixBin, exeBin, cmdBin]) mkdirSync(d, { recursive: true });
+      for (const f of ['claude', 'codex']) writeFileSync(join(posixBin, f), '');
+      writeFileSync(join(exeBin, 'claude.exe'), '');
+      for (const f of ['claude.cmd', 'codex.cmd']) writeFileSync(join(cmdBin, f), '');
+
+      const fullPrompt = `# You are amigo\n${'x'.repeat(INLINE_LIMIT + 1)}`;
+      const posixSettings = '/h/amigo-settings.json';
+      const posixPromptFile = '/h/amigo-prompt.md';
+      const posixLaunch = buildLaunch(claudeAmigoTemplate(['claude', '{prompt}'], posixSettings, posixPromptFile), { prompt: fullPrompt, promptFile: posixPromptFile }, { PATH: posixBin }, 'linux');
+      assert.equal(posixLaunch.shell, false);
+      assert.deepEqual(posixLaunch.args, ['--name', 'amigo', '--settings', posixSettings, '--append-system-prompt-file', posixPromptFile, 'Brief me.']);
+
+      const winSettings = 'C:\\h\\amigo-settings.json';
+      const winPromptFile = 'C:\\h\\amigo-prompt.md';
+      const exeLaunch = buildLaunch(claudeAmigoTemplate(['claude', '{prompt}'], winSettings, winPromptFile), { prompt: fullPrompt, promptFile: winPromptFile }, { PATH: exeBin, PATHEXT: '.exe;.cmd' }, 'win32');
+      assert.equal(exeLaunch.shell, false);
+      assert.deepEqual(exeLaunch.args, ['--name', 'amigo', '--settings', winSettings, '--append-system-prompt-file', winPromptFile, 'Brief me.']);
+
+      const cmdLaunch = buildLaunch(claudeAmigoTemplate(['claude', '{prompt}'], winSettings, winPromptFile), { prompt: fullPrompt, promptFile: winPromptFile }, { PATH: cmdBin, PATHEXT: '.exe;.cmd' }, 'win32');
+      assert.equal(cmdLaunch.shell, true);
+      assert.deepEqual(cmdLaunch.args, ['--name', 'amigo', '--settings', winSettings, '--append-system-prompt-file', winPromptFile, 'Brief me.']);
+      assert.equal(
+        cmdLaunch.commandLine,
+        `${quoteForCmd(join(cmdBin, 'claude.cmd'))} --name amigo --settings ${winSettings} --append-system-prompt-file ${winPromptFile} "Brief me."`,
+      );
+      assert.doesNotMatch(cmdLaunch.commandLine!, /Read the file|# You are amigo/);
+
+      // Non-Claude agents keep their existing prompt handling.
+      const codexDirect = buildLaunch(['codex', '{prompt}'], { prompt: '# You are amigo', promptFile: posixPromptFile }, { PATH: posixBin }, 'linux');
+      assert.deepEqual(codexDirect.args, ['# You are amigo']);
+      const codexCmd = buildLaunch(['codex', '{prompt}'], { prompt: '# You are amigo', promptFile: winPromptFile }, { PATH: cmdBin, PATHEXT: '.exe;.cmd' }, 'win32');
+      assert.equal(codexCmd.shell, true);
+      assert.deepEqual(codexCmd.args, [pointerLine(winPromptFile)]);
+    } finally {
+      cleanup(dir);
+    }
   });
 
   it('tells the squad member to message the session that spawned it, whatever its name', () => {
