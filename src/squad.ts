@@ -62,6 +62,8 @@ const readPrompt = (name: string): string => readFileSync(join(codeRoot, 'prompt
 
 /** A crew member whose tab opened this recently may still be loading: it counts against free memory before it uses any. */
 const STARTUP_MS = 60_000;
+/** drain() holds the queue lock while it starts crew members, which can lease a worktree (tool calls bounded at 5 min each): others wait it out. */
+const DRAIN_WAIT_MS = 12 * 60_000;
 
 const settingsFile = (id: string, env: NodeJS.ProcessEnv): string => join(taskDir(id, env), 'claude-settings.json');
 
@@ -423,7 +425,7 @@ export function drain(env: NodeJS.ProcessEnv = process.env): string[] {
       }
     }
     return started;
-  });
+  }, 60_000, DRAIN_WAIT_MS);
 }
 
 /**
