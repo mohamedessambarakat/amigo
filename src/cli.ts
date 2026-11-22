@@ -20,6 +20,11 @@ import { resolveId } from './tasks.ts';
 import { codeRoot, configPath, home, stateDir } from './paths.ts';
 import { installSkills, removeSkills } from './skills.ts';
 import { terminalBackend } from './terminal.ts';
+import { runNetworkChecks, sessionDigest } from './digest.ts';
+import { controlRefusal } from './session.ts';
+import { autoArm, turnEndGuard, type HookPayload } from './supervise.ts';
+import { ackWakes, describeDrain, drainWakes, readQueue } from './wakes.ts';
+import { listChecks, registerCheck, removeCheck, supervisionNeed, watchCycle, watcherHealthy } from './watch.ts';
 
 export const HELP = `amigo: your right hand. Runs the squad.
 
@@ -54,13 +59,19 @@ export const HELP = `amigo: your right hand. Runs the squad.
                                                     local-only by a guarded fast-forward. Without --boss (the Boss said "merge it") only a yolo project
   amigo land <id>                                   finish after a merge: refresh the clone, fast-forward the live folder, clean up once landed
   amigo close <id> [--force]                        tear a crew member down; a build only once its work has landed (--force: the Boss said discard it)
+  amigo digest [--again]                            the session-start digest: take the session lock, drain wakes, show the fleet (once per session)
+  amigo wake (drain | ack --through <seq> --generation <n> | status)
+                                                    the durable wake queue: show it, acknowledge what was handled, or count it
+  amigo watch                                       run one watcher cycle here and print the wake it closes on (the Stop hook does this itself)
+  amigo check (add <name> [--every <s>] [--cwd <dir>] -- <command>... | rm <name> | list)
+                                                    commands the watcher runs on an interval; anything they print wakes amigo
   amigo help                                        this text (-h or --help anywhere in a command prints it too)
   amigo --version                                   print the version
 
 Data lives in ${'$'}AMIGO_HOME (default ~/.amigo): config/, data/, state/ and projects/.`;
 
 /** Every command the help lists, for the tests that keep the help and the dispatch below in step. */
-export const COMMANDS: readonly string[] = ['install-skill', 'brief', 'add', 'projects', 'sync', 'migrate', 'note', 'spawn', 'status', 'inbox', 'wait', 'send', 'control', 'report', 'attach', 'pr-check', 'merge', 'land', 'close', 'help'];
+export const COMMANDS: readonly string[] = ['install-skill', 'brief', 'add', 'projects', 'sync', 'migrate', 'note', 'spawn', 'status', 'inbox', 'wait', 'send', 'control', 'report', 'attach', 'pr-check', 'merge', 'land', 'close', 'digest', 'wake', 'watch', 'check', 'help'];
 
 function readStdin(what: string): string {
   if (process.stdin.isTTY) throw new Error(`Pass the ${what} on stdin or as a file (see amigo help)`);
@@ -73,7 +84,10 @@ function parse(argv: string[], options: ParseArgsOptionsConfig) {
 
 /** Commands that start, change or close squad members. A squad member must never run them on other squad members. */
 // Commands only amigo may run. inbox, wait and brief count too: a squad member running them marks results seen or starts the briefing's checks. So does the bare start.
-const MANAGING = new Set(['spawn', 'send', 'control', 'merge', 'land', 'pr-check', 'close', 'install-skill', 'add', 'sync', 'migrate', 'note', 'inbox', 'wait', 'brief']);
+const MANAGING = new Set(['spawn', 'send', 'control', 'merge', 'land', 'pr-check', 'close', 'install-skill', 'add', 'sync', 'migrate', 'note', 'inbox', 'wait', 'brief', 'wake', 'watch', 'check', 'digest']);
+/** Managing commands a read-only session (another session holds the session lock) may still run; the digest says read-only itself. */
+const READ_ONLY_OK = new Set(['digest', 'install-skill', 'brief']);
+const readOnlyOk = (cmd: string, sub: string | undefined): boolean => READ_ONLY_OK.has(cmd) || (cmd === 'wake' && sub === 'status') || (cmd === 'check' && sub === 'list');
 
 export async function main(argv: string[], rawEnv: NodeJS.ProcessEnv = process.env): Promise<number> {
   // A session the former name started still counts as a squad member, in the home it was started with.
@@ -101,6 +115,31 @@ export async function main(argv: string[], rawEnv: NodeJS.ProcessEnv = process.e
     await runLiveChecks(rest[0] ?? '', env);
     return 0;
   }
+  if (cmd === '_amigo-hook') {
+    // amigo's own hooks (supervise.ts, digest.ts). Exit 2 carries a wake or a block; any error is logged and the session goes on.
+    try {
+      const raw = process.stdin.isTTY ? '' : readFileSync(0, 'utf8');
+      const payload = (raw.trim() ? JSON.parse(raw) : {}) as HookPayload;
+      const name = rest[0] ?? '';
+      if (name === 'session-start') {
+        if (!env.AMIGO_TASK) out(sessionDigest(env, { payloadSession: payload.session_id, once: true }));
+        return 0;
+      }
+      const r = name === 'guard' ? await turnEndGuard(payload, env) : name === 'stop' || name === 'stop-failure' ? await autoArm(payload, env, name) : null;
+      if (!r) throw new Error(`unknown amigo hook "${name}"`);
+      if (r.stdout) process.stdout.write(r.stdout);
+      if (r.stderr) process.stderr.write(r.stderr);
+      return r.code;
+    } catch (err) {
+      appendFileSync(join(stateDir(env), 'hook-errors.log'), `${new Date().toISOString()} amigo ${rest[0]}: ${(err as Error).message}\n`);
+      return 0;
+    }
+  }
+  if (cmd === '_netcheck') {
+    // The session-start digest's detached network worker.
+    await runNetworkChecks(rest[0] ?? '', env);
+    return 0;
+  }
   if (cmd === '_hook') {
     // A hook must never break the session: errors go to a log and the exit code stays 0.
     try {
@@ -113,6 +152,11 @@ export async function main(argv: string[], rawEnv: NodeJS.ProcessEnv = process.e
   }
   if (env.AMIGO_TASK && (bare || MANAGING.has(cmd))) {
     throw new Error(`You are running inside squad member ${env.AMIGO_TASK}: only amigo can ${bare ? 'start a session' : cmd}. Report back with a STATUS line instead.`);
+  }
+  if (MANAGING.has(cmd) && !readOnlyOk(cmd, rest[0])) {
+    // One controlling session per home: another Claude session that does not hold the session lock is read-only.
+    const refusal = controlRefusal(env);
+    if (refusal) throw new Error(refusal);
   }
   if (cmd === '--version') {
     out(String((JSON.parse(readFileSync(join(codeRoot, 'package.json'), 'utf8')) as { version?: string }).version));
@@ -383,6 +427,67 @@ export async function main(argv: string[], rawEnv: NodeJS.ProcessEnv = process.e
       if (!positionals[0]) throw new Error('close needs a task id');
       for (const line of closeMember(resolveId(positionals[0], env), { force: Boolean(values.force) }, env)) out(line);
       return 0;
+    }
+
+    case 'digest': {
+      const { values } = parse(rest, { again: { type: 'boolean' } });
+      out(sessionDigest(env, { once: !values.again }));
+      return 0;
+    }
+
+    case 'wake': {
+      const { values, positionals } = parse(rest, { through: { type: 'string' }, generation: { type: 'string' } });
+      const sub = positionals[0];
+      if (sub === 'drain') {
+        out(describeDrain(drainWakes(env)));
+        return 0;
+      }
+      if (sub === 'ack') {
+        if (values.through === undefined || values.generation === undefined) throw new Error('wake ack needs --through <seq> --generation <n>, exactly as amigo wake drain printed them');
+        out(ackWakes(Number(values.through), Number(values.generation), env));
+        return 0;
+      }
+      if (sub === 'status') {
+        const q = readQueue(env);
+        const need = supervisionNeed(env);
+        out(`${q.rows.length} queued wake(s), generation ${q.generation}. Watcher ${watcherHealthy(env) ? 'running' : 'not running'}; supervision ${need.length ? `needed (${need.join(', ')})` : 'not needed'}.`);
+        return 0;
+      }
+      throw new Error('wake needs drain, ack or status (see amigo help)');
+    }
+
+    case 'watch': {
+      parse(rest, {});
+      const r = await watchCycle(env);
+      out(r.text);
+      return r.kind === 'reason' ? 0 : 1;
+    }
+
+    case 'check': {
+      const dash = rest.indexOf('--');
+      const head = dash < 0 ? rest : rest.slice(0, dash);
+      const argv = dash < 0 ? [] : rest.slice(dash + 1);
+      const { values, positionals } = parse(head, { every: { type: 'string' }, cwd: { type: 'string' } });
+      const [sub, name] = positionals;
+      if (sub === 'list') {
+        const checks = listChecks(env);
+        out(checks.length ? checks.map((c) => `${c.name}  every ${c.every ?? 'default'}s  ${c.argv.join(' ')}${c.cwd ? `  (in ${c.cwd})` : ''}`).join('\n') : 'No checks registered.');
+        return 0;
+      }
+      if (!name) throw new Error('check add|rm needs a name (see amigo help)');
+      if (sub === 'rm') {
+        out(removeCheck(name, env) ? `Removed check ${name}.` : `No check named ${name}.`);
+        return 0;
+      }
+      if (sub === 'add') {
+        if (!argv.length) throw new Error('check add needs the command after --: amigo check add <name> -- <command>...');
+        const every = values.every === undefined ? undefined : Number(values.every);
+        if (every !== undefined && !(every > 0)) throw new Error('--every takes a number of seconds');
+        registerCheck({ name, argv, ...(values.cwd ? { cwd: values.cwd as string } : {}), ...(every ? { every } : {}) }, env);
+        out(`Check ${name} registered: the watcher runs it${every ? ` every ${every}s` : ''}, and anything it prints wakes amigo.`);
+        return 0;
+      }
+      throw new Error('check needs add, rm or list (see amigo help)');
     }
 
     default:
