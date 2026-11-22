@@ -9,28 +9,18 @@ export function ghPath(env: NodeJS.ProcessEnv): string | null {
 
 export function requireGh(env: NodeJS.ProcessEnv): string {
   const file = ghPath(env);
-  if (!file) throw new Error('The GitHub CLI (gh) is not installed or not on PATH. Install it from https://cli.github.com and run "gh auth login", or leave out --pr / --issue.');
+  if (!file) throw new Error('The GitHub CLI (gh) is not installed or not on PATH. Install it from https://cli.github.com and run "gh auth login", or leave out --issue.');
   return file;
 }
 
-/** Can this title reach gh? A Windows .cmd shim cannot carry a double quote, a percent sign or a newline. Throws before anything is pushed. */
-export function checkPrTitle(title: string, gh: string, platform: NodeJS.Platform = process.platform): void {
-  if (platform !== 'win32' || !/\.(cmd|bat)$/i.test(gh)) return;
-  try {
-    quoteForCmd(title);
-  } catch {
-    throw new Error(`The pull request title ${JSON.stringify(title.slice(0, 80))} cannot be passed to the gh .cmd shim (no ", % or line breaks). Close without --pr, or give the task a plainer title.`);
-  }
-}
-
-/** Run gh in `cwd`. A Windows .cmd shim only starts through cmd.exe. */
+/** Run gh in `cwd` with `env`. A Windows .cmd shim only starts through cmd.exe. */
 export function runGh(args: string[], cwd: string, env: NodeJS.ProcessEnv): RunResult {
   const file = requireGh(env);
   if (process.platform === 'win32' && /\.(cmd|bat)$/i.test(file)) {
-    const r = spawnSync([file, ...args].map(quoteForCmd).join(' '), { cwd, encoding: 'utf8', shell: true, windowsHide: true });
+    const r = spawnSync([file, ...args].map(quoteForCmd).join(' '), { cwd, env, encoding: 'utf8', shell: true, windowsHide: true });
     return { status: r.status, stdout: r.stdout ?? '', stderr: r.stderr ?? '', error: r.error };
   }
-  return run(file, args, { cwd });
+  return run(file, args, { cwd, env });
 }
 
 function ghOrThrow(args: string[], cwd: string, env: NodeJS.ProcessEnv): string {
@@ -53,12 +43,4 @@ export function fetchIssue(number: number, cwd: string, env: NodeJS.ProcessEnv):
   const j = JSON.parse(raw) as Partial<Issue>;
   if (typeof j.title !== 'string' || typeof j.url !== 'string') throw new Error(`gh issue view ${number}: unexpected answer`);
   return { number, title: j.title, body: j.body ?? '', url: j.url };
-}
-
-/** Open a draft pull request from `branch` (already pushed) against the repo's default branch. Returns its URL. */
-export function openDraftPr(repo: string, branch: string, title: string, bodyFile: string, env: NodeJS.ProcessEnv): string {
-  const out = ghOrThrow(['pr', 'create', '--draft', '--head', branch, '--title', title, '--body-file', bodyFile], repo, env);
-  const url = out.split(/\r?\n/).map((l) => l.trim()).reverse().find((l) => /^https?:\/\/\S+$/.test(l));
-  if (!url) throw new Error(`gh pr create did not print the pull request URL. It said: ${out.trim()}`);
-  return url;
 }

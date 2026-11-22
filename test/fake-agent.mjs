@@ -8,7 +8,7 @@ const pointer = /^Read the file (.+?) and follow the instructions in it exactly\
 if (pointer) prompt = readFileSync(pointer[1], 'utf8');
 
 const has = (w) => prompt.includes(w);
-// MODE:hold keeps the squad member at work until the test calls releaseHeld, so a test can look at a running task without
+// MODE:hold keeps the crew member at work until the test calls releaseHeld, so a test can look at a running task without
 // racing it. The time limit only stops an orphan when a test fails before it releases.
 if (has('MODE:hold')) {
   const gate = `${process.env.AMIGO_HOME}.release-held`;
@@ -24,14 +24,32 @@ if (has('MODE:fail')) {
   process.exit(3);
 }
 if (has('You are a reviewer')) {
-  console.log(has('MODE:reviewfail') ? 'STATUS: done - FAIL - found a problem' : 'STATUS: done - PASS - looks good');
+  console.log('STATUS: done - PASS - looks good');
   process.exit(0);
 }
 if (has('MODE:manage')) {
-  // A squad member trying to run amigo itself must be refused.
+  // A crew member trying to run amigo itself must be refused.
   const r = spawnSync(process.execPath, [process.env.CLI_PATH, 'close', 'anything', '--force'], { encoding: 'utf8' });
   const inbox = spawnSync(process.execPath, [process.env.CLI_PATH, 'inbox'], { encoding: 'utf8' });
   console.log(`STATUS: done - manage exit ${r.status}: ${r.stderr.trim()} | inbox exit ${inbox.status}`);
+  process.exit(0);
+}
+if (has('MODE:survey')) {
+  // A survey: scratch edits and a commit, a push attempt (it must be refused), the report, then the completion command.
+  const report = /Write your findings to `([^`]+)`/.exec(prompt)?.[1];
+  writeFileSync(join(process.cwd(), 'scratch.txt'), 'lab\n');
+  const commit = spawnSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '-am', 'scratch', '--allow-empty'], { encoding: 'utf8' });
+  const push = spawnSync('git', ['push', 'origin', 'HEAD:refs/heads/survey-leak'], { encoding: 'utf8' });
+  mkdirSync(dirname(report), { recursive: true });
+  const open = has('MODE:surveycall');
+  writeFileSync(report, `# Findings\n\npush exit ${push.status}: ${push.stderr.trim()}\ncommit exit ${commit.status}\n${open ? '\n## Open decisions for the Boss\n\n- a or b?\n' : ''}`);
+  let completed = 'not run';
+  if (!open) {
+    const cmd = /run exactly `"([^"]+)" "([^"]+)" (complete [^`]+)`/.exec(prompt);
+    const r = spawnSync(cmd[1], [cmd[2], ...cmd[3].split(' ')], { encoding: 'utf8' });
+    completed = `exit ${r.status} ${r.stdout.trim()} ${r.stderr.trim()}`;
+  }
+  console.log(`STATUS: done - report written; complete: ${completed}`);
   process.exit(0);
 }
 if (has('MODE:switch')) execFileSync('git', ['checkout', '-q', '-b', 'elsewhere']);
@@ -40,61 +58,43 @@ if (has('MODE:question') && !followUps) {
   console.log('**STATUS: question** — which color?');
   process.exit(0);
 }
+
+// A build: its brief carries the delivery contract, the branch and the report command.
+const mode = /^Delivery contract: mode=(\S+)/m.exec(prompt)?.[1] ?? null;
+const branch = /^Build branch: (\S+)/m.exec(prompt)?.[1] ?? null;
+const cli = /node "([^"]+)" report/.exec(prompt)?.[1] ?? null;
+const report = (state, text) => {
+  const r = spawnSync(process.execPath, [cli, 'report', state, text], { encoding: 'utf8' });
+  if (r.status !== 0) {
+    console.log(`STATUS: blocked - ${r.stderr.trim()}`);
+    process.exit(0);
+  }
+};
+
 const write = (rel, text = 'x\n') => {
   mkdirSync(dirname(join(process.cwd(), rel)), { recursive: true });
   writeFileSync(join(process.cwd(), rel), text);
 };
-// Every done report proposes a commit subject in the file the prompt names, as squad members without hooks are told to;
-// MODE:nocommit, MODE:badcommit, MODE:dropcommit (no subject on follow-ups) and MODE:echo (prints its prompt, no file) break that.
-const subjectFile = /`([^`\n]*commit-subject\.txt)`/.exec(prompt)?.[1];
-const subject = has('MODE:nocommit') || has('MODE:echo') || (has('MODE:dropcommit') && followUps) ? null : has('MODE:badcommit') ? 'Wrote the member output file' : 'feat: write member output';
+const commit = (message) => {
+  execFileSync('git', ['add', '-A']);
+  execFileSync('git', ['-c', 'user.name=member', '-c', 'user.email=member@localhost', 'commit', '-q', '--allow-empty', '-m', message]);
+};
 const finish = (what) => {
-  if (subject && subjectFile) writeFileSync(subjectFile, `${subject}\n`);
+  if (mode && cli && !has('MODE:nocommit')) {
+    commit('feat: write member output');
+    if (mode === 'local-only') report('done', `ready in branch ${branch}`);
+    else if (mode === 'direct-PR' || has('MODE:nmship')) {
+      if (!has('MODE:nopush')) execFileSync('git', ['push', '-q', 'origin', `HEAD:refs/heads/${branch}`]);
+      report('done', `PR ${process.env.FAKE_PR_URL ?? 'https://github.com/example/repo/pull/7'}${mode === 'no-mistakes' ? ' checks green' : ''}`);
+    } else report('done', what);
+  }
   console.log(`STATUS: done - ${what}`);
-  // Echoes its input after its own report, so the log ends with whatever the brief or issue said.
   if (has('MODE:echo')) console.log(prompt);
   process.exit(0);
 };
-if (has('MODE:big')) {
-  for (let i = 1; i <= 4; i++) write(`big-${i}.txt`);
-  finish('wrote 4 files');
-}
-if (has('MODE:risky')) {
-  write('src/auth/login.txt');
-  finish('wrote src/auth/login.txt');
-}
-if (has('MODE:manifest')) {
-  write('package.json', '{}\n');
-  finish('wrote package.json');
-}
-if (has('MODE:binary')) {
-  // A binary file with a docs-looking name: git cannot count its lines.
-  writeFileSync(join(process.cwd(), 'notes.md'), Buffer.from([0, 1, 2, 3, 255, 0]));
-  finish('wrote a binary notes.md');
-}
-if (has('MODE:instructions')) {
-  write('CLAUDE.md', 'be nice\n');
-  finish('wrote CLAUDE.md');
-}
-if (has('MODE:testedit')) {
-  write('test/a.test.js', 'one\n'); // the committed file has three lines: this deletes two
-  finish('shortened test/a.test.js');
-}
-if (has('MODE:testadd')) {
-  write('test/new.test.js', 'a new test\n');
-  finish('added test/new.test.js');
-}
 if (has('MODE:docs')) {
   write('notes.md', 'docs\n');
   finish('wrote notes.md');
-}
-// MODE:badselfcommit and MODE:goodselfcommit commit the work themselves, which squad members are told never to do.
-const selfCommit = has('MODE:badselfcommit') ? 'Totally not a valid subject' : has('MODE:goodselfcommit') ? 'fix: commit it myself' : null;
-if (selfCommit) {
-  write('member-output.txt', 'self\n');
-  execFileSync('git', ['add', '-A']);
-  execFileSync('git', ['-c', 'user.name=member', '-c', 'user.email=member@localhost', 'commit', '-q', '-m', selfCommit]);
-  finish('committed member-output.txt myself');
 }
 const file = join(process.cwd(), 'member-output.txt');
 if (followUps) appendFileSync(file, 'follow-up handled\n');

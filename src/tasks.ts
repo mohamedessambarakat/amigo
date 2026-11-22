@@ -1,12 +1,14 @@
 import { existsSync, mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { readJson, withLock, writeJsonAtomic } from './fsx.ts';
-import { lockPath, taskDir, tasksDir } from './paths.ts';
+import { lockPath, taskDataDir, taskDir, tasksDir } from './paths.ts';
+import type { DeliveryMode } from './config.ts';
+import type { Endpoint } from './terminal.ts';
 
 /**
- * queued   waiting for a free squad member
+ * queued   waiting for a free crew member
  * running  the agent is working
- * verifying  the agent said done and amigo is running the project's checks in its folder
+ * verifying  (no longer set: amigo ran per-project checks here before the delivery modes replaced them)
  * done / blocked / question   the agent finished its turn (Claude) or run and said so (see parseStatus)
  * failed   the agent exited with an error, never started, or its tab closed mid-turn
  * closing  close is committing or cleaning up; nothing may start it again
@@ -14,36 +16,21 @@ import { lockPath, taskDir, tasksDir } from './paths.ts';
  */
 export type Status = 'queued' | 'running' | 'verifying' | 'done' | 'blocked' | 'question' | 'failed' | 'closing' | 'closed';
 
-/** Statuses where the squad member is waiting for amigo. */
+/** Statuses where the crew member is waiting for amigo. */
 export const FINISHED: readonly Status[] = ['done', 'blocked', 'question', 'failed'];
 
-/** One verification command run in a squad member's folder. `output` is its last lines. */
-export interface CheckResult {
-  command: string;
-  ok: boolean;
-  exitCode: number | null;
-  timedOut: boolean;
-  seconds: number;
-  output: string;
-}
-
-/** How the project's checks went when the squad member last said done. 'unverified': the project has no checks. */
-export interface Verification {
-  state: 'passed' | 'failed' | 'unverified';
-  results: CheckResult[];
-  /** The folder's git tree when the checks passed (see snapshot): proof they ran on exactly this work. */
-  tree?: string;
+/** A confirmed merge of a build's work: amigo's merge, or one GitHub reported (authority "forge"). */
+export interface MergeRecord {
+  /** The PR that was merged; none for a local-only fast-forward. */
+  url?: string;
+  /** The head commit that landed (pinned at merge time). */
+  head: string;
   at: string;
-}
-
-/** A reviewer's verdict on a task's work, and the work it saw. */
-export interface ReviewVerdict {
-  by: string;
-  verdict: 'PASS' | 'FAIL';
-  tree?: string;
-  at: string;
-  /** Why this verdict does not count (the work changed while the reviewer read it, or the same work already failed). */
-  void?: string;
+  /** boss: the Boss said to merge it. yolo: the project's standing merge authority. forge: merged on GitHub, not by amigo. */
+  authority: 'boss' | 'yolo' | 'forge';
+  /** squash / merge / rebase, a local fast-forward, or merged on GitHub. */
+  how: string;
+  commit?: string;
 }
 
 export interface Task {
@@ -53,37 +40,43 @@ export interface Task {
   agent: string;
   /** Where the agent runs: a worktree for git projects, else the project folder. */
   cwd: string;
-  /** Git projects only: the main checkout, the worktree, its branch and the commit it started from. */
+  /** Builds only: amigo's clone of the project, the worktree, its branch and the commit it started from. */
   repo: string | null;
   worktree: string | null;
   branch: string | null;
   baseSha: string | null;
+  /** The worktree was leased from treehouse's pool (every build since projects became clones): close returns it to the pool. */
+  leased?: boolean;
   /** The worktree's git dir under the repo (recorded when the worktree is made): git runs against it, never against <worktree>/.git. Missing on older tasks. */
   gitDir?: string;
-  /** The messaging address (`uds:<socket>`) of the Claude session that spawned this squad member; it gets the squad member's results. */
+  /** The messaging address (`uds:<socket>`) of the Claude session that spawned this crew member; it gets the crew member's results. */
   amigoAddress?: string;
   /** A scratch task (spawn --scratch): works in its own folder under the home, not a project and not git. */
   scratch?: boolean;
-  /** The startup briefing's own squad member (see briefing.ts): one open at a time, and its scratch folder goes when it is closed. */
+  /** The startup briefing's own crew member (see briefing.ts): one open at a time, and its scratch folder goes when it is closed. */
   briefing?: boolean;
-  /** Set for a reviewer: the task whose folder it reads, and that task's git tree when the reviewer was spawned. */
+  /** Set for a reviewer: the task whose folder it reads. */
   reviewOf?: string;
-  reviewedTree?: string;
   /** Starts only once this task (same project) is closed with a commit, from that commit. */
   after?: string;
   /** The GitHub issue this task came from (spawn --issue). */
   issue?: { number: number; url: string; title: string };
-  /** Set when the task is closed with --commit: the commit its branch holds. */
+  /** Set at close when the build's branch holds commits: the commit a task started --after it builds on. */
   committed?: string;
-  /** The draft pull request opened by close --pr. */
+  /** A build's delivery mode, from the registry when it was spawned (see delivery.ts). */
+  mode?: DeliveryMode;
+  /** The PR a build's accepted ready line named (full URL, as GitHub printed it). */
   pr?: string;
-  verification?: Verification;
-  /** Automatic fix-it follow-ups sent for failed checks since amigo last wrote to the squad member. */
-  checkRetries?: number;
-  /** The latest reviewer verdict on this task's work. */
-  review?: ReviewVerdict;
-  /** Trees of this task's work that a reviewer failed: a later PASS on the same tree does not count. */
-  reviewFailedTrees?: string[];
+  /** The PR's head commit as GitHub last reported it. */
+  prHead?: string;
+  /** local-only builds: the head of the latest accepted done, the one commit amigo merge may land. */
+  localDoneHead?: string;
+  /** Set once the build's work is confirmed merged. */
+  merge?: MergeRecord;
+  /** How many status-file lines this record has taken in (see report.ts). */
+  statusSeen?: number;
+  /** When the crew member's current turn began (Claude Code's prompt hook): a status line after it reports this turn. */
+  turnStartedAt?: string;
   status: Status;
   createdAt: string;
   updatedAt: string;
@@ -91,31 +84,40 @@ export interface Task {
   runs: number;
   /** Follow-up messages from amigo, oldest first. */
   followUps: string[];
-  /** How many follow-ups the squad member has been given (a resumed Claude session gets only the rest). */
+  /** How many follow-ups the crew member has been given (a resumed Claude session gets only the rest). */
   followUpsSent?: number;
-  /** The agent process in the squad member's tab. */
+  /** The agent process in the crew member's tab. */
   pid?: number | null;
-  /** When the squad member's tab was last opened. */
+  /** When the crew member's tab was last opened. */
   startedAt?: string | null;
-  /** Claude Code squad members: the session id, resumed when a follow-up reopens the tab once the session has started. */
+  /** Claude Code crew members: the session id, resumed when a follow-up reopens the tab once the session has started. */
   sessionId?: string | null;
   sessionStarted?: boolean;
-  /** Claude Code squad members: the session's transcript, as its hooks report it; a --resume needs it to exist. */
+  /** Claude Code crew members: the session's transcript, as its hooks report it; a --resume needs it to exist. */
   transcriptPath?: string | null;
   /** amigo added the ~/.claude.json trust entry for cwd (removed again on close). */
   trustAdded?: boolean;
-  /** Warp only: the tab config file, deleted when the squad member ends. */
-  tabConfig?: string | null;
-  /** herdr only: the workspace holding the squad member's tab, where a reviewer's tab goes. */
-  herdrWorkspace?: string | null;
+  /** The terminal of the crew member's latest tab (see terminal.ts); its space is where a reviewer's tab goes. */
+  endpoint?: Endpoint | null;
   exitCode?: number | null;
   /** The agent's STATUS line (or its last output line) from the latest run. */
   summary?: string;
-  /** The commit subject the squad member proposed in its latest done report (a `COMMIT:` line for Claude Code, or `commit-subject.txt` for other agents; cleared by a later done report without one). `close --commit` checks and uses it. */
-  commitSubject?: string;
   /** False until amigo has seen this result in `inbox`. */
   seen: boolean;
+  /** What the task delivers: a build (the default) changes a project; a survey writes `report` and never pushes (see survey.ts). */
+  kind?: TaskKind;
+  /** A survey's report: data/<id>/report.md, the one thing that outlives it. */
+  report?: string;
+  /** The dispatch profile's model and effort (see dispatch.ts); passed to a Claude Code crew member, recorded for other agents. */
+  model?: string;
+  effort?: string;
+  /** The backlog item this task owns (same id), when the home keeps a backlog (see backlog.ts). */
+  backlogItem?: boolean;
+  /** A survey's completion gate (amigo complete): its open Boss calls were inventoried, and these held items carry them. */
+  decisions?: { holds: string[]; at: string };
 }
+
+export type TaskKind = 'build' | 'survey';
 
 const ID_RE = /^[a-z0-9][a-z0-9-]{0,47}$/;
 
@@ -123,7 +125,7 @@ export function assertValidId(id: string): void {
   if (!ID_RE.test(id)) throw new Error(`Invalid task id "${id}"`);
 }
 
-/** A new id: the squad member's number, then a few words of its title (`7-fix-footer`). The number alone is enough in every command. */
+/** A new id: the crew member's number, then a few words of its title (`7-fix-footer`). The number alone is enough in every command. */
 export function newId(title: string, n: number): string {
   const words = title.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
   let slug = (words[0] ?? '').slice(0, 16);
@@ -141,7 +143,7 @@ export function memberNumber(id: string): string | null {
   return NUMBER_RE.exec(id)?.[1] ?? null;
 }
 
-/** One more than the highest squad member number used so far, closed squad members included: a number is never reused. */
+/** One more than the highest crew member number used so far, closed crew members included: a number is never reused. */
 export function nextMemberNumber(env: NodeJS.ProcessEnv = process.env): number {
   const dir = tasksDir(env);
   const used = existsSync(dir) ? readdirSync(dir).map((d) => Number(memberNumber(d) ?? 0)) : [];
@@ -149,7 +151,7 @@ export function nextMemberNumber(env: NodeJS.ProcessEnv = process.env): number {
 }
 
 /**
- * The task a person means: its exact id, its number (`7`), or the start of its id. When several match, the one squad member that
+ * The task a person means: its exact id, its number (`7`), or the start of its id. When several match, the one crew member that
  * is still open wins.
  */
 export function resolveId(ref: string, env: NodeJS.ProcessEnv = process.env): string {
@@ -163,16 +165,15 @@ export function resolveId(ref: string, env: NodeJS.ProcessEnv = process.env): st
   const open = matches.filter((t) => t.status !== 'closed');
   const pick = matches.length === 1 ? matches : open;
   if (pick.length === 1) return pick[0]!.id;
-  if (!matches.length) throw new Error(`No squad member matches "${ref}" (see amigo status)`);
-  throw new Error(`"${ref}" matches several squad members: ${(open.length ? open : matches).map((t) => t.id).join(', ')}`);
+  if (!matches.length) throw new Error(`No crew member matches "${ref}" (see amigo status)`);
+  throw new Error(`"${ref}" matches several crew members: ${(open.length ? open : matches).map((t) => t.id).join(', ')}`);
 }
 
 export const taskFile = (id: string, env: NodeJS.ProcessEnv = process.env): string => join(taskDir(id, env), 'task.json');
-export const briefFile = (id: string, env: NodeJS.ProcessEnv = process.env): string => join(taskDir(id, env), 'brief.md');
+/** The brief is a durable record: data/<id>/brief.md, beside a survey's report. */
+export const briefFile = (id: string, env: NodeJS.ProcessEnv = process.env): string => join(taskDataDir(id, env), 'brief.md');
 export const promptFile = (id: string, env: NodeJS.ProcessEnv = process.env): string => join(taskDir(id, env), 'prompt.md');
 export const logFile = (id: string, env: NodeJS.ProcessEnv = process.env): string => join(taskDir(id, env), 'output.log');
-/** Where a squad member without hooks writes its proposed commit subject; read and removed when its run ends. */
-export const commitSubjectFile = (id: string, env: NodeJS.ProcessEnv = process.env): string => join(taskDir(id, env), 'commit-subject.txt');
 const heartbeatFile = (id: string, env: NodeJS.ProcessEnv = process.env): string => join(taskDir(id, env), 'heartbeat');
 
 /** Create the task folder, failing if the id is already taken (mkdir is atomic). */
@@ -189,7 +190,7 @@ export function claimTaskDir(id: string, env: NodeJS.ProcessEnv = process.env): 
 
 export const HEARTBEAT_MS = 5_000;
 
-/** The squad member's tab touches this file while it is open; pids alone are not trusted (they get reused after a reboot). */
+/** The crew member's tab touches this file while it is open; pids alone are not trusted (they get reused after a reboot). */
 export function beat(id: string, env: NodeJS.ProcessEnv = process.env): void {
   writeFileSync(heartbeatFile(id, env), String(Date.now()));
 }

@@ -2,7 +2,7 @@
   "name": "amigo",
   "version": "0.1.0",
   "private": true,
-  "description": "Your right hand. Runs the squad: one lead agent that hands tasks to parallel worker agents (squad members) in git worktrees, on any agent CLI.",
+  "description": "Your right hand. Runs the crew: one lead agent that hands tasks to parallel worker agents (crew members) in git worktrees, on any agent CLI.",
   "license": "MIT",
   "author": "Mohamed Essam Barakat",
   "repository": "github:mohamedessambarakat/amigo",

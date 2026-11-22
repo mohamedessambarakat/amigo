@@ -4,12 +4,12 @@ import { join } from 'node:path';
 import { after, describe, it } from 'node:test';
 import { age, memberPrompt, amigoPrompt, titleOf } from '../src/squad.ts';
 import { INLINE_LIMIT, buildLaunch, pointerLine, quoteForCmd, resolveExecutable } from '../src/command.ts';
-import { nameFromPath, pickAgent, validateConfig, validateProjects } from '../src/config.ts';
-import { commitAll, looksSecret, porcelainPath } from '../src/git.ts';
+import { nameFromSource, pickAgent, validateConfig, validateProjects } from '../src/config.ts';
 import { HEARTBEAT_MS, memberNumber, beat, newId, nextMemberNumber, parseStatus, resolveId, runnerAlive, saveTask, type Task } from '../src/tasks.ts';
-import { installSkills, removeSkills } from '../src/skills.ts';
+import { installSkills, removeSkills, USER_SKILLS } from '../src/skills.ts';
 import { TEMPLATES } from '../src/templates.ts';
-import { cleanup, git, makeHome, makeRepo, tmpDir } from './helpers.ts';
+import { codeRoot } from '../src/paths.ts';
+import { cleanup, makeHome, tmpDir } from './helpers.ts';
 
 const tmp = tmpDir();
 after(() => cleanup(tmp));
@@ -37,15 +37,25 @@ describe('config', () => {
 
   it('validates projects', () => {
     const abs = join(tmp, 'x');
-    assert.deepEqual(validateProjects({ projects: [{ name: 'x', path: abs, notes: 'n' }] }), [{ name: 'x', path: abs, notes: 'n' }]);
-    assert.throws(() => validateProjects({ projects: [{ name: 'x', path: 'relative' }] }), /absolute/);
-    assert.throws(() => validateProjects({ projects: [{ name: 'x', path: abs }, { name: 'x', path: abs }] }), /twice/);
+    const env = { AMIGO_HOME: abs };
+    assert.deepEqual(validateProjects({ projects: [{ name: 'x', source: 'https://example.com/x.git', notes: 'n' }] }, 'p', env), [
+      { name: 'x', source: 'https://example.com/x.git', path: join(abs, 'projects', 'x'), mode: 'no-mistakes', yolo: false, branchPrefix: 'amigo/', notes: 'n' },
+    ]);
+    assert.deepEqual(validateProjects({ projects: [{ name: 'x', source: 's', mode: 'local-only', yolo: true, branchPrefix: '', live: abs }] }, 'p', env)[0], { name: 'x', source: 's', path: join(abs, 'projects', 'x'), mode: 'local-only', yolo: true, branchPrefix: '', live: abs });
+    assert.throws(() => validateProjects({ projects: [{ name: 'x' }] }), /needs a "source"/);
+    assert.throws(() => validateProjects({ projects: [{ name: 'x', source: 's', mode: 'yolo' }] }), /"mode" must be one of no-mistakes, direct-PR, local-only/);
+    assert.throws(() => validateProjects({ projects: [{ name: 'x', source: 's', branchPrefix: 'a b/' }] }), /branchPrefix/);
+    assert.throws(() => validateProjects({ projects: [{ name: 'x', source: 's', live: 'relative' }] }), /absolute/);
+    assert.throws(() => validateProjects({ projects: [{ name: 'x', source: 's' }, { name: 'x', source: 's' }] }), /twice/);
     assert.throws(() => validateProjects([]), /must look like/);
   });
 
-  it('derives a project name from a folder', () => {
-    assert.equal(nameFromPath('/home/sam/My App'), 'my-app');
-    assert.equal(nameFromPath('/x/.hidden'), 'hidden');
+  it('derives a project name from a clone source', () => {
+    assert.equal(nameFromSource('/home/sam/My App'), 'my-app');
+    assert.equal(nameFromSource('/x/.hidden'), 'hidden');
+    assert.equal(nameFromSource('https://github.com/me/Tripwire.git'), 'tripwire');
+    assert.equal(nameFromSource('git@github.com:me/noira-orders.git'), 'noira-orders');
+    assert.equal(nameFromSource('C:\\work\\amigo\\'), 'amigo');
   });
 });
 
@@ -110,7 +120,7 @@ describe('tasks', () => {
     assert.equal(titleOf('# Heading\nmore'), 'Heading');
   });
 
-  it('builds the squad member prompt with notes, brief and follow-ups', () => {
+  it('builds the crew member prompt with notes, brief and follow-ups', () => {
     const t = { id: 'x-1', project: 'p', cwd: '/w', followUps: ['use blue'], summary: 'which color?' } as Task;
     const p = memberPrompt(t, 'Title: paint', 'never touch .env');
     for (const part of ['Task id: x-1', 'never touch .env', 'Title: paint', 'which color?', '1. use blue', 'STATUS: done']) assert.ok(p.includes(part), part);
@@ -123,7 +133,7 @@ describe('tasks', () => {
   });
 });
 
-describe('squad member ids', () => {
+describe('crew member ids', () => {
   it('take arm2 and #2 as arm 2', () => {
     const { dir, env } = makeHome();
     try {
@@ -161,26 +171,39 @@ describe('agent templates and skills', () => {
       const skill = join(userHome, '.claude', 'skills', 'amigo', 'SKILL.md');
       assert.match(readFileSync(skill, 'utf8'), /^---\nname: amigo\n[\s\S]*amigo brief --agent claude/);
       assert.ok(lines.some((l) => l.includes('added its template')));
-      assert.deepEqual(JSON.parse(readFileSync(join(env.AMIGO_HOME as string, 'config.json'), 'utf8')).agents.claude, TEMPLATES.claude);
+      for (const name of USER_SKILLS) {
+        const text = readFileSync(join(userHome, '.claude', 'skills', name, 'SKILL.md'), 'utf8');
+        assert.match(text, new RegExp(`^---\\nname: ${name}\\ndescription: Inside an amigo session only[^\\n]*\\n---\\n\\n<!-- installed by amigo -->\\n`), `/${name} is installed with the marker`);
+      }
+      const theirs = join(userHome, '.claude', 'skills', 'afk', 'SKILL.md');
+      writeFileSync(theirs, 'their own afk');
+      assert.ok(installSkills('claude', env, userHome).some((l) => /skipped \/afk: .*not written by amigo/.test(l)), 'a foreign skill of the same name is reported');
+      assert.equal(readFileSync(theirs, 'utf8'), 'their own afk', 'and left alone');
+      assert.deepEqual(JSON.parse(readFileSync(join(env.AMIGO_HOME as string, 'config', 'config.json'), 'utf8')).agents.claude, TEMPLATES.claude);
       assert.ok(!installSkills('claude', env, userHome).some((l) => l.includes('added its template')), 'never adds an agent twice');
 
-      installSkills('codex', env, userHome);
-      installSkills('grok', env, userHome);
-      const shared = join(userHome, '.agents', 'skills', 'amigo', 'SKILL.md');
-      assert.match(readFileSync(shared, 'utf8'), /--agent codex[\s\S]*--agent grok/);
+      // Other agent CLIs are crew members only: their template is added, and no slash command is written.
+      const legacy = join(userHome, '.agents', 'skills', 'amigo', 'SKILL.md');
+      mkdirSync(join(legacy, '..'), { recursive: true });
+      writeFileSync(legacy, '<!-- installed by amigo --> an older /amigo for codex');
+      const codex = installSkills('codex', env, userHome);
+      assert.ok(codex.some((l) => /codex: crew members only - amigo itself runs on Claude Code/.test(l)), codex.join('\n'));
+      assert.deepEqual(JSON.parse(readFileSync(join(env.AMIGO_HOME as string, 'config', 'config.json'), 'utf8')).agents.codex, TEMPLATES.codex);
+      assert.equal(TEMPLATES.codex!.amigo, undefined, 'no lead template for another agent');
       installSkills('gemini', env, userHome);
-      assert.match(readFileSync(join(userHome, '.gemini', 'commands', 'amigo.toml'), 'utf8'), /prompt = """\n[\s\S]*--agent gemini/);
+      assert.ok(!existsSync(join(userHome, '.gemini', 'commands', 'amigo.toml')));
 
       const foreign = join(userHome, '.gemini', 'config', 'skills', 'amigo', 'SKILL.md');
       mkdirSync(join(foreign, '..'), { recursive: true });
       writeFileSync(foreign, 'someone else');
-      assert.throws(() => installSkills('antigravity', env, userHome), /not written by amigo/);
 
       const removed = removeSkills(undefined, userHome);
-      assert.equal(removed.length, 3);
-      assert.ok(!existsSync(skill) && !existsSync(shared));
+      assert.equal(removed.length, 2 + USER_SKILLS.length - 1, 'the /amigo skill, the older codex one, and every user skill but the foreign /afk');
+      assert.equal(readFileSync(theirs, 'utf8'), 'their own afk');
+      assert.ok(!existsSync(join(userHome, '.claude', 'skills', 'catchup')), 'an emptied skill folder goes too');
+      assert.ok(!existsSync(skill) && !existsSync(legacy));
       assert.equal(readFileSync(foreign, 'utf8'), 'someone else', 'foreign files are left alone');
-      assert.throws(() => installSkills('some-agent', env, userHome), /No slash command support for "some-agent"/);
+      assert.throws(() => installSkills('some-agent', env, userHome), /No built-in template for "some-agent"/);
     } finally {
       cleanup(dir);
     }
@@ -191,7 +214,7 @@ describe('runner heartbeat', () => {
   it('counts a runner as alive only while its heartbeat is fresh', () => {
     const { dir, env } = makeHome();
     try {
-      mkdirSync(join(env.AMIGO_HOME as string, 'tasks', 'hb-1'), { recursive: true });
+      mkdirSync(join(env.AMIGO_HOME as string, 'state', 'tasks', 'hb-1'), { recursive: true });
       assert.equal(runnerAlive('hb-1', env), false);
       beat('hb-1', env);
       assert.equal(runnerAlive('hb-1', env), true);
@@ -202,33 +225,7 @@ describe('runner heartbeat', () => {
   });
 });
 
-describe('secret files', () => {
-  it('flags secret-looking names but not examples', () => {
-    for (const p of ['.env', 'app/.env.local', 'keys\\server.pem', 'id_ed25519', 'config/credentials.json', 'secrets.yaml']) assert.ok(looksSecret(p), p);
-    for (const p of ['.env.example', 'src/env.ts', 'README.md', 'keyboard.ts', 'docs/secrets.md']) assert.ok(!looksSecret(p), p);
-  });
-
-  it('reads porcelain paths, renames and quotes included', () => {
-    assert.equal(porcelainPath('?? .env'), '.env');
-    assert.equal(porcelainPath('R  old.txt -> new.pem'), 'new.pem');
-    assert.equal(porcelainPath(' M "a b/.env"'), 'a b/.env');
-  });
-
-  it('commitAll refuses a worktree with a .env file', () => {
-    const dir = tmpDir();
-    try {
-      const repo = makeRepo(join(dir, 'r'));
-      git(repo, 'checkout', '-q', '-b', 'amigo/t-1');
-      writeFileSync(join(repo, '.env'), 'TOKEN=fake');
-      assert.throws(() => commitAll(repo, repo, 'amigo/t-1', 'chore: m'), /may hold secrets: \.env/);
-      assert.equal(git(repo, 'status', '--porcelain').trim(), '?? .env');
-    } finally {
-      cleanup(dir);
-    }
-  });
-});
-
-describe('squad member numbers', () => {
+describe('crew member numbers', () => {
   it('counts up, never reuses a number, and resolves what a person types', () => {
     const { dir, env } = makeHome();
     try {
@@ -239,22 +236,22 @@ describe('squad member numbers', () => {
       task('1-old-work', 'closed');
       task('2-fix-footer', 'running');
       task('fix-login-ab12cd34', 'done');
-      assert.equal(nextMemberNumber(env), 3, 'closed squad members keep their number');
+      assert.equal(nextMemberNumber(env), 3, 'closed crew members keep their number');
       assert.equal(resolveId('2', env), '2-fix-footer');
-      assert.equal(resolveId('1', env), '1-old-work', 'a closed squad member still resolves for status');
+      assert.equal(resolveId('1', env), '1-old-work', 'a closed crew member still resolves for status');
       assert.equal(resolveId('fix-l', env), 'fix-login-ab12cd34', 'old ids by their start');
       assert.equal(resolveId('2-fix-footer', env), '2-fix-footer');
-      assert.throws(() => resolveId('9', env), /No squad member matches "9"/);
+      assert.throws(() => resolveId('9', env), /No crew member matches "9"/);
       task('20-other', 'queued');
       assert.equal(resolveId('2', env), '2-fix-footer', 'a number never matches a longer number');
       task('fix-loop-cd34ef56', 'queued');
-      assert.throws(() => resolveId('fix-lo', env), /several squad members/);
+      assert.throws(() => resolveId('fix-lo', env), /several crew members/);
       task('12-numbered', 'running');
       assert.equal(resolveId('arm12', env), '12-numbered', 'arm12 is arm 12 while no old id starts with it');
       task('arm12-deadbeef', 'done');
       assert.equal(resolveId('arm12', env), 'arm12-deadbeef', 'an old id starting with arm12 wins over the arm12 shorthand');
       assert.equal(resolveId('arm12-deadbeef', env), 'arm12-deadbeef');
-      assert.equal(resolveId('12', env), '12-numbered', 'the bare number still means squad member 12');
+      assert.equal(resolveId('12', env), '12-numbered', 'the bare number still means crew member 12');
     } finally {
       cleanup(dir);
     }
@@ -262,33 +259,46 @@ describe('squad member numbers', () => {
 });
 
 describe('amigo instructions', () => {
-  it('say squad members open in tabs, with no show or hide commands', () => {
+  it('carry the contract, the setup paths and no show or hide commands', () => {
     const { dir, env } = makeHome();
     try {
       const prompt = amigoPrompt('fake', env);
-      assert.match(prompt, /Each squad member opens in its own tab of the terminal you run in/);
+      assert.match(prompt, /^# You are amigo/);
+      assert.match(prompt, /amigo's code folder is [^\n]*: `skills\/agent\/`/);
+      assert.match(prompt, /Talking to crew members \(you are Claude Code\)/, 'amigo leads only on Claude Code');
+      assert.doesNotMatch(prompt, /no Stop hook on this agent/);
       assert.doesNotMatch(prompt, /amigo (show|hide|board)|background, with no window/);
     } finally {
       cleanup(dir);
     }
   });
 
-  it('rule 5 allows pushing, opening a PR and merging to main after reviewer PASS and green CI while gating risky or outward actions on the user', () => {
+  it('keep the merge, teardown and Boss-facing rules', () => {
     const { dir, env } = makeHome();
     try {
       const prompt = amigoPrompt('fake', env);
-      const rule5 = prompt.split(/\r?\n/).find((line) => line.startsWith('5. '));
-      assert.ok(rule5, 'expected rule 5 in amigo instructions');
-      assert.doesNotMatch(rule5, /[\u2013\u2014]/, 'rule 5 must not use em or en dashes');
-      assert.doesNotMatch(rule5, /Only the user approves anything outward|approves `close --commit` and nothing more/i);
-      assert.match(rule5, /reviewer PASS/i);
-      assert.match(rule5, /green CI/i);
-      assert.match(rule5, /push.*PR.*merge.*`?main`?/i);
-      assert.match(rule5, /risky work.*dependencies.*hooks.*auth.*CI\/prod config/i);
-      assert.match(rule5, /deploys.*live migrations.*spending money.*messaging people.*user/i);
+      assert.doesNotMatch(prompt, /[–—]/, 'no em or en dashes');
+      assert.match(prompt, /\*\*Never merge a PR without the Boss's explicit word\.\*\* A project's `yolo` is the only standing relaxation/);
+      assert.match(prompt, /Never merge a red PR, or one with a required check that has not reported, unless a current explicit Boss instruction names the check to waive/);
+      assert.match(prompt, /\*\*Never tear down unlanded work\.\*\*/);
+      assert.match(prompt, /Reply exactly `All good, Boss\.` only for a true no-op/);
+      assert.match(prompt, /"Boss" at least once in every chat message/);
+      assert.match(prompt, /final message\*\* of every turn that calls for a reply must stand alone/);
+      assert.match(prompt, /full `https:\/\/` URL copied verbatim/);
+      assert.match(prompt, /worktree, checkout, clone or local main -> local copy/);
+      assert.match(prompt, /Before commissioning an investigation, consult existing reports/);
+      assert.match(prompt, /this contract wins over `~\/\.claude\/CLAUDE\.md`[^\n]*security rules \(secrets, production, money\) still apply/);
+      assert.doesNotMatch(prompt, /reviewer PASS|approve-policy|confirm-gates|close --commit/i, 'the removed gates stay gone');
     } finally {
       cleanup(dir);
     }
   });
-});
 
+  it('name only agent-only skills that exist', () => {
+    const prompt = readFileSync(join(codeRoot, 'prompts', 'amigo.md'), 'utf8');
+    const named = new Set([...prompt.matchAll(/skills\/agent\/([a-z-]+\.md)/g)].map((m) => m[1] as string));
+    for (const m of prompt.matchAll(/^- `([a-z-]+\.md)` - /gm)) named.add(m[1] as string);
+    assert.ok(named.size >= 10, 'the trigger index lists the skills');
+    for (const f of named) assert.ok(existsSync(join(codeRoot, 'skills', 'agent', f)), `skills/agent/${f} exists`);
+  });
+});

@@ -14,6 +14,16 @@ export interface RunOptions {
   env?: NodeJS.ProcessEnv;
   /** Kill the command after this long; the result then carries a "timed out" error. */
   timeoutMs?: number;
+  /** Variables removed from the environment the command gets. */
+  unset?: readonly string[];
+}
+
+/** The environment a command gets: this process's, plus opts.env, minus opts.unset. */
+function commandEnv(opts: RunOptions): NodeJS.ProcessEnv | undefined {
+  if (!opts.env && !opts.unset?.length) return undefined;
+  const env = { ...process.env, ...opts.env };
+  for (const k of opts.unset ?? []) delete env[k];
+  return env;
 }
 
 export function run(cmd: string, args: string[], opts: RunOptions = {}): RunResult {
@@ -22,7 +32,7 @@ export function run(cmd: string, args: string[], opts: RunOptions = {}): RunResu
     windowsHide: true,
     maxBuffer: 64 * 1024 * 1024,
     ...(opts.cwd ? { cwd: opts.cwd } : {}),
-    ...(opts.env ? { env: { ...process.env, ...opts.env } } : {}),
+    ...(commandEnv(opts) ? { env: commandEnv(opts) } : {}),
     ...(opts.timeoutMs ? { timeout: opts.timeoutMs } : {}),
   });
   const timedOut = (r.error as NodeJS.ErrnoException | undefined)?.code === 'ETIMEDOUT';
@@ -38,7 +48,7 @@ export function runOrThrow(cmd: string, args: string[], opts: RunOptions = {}): 
 }
 
 /**
- * Stop a squad member's agent and everything it started. Call it only while the squad member's tab is known to be alive (fresh heartbeat),
+ * Stop a crew member's agent and everything it started. Call it only while the crew member's tab is known to be alive (fresh heartbeat),
  * so a recycled pid is never hit. On Windows taskkill /T walks the tree; elsewhere the tree comes from `ps` (the agent
  * shares its tab's process group, so signalling a group would also hit the tab's shell).
  */

@@ -21,7 +21,7 @@ export function freeMemMb(env: NodeJS.ProcessEnv = process.env, platform: NodeJS
   return Math.floor(os.freemem() / 1024 / 1024);
 }
 
-/** Start one more squad member only if free memory, minus this squad member and the squad members still starting up, stays at or above the reserve. */
+/** Start one more crew member only if free memory, minus this crew member and the crew members still starting up, stays at or above the reserve. */
 export function ramAllows(freeMb: number, memberMb: number, reserveMb: number, starting: number): boolean {
   return freeMb - (starting + 1) * memberMb >= reserveMb;
 }

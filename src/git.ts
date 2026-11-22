@@ -1,12 +1,10 @@
-import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync } from 'node:fs';
+import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync, rmSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
-import { checkCommitMessage } from './commit.ts';
 import { sleepSync } from './fsx.ts';
-import { legacyBranchName } from './legacy.ts';
-import { home } from './paths.ts';
 import { run, runOrThrow, type RunOptions, type RunResult } from './proc.ts';
 
-const samePath = (a: string, b: string): boolean => {
+/** Do two paths name the same place (real paths, case-insensitive on Windows)? */
+export const samePath = (a: string, b: string): boolean => {
   const n = (p: string) => {
     let r = resolve(p);
     try {
@@ -22,9 +20,9 @@ const samePath = (a: string, b: string): boolean => {
 };
 
 /**
- * A squad member controls its worktree, including the `.git` file in it. Pointing that file at a git dir the squad member made lets that
+ * A crew member controls its worktree, including the `.git` file in it. Pointing that file at a git dir the crew member made lets that
  * dir's config (core.fsmonitor, filter.*.clean, diff.external ...) run a program the moment amigo runs git there,
- * outside the squad member's sandbox. So before amigo runs git in a worktree, `.git` must be a regular file naming a git dir
+ * outside the crew member's sandbox. So before amigo runs git in a worktree, `.git` must be a regular file naming a git dir
  * that `git worktree add` made under the repo's own .git/worktrees, whose commondir leads back to the repo and which points
  * back at this worktree. Throws otherwise. A "worktree" that is the repo itself (a project without worktrees) is trusted.
  */
@@ -58,12 +56,12 @@ export function assertWorktreeIntact(repo: string, worktree: string, adminDir?: 
   if (back === null || !samePath(back, dotGit)) throw bad('its git dir belongs to another worktree');
 }
 
-/** Options for every git call amigo makes inside a squad member's worktree: the file system monitor (a program named in config) stays off. */
+/** Options for every git call amigo makes inside a crew member's worktree: the file system monitor (a program named in config) stays off. */
 const WORKTREE_GIT = ['-c', 'core.fsmonitor=false'];
 
 /**
  * The git dir `git worktree add` made for a worktree, found from the repo's own records (each <common>/worktrees/<name>/gitdir
- * names the .git of its worktree). Never reads <worktree>/.git, which the squad member controls.
+ * names the .git of its worktree). Never reads <worktree>/.git, which the crew member controls.
  */
 export function findAdminDir(repo: string, worktree: string): string {
   const common = resolve(repo, runOrThrow('git', ['-C', repo, 'rev-parse', '--git-common-dir']).trim());
@@ -85,7 +83,7 @@ export function findAdminDir(repo: string, worktree: string): string {
 }
 
 /**
- * The arguments for one git call in a squad member's worktree. The git dir is named outright (amigo's own record, else the
+ * The arguments for one git call in a crew member's worktree. The git dir is named outright (amigo's own record, else the
  * repo's), so git never reads <worktree>/.git: swapping that file between the guard and git cannot plant a config or filter.
  * A "worktree" that is the repo itself is trusted and found the usual way.
  */
@@ -99,7 +97,7 @@ export interface WorktreeOptions extends RunOptions {
   gitDir?: string;
 }
 
-/** Run git in a squad member's worktree, after assertWorktreeIntact (a tamper alarm). The one door for every git call there. */
+/** Run git in a crew member's worktree, after assertWorktreeIntact (a tamper alarm). The one door for every git call there. */
 export function worktreeRun(repo: string, worktree: string, args: string[], opts: WorktreeOptions = {}): RunResult {
   const { gitDir, ...runOpts } = opts;
   assertWorktreeIntact(repo, worktree, gitDir);
@@ -113,89 +111,17 @@ export function worktreeGit(repo: string, worktree: string, args: string[], opts
   return runOrThrow('git', worktreeGitArgs(repo, worktree, args, gitDir), runOpts);
 }
 
-/**
- * git options that switch every hook off for amigo's own commit and push. The hooks folder is member-controlled
- * (husky: core.hooksPath=.husky), so core.hooksPath points at an empty folder amigo owns; a -c option beats any
- * repo or worktree config. Forward slashes, so the value survives Windows paths.
- */
-export function noHooks(env: NodeJS.ProcessEnv = process.env): string[] {
-  const dir = join(home(env), 'no-hooks');
-  mkdirSync(dir, { recursive: true });
-  return ['-c', `core.hooksPath=${dir.replaceAll('\\', '/')}`];
-}
-
-export const branchName = (id: string): string => `amigo/${id}`;
+/** A build's branch: the project's registered prefix (amigo/ unless it names another) and the task id. */
+export const branchName = (id: string, prefix = 'amigo/'): string => `${prefix}${id}`;
 
 export function isGitRepo(path: string): boolean {
   const r = run('git', ['-C', path, 'rev-parse', '--is-inside-work-tree']);
   return r.status === 0 && r.stdout.trim() === 'true';
 }
 
-/** New worktree on a new branch, starting from the repo's current HEAD, or from `from`. Returns the commit it starts from and its git dir (to be recorded on the task). */
-export function createWorktree(repo: string, worktree: string, branch: string, from = 'HEAD'): { baseSha: string; gitDir: string } {
-  const start = run('git', ['-C', repo, 'rev-parse', '--verify', `${from}^{commit}`]);
-  if (start.status !== 0) throw new Error(`${repo} has no commits yet, so amigo cannot create a worktree for it`);
-  runOrThrow('git', ['-C', repo, 'worktree', 'add', '-q', '-b', branch, worktree, start.stdout.trim()]);
-  return { baseSha: start.stdout.trim(), gitDir: findAdminDir(repo, worktree) };
-}
-
 /** Changed, new and deleted files (git status --porcelain), every untracked file listed. */
 export function changedFiles(repo: string, cwd: string, gitDir?: string): string[] {
   return worktreeGit(repo, cwd, ['status', '--porcelain', '--untracked-files=all'], { gitDir })
-    .split(/\r?\n/)
-    .filter((l) => l.trim() !== '');
-}
-
-/** The path in a `git status --porcelain` line (the new name for a rename), without quotes. */
-export const porcelainPath = (line: string): string => line.slice(3).split(' -> ').pop()!.replace(/^"|"$/g, '');
-
-/** File names that usually hold secrets: .env files (not .env.example and the like), private keys, certificates and credential files. */
-export function looksSecret(path: string): boolean {
-  const name = path.replace(/\\/g, '/').split('/').pop()!.toLowerCase();
-  if (/^\.env(\..+)?$/.test(name)) return !/\.(example|sample|template|dist)$/.test(name);
-  return /\.(pem|key|p12|pfx|keystore|jks)$/.test(name) || /^id_(rsa|dsa|ecdsa|ed25519)$/.test(name) || /^(credentials|secrets?)\.(json|ya?ml|toml)$/.test(name) || name === '.netrc';
-}
-
-/**
- * Commit everything in the worktree to `branch`. Returns the short sha, or null when there was nothing to commit.
- * Refuses when the worktree is no longer on that branch (the agent switched or detached it), so nothing lands where nobody looks,
- * and when a changed file looks like it holds secrets (looksSecret). Hooks never run (see noHooks). With `expectedTree`
- * (the git tree the gates checked), only exactly that work is committed: a different tree, before or after the commit, is
- * rolled back and refused, and so is a clean worktree whose HEAD is not that tree. A message that breaks the commit rule
- * (checkCommitMessage) is refused before anything is staged.
- */
-export function commitAll(repo: string, worktree: string, branch: string, message: string, expectedTree?: string, env: NodeJS.ProcessEnv = process.env, gitDir?: string): string | null {
-  const wRun = (args: string[]) => worktreeRun(repo, worktree, args, { gitDir });
-  const wGit = (args: string[]) => worktreeGit(repo, worktree, args, { gitDir });
-  const head = wRun(['symbolic-ref', '-q', 'HEAD']).stdout.trim();
-  if (head !== `refs/heads/${branch}`) throw new Error(`The worktree is on ${head || 'a detached HEAD'}, not ${branch}. Check it by hand: ${worktree}`);
-  const changed = (what: string) => new Error(`The work in ${worktree} changed after it was checked (${what}), so nothing was committed. Check it again, then close again.`);
-  const changes = changedFiles(repo, worktree, gitDir);
-  if (changes.length === 0) {
-    if (expectedTree && wGit(['rev-parse', 'HEAD^{tree}']).trim() !== expectedTree) throw changed('the branch does not hold the checked work');
-    return null;
-  }
-  const bad = checkCommitMessage(message);
-  if (bad) throw new Error(`"${message.split(/\r?\n/)[0]}" is not a valid commit subject: ${bad}. Nothing was committed.`);
-  const secrets = changes.map(porcelainPath).filter(looksSecret);
-  if (secrets.length) throw new Error(`Refusing to commit files that may hold secrets: ${secrets.join(', ')}. Delete them or add them to .gitignore, then close again.`);
-  wGit(['add', '-A']);
-  if (expectedTree && wGit(['write-tree']).trim() !== expectedTree) throw changed('before the commit');
-  const before = wRun(['rev-parse', '-q', '--verify', 'HEAD']).stdout.trim();
-  // A machine without a full git identity cannot commit: fill in only the missing part.
-  const has = (key: string) => wRun(['config', key]).stdout.trim() !== '';
-  const identity = [...(has('user.name') ? [] : ['-c', 'user.name=amigo']), ...(has('user.email') ? [] : ['-c', 'user.email=amigo@localhost'])];
-  wGit([...noHooks(env), ...identity, 'commit', '-q', '-m', message]);
-  if (expectedTree && wGit(['rev-parse', 'HEAD^{tree}']).trim() !== expectedTree) {
-    if (before) wGit(['reset', '-q', '--soft', before]);
-    throw changed('by another process');
-  }
-  return wGit(['rev-parse', '--short', 'HEAD']).trim();
-}
-
-/** The files of a commit, read from the repo (commits are shared), never by running git in a squad member's worktree. */
-export function committedFiles(repo: string, sha: string): string[] {
-  return runOrThrow('git', ['-C', repo, 'show', '--name-only', '--format=', sha])
     .split(/\r?\n/)
     .filter((l) => l.trim() !== '');
 }
@@ -302,83 +228,11 @@ function taskCommitArgs(repo: string, branch: string, baseSha: string): string[]
   return [`refs/heads/${branch}`, ...excluded];
 }
 
-/**
- * The newest commit on `branch` already reachable from `baseSha` or the repo's default branch (local or on origin).
- * On a branch rebased onto (or merging) an advanced default branch this is the rebased/merged base rather than the
- * stale `baseSha`, so `git reset --soft <sha>` uncommits only the task's own commits without undoing the rebase.
- */
-export function effectiveBase(repo: string, branch: string, baseSha: string): string {
-  const refs = [baseSha, ...defaultBranchRefs(repo, branch)];
-  const mbs: string[] = [];
-  for (const ref of refs) {
-    const r = run('git', ['-C', repo, 'merge-base', `refs/heads/${branch}`, ref]);
-    const sha = r.status === 0 ? r.stdout.trim() : '';
-    if (sha && !mbs.includes(sha)) mbs.push(sha);
-  }
-  if (!mbs.length) return baseSha;
-  const isAncestor = (a: string, b: string) => run('git', ['-C', repo, 'merge-base', '--is-ancestor', a, b]).status === 0;
-  const newest = mbs.filter((a) => !mbs.some((b) => b !== a && isAncestor(a, b)));
-  return newest[0] ?? baseSha;
-}
-
-/**
- * The subject line of the newest non-merge task commit on `branch` (excluding `baseSha` and default branch when `baseSha`
- * is given), or the head commit's subject when `baseSha` is omitted. Null when no matching commit exists.
- */
-export function headSubject(repo: string, branch: string, baseSha?: string): string | null {
-  const rev = baseSha
-    ? run('git', ['-C', repo, 'rev-list', '-n', '1', '--no-merges', ...taskCommitArgs(repo, branch, baseSha), '--']).stdout.trim()
-    : `refs/heads/${branch}`;
-  if (!rev) return null;
-  const r = run('git', ['-C', repo, 'log', '-1', '--format=%s', rev, '--']);
-  return r.status === 0 && r.stdout.trim() ? r.stdout.trim() : null;
-}
-
-/**
- * The task's own non-merge commits on `branch` (excluding `baseSha` and the repo's local/origin default branch),
- * oldest first, each with its short sha and full message.
- */
-export function branchCommits(repo: string, branch: string, baseSha: string): { sha: string; message: string }[] {
-  const shas = runOrThrow('git', ['-C', repo, 'rev-list', '--reverse', '--no-merges', ...taskCommitArgs(repo, branch, baseSha), '--'])
-    .split(/\r?\n/)
-    .filter(Boolean);
-  return shas.map((sha) => ({ sha: sha.slice(0, 7), message: runOrThrow('git', ['-C', repo, 'log', '-1', '--format=%B', sha, '--']) }));
-}
-
 /** How many non-merge commits a branch has on top of `baseSha` and the repo's default branch. */
 export function commitsAhead(repo: string, branch: string, baseSha: string): number {
   return Number(runOrThrow('git', ['-C', repo, 'rev-list', '--count', '--no-merges', ...taskCommitArgs(repo, branch, baseSha), '--']).trim());
 }
 
-/**
- * Is this commit already on origin's default branch, as far as the last fetch knows? False too when the default branch
- * cannot be told (origin/HEAD, else origin/main or origin/master).
- */
-export function onOriginDefault(repo: string, sha: string): boolean {
-  const ref = originDefaultRef(repo);
-  return Boolean(ref) && run('git', ['-C', repo, 'merge-base', '--is-ancestor', sha, ref as string]).status === 0;
-}
-
-export function hasRemote(repo: string, remote: string): boolean {
-  return run('git', ['-C', repo, 'remote', 'get-url', remote]).status === 0;
-}
-
-/** True when a branch has an upstream or a remote-tracking branch of the same name: it may be somewhere other people see it. */
-export function branchPushed(repo: string, branch: string): boolean {
-  if (run('git', ['-C', repo, 'rev-parse', '--abbrev-ref', '-q', `${branch}@{upstream}`]).status === 0) return true;
-  return runOrThrow('git', ['-C', repo, 'branch', '-r', '--list', `*/${branch}`]).trim() !== '';
-}
-
 export function deleteBranch(repo: string, branch: string): void {
   runOrThrow('git', ['-C', repo, 'branch', '-D', branch]);
-}
-
-/**
- * Push one branch (never any other) to origin and make it the branch's upstream. With the task's id, only that task's own
- * branch goes: amigo/<id>, or the branch a migrated task made before the rename. Without one, any amigo/ branch.
- */
-export function pushBranch(repo: string, branch: string, env: NodeJS.ProcessEnv = process.env, taskId?: string): void {
-  const ok = taskId ? branch === branchName(taskId) || branch === legacyBranchName(taskId) : branch.startsWith('amigo/');
-  if (!ok) throw new Error(`Refusing to push ${branch}: amigo pushes only the amigo/<id> branch of a task, and only its own`);
-  runOrThrow('git', ['-C', repo, ...noHooks(env), 'push', '--set-upstream', 'origin', `refs/heads/${branch}:refs/heads/${branch}`]);
 }

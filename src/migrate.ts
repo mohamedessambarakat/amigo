@@ -1,171 +1,201 @@
-import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
-import os from 'node:os';
-import { dirname, join } from 'node:path';
-import { moveFolderTrust } from './claude.ts';
+import { existsSync, mkdirSync, readdirSync, renameSync, rmSync, statSync } from 'node:fs';
+import { join } from 'node:path';
+import { DEFAULT_BRANCH_PREFIX, saveProjects, validProjectName, type DeliveryMode, type Project } from './config.ts';
 import { readJson, writeJsonAtomic } from './fsx.ts';
-import { findAdminDir } from './git.ts';
-import { LEGACY_MARKER, LEGACY_NAME, legacyHomeVar, legacySkillFiles } from './legacy.ts';
-import { configPath, home, oldHome } from './paths.ts';
+import { clonePath, configDir, configPath, dataDir, home, OLD_LAYOUT_FILES, projectsDir, projectsPath, stateDir, taskDataDir, tasksDir } from './paths.ts';
 import { run } from './proc.ts';
-import { listTasks, mutateTask, runnerAlive, type Task } from './tasks.ts';
-
-/** Written into the old home before it moves and removed when everything inside is rewritten: a crash in between leaves it, and the next command finishes the job. */
-export const MIGRATION_MARKER = '.migration-incomplete';
-
-const norm = (p: string): string => {
-  const slashed = p.replaceAll('\\', '/');
-  return process.platform === 'win32' ? slashed.toLowerCase() : slashed;
-};
-
-/** A path (or a string starting with one) that pointed inside `from`, rewritten to point inside `to`. Anything else is returned as it is. */
-export function movePath(value: string, from: string, to: string): string {
-  const f = norm(from);
-  const v = norm(value);
-  return v === f || v.startsWith(`${f}/`) ? to + value.slice(from.length) : value;
-}
-
-/** Every string inside a JSON value, with movePath applied. */
-function movePaths(v: unknown, from: string, to: string): unknown {
-  if (typeof v === 'string') return movePath(v, from, to);
-  if (Array.isArray(v)) return v.map((x) => movePaths(x, from, to));
-  if (v && typeof v === 'object') return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, movePaths(x, from, to)]));
-  return v;
-}
-
-/** Is a task still at work? Its tab is open (whatever its status says), or it was touched a moment ago. A record left by a crashed tab is not. */
-function working(t: Task, env: NodeJS.ProcessEnv): boolean {
-  if (runnerAlive(t.id, env)) return true;
-  if (t.status !== 'running' && t.status !== 'verifying' && t.status !== 'closing') return false;
-  return Date.now() - Date.parse(t.updatedAt) < 2 * 60_000;
-}
-
-/** The old config's keys under their new names: head, arm and armMb became amigo, member and memberMb. Safe to apply twice. */
-function renameConfigKeys(config: Record<string, unknown>): Record<string, unknown> {
-  const { armMb, ...rest } = config;
-  const agents = Object.fromEntries(
-    Object.entries((config.agents as Record<string, Record<string, unknown>> | undefined) ?? {}).map(([name, a]) => {
-      const { head, arm, ...others } = a;
-      return [name, { ...(head !== undefined ? { amigo: head } : {}), ...(arm !== undefined ? { member: arm } : {}), ...others }];
-    }),
-  );
-  return { ...rest, agents, ...(armMb !== undefined ? { memberMb: armMb } : {}) };
-}
-
-/** Remove the slash command files the former name installed (only ones it wrote). Returns the files removed. */
-function removeLegacySkills(userHome: string): string[] {
-  const removed: string[] = [];
-  for (const file of legacySkillFiles(userHome)) {
-    if (!existsSync(file) || !readFileSync(file, 'utf8').includes(LEGACY_MARKER)) continue;
-    rmSync(file);
-    const dir = dirname(file);
-    if (dir.endsWith(LEGACY_NAME) && readdirSync(dir).length === 0) rmSync(dir, { recursive: true });
-    removed.push(file);
-  }
-  return removed;
-}
 
 /**
- * Everything that has to change inside the moved home: config keys first, then each task's paths and worktree, then the old
- * slash commands. Every step is safe to repeat, so a run that stopped halfway is simply run again. Returns the line to print.
+ * The one-time cutover from the old home layout (config.json, projects.json, tasks/, worktrees/ and the gate files at the top
+ * of ~/.amigo, projects registered as the Boss's own folders) to the new one: config/, data/, state/
+ * and projects/, with every project an amigo-owned clone. Each step is safe to repeat, and the old registry goes last, so a run
+ * that stopped halfway is simply run again.
  */
-function rewriteMovedHome(env: NodeJS.ProcessEnv, from: string, to: string, userHome: string, marker: string, resumed: boolean): string {
-  const warnings: string[] = [];
-  if (existsSync(configPath(env))) writeJsonAtomic(configPath(env), movePaths(renameConfigKeys(readJson<Record<string, unknown>>(configPath(env), {})), from, to));
 
-  let updated = 0;
-  let repaired = 0;
-  for (const listed of listTasks(env)) {
-    // Under the task's own lock, on its current content: a status change made meanwhile is never overwritten, and a record
-    // that no longer holds old paths (an earlier run did it) is not written at all.
-    const t = mutateTask(
-      listed.id,
-      (cur) => {
-        const { headAddress, ...moved } = movePaths(cur, from, to) as Task & { headAddress?: string };
-        const next: Task = { ...moved, ...(headAddress ? { amigoAddress: headAddress } : {}) };
-        if (JSON.stringify(next) === JSON.stringify(cur)) return null;
-        updated++;
-        return { ...next, headAddress: undefined } as Partial<Task>;
-      },
-      env,
-    );
-    if (t.status === 'closed' || !t.worktree || !t.repo || !existsSync(t.worktree)) continue;
-    const r = run('git', ['-C', t.repo, 'worktree', 'repair', t.worktree]);
-    if (r.status !== 0) {
-      // Reported here, once: the marker goes either way, so this never repeats at every command.
-      warnings.push(`git worktree repair failed for ${t.id}: ${(r.stderr || r.stdout || r.error?.message || 'no answer').trim()}`);
+/** A project as the old projects.json held it. */
+interface OldProject {
+  name: string;
+  path: string;
+  notes?: string;
+  checks?: string[];
+  risky?: string[];
+  live?: string[];
+  watch?: string[];
+}
+
+export interface MigrateOptions {
+  /** Projects whose old folder is a live install: their new entry gets `live` set to that folder. */
+  live?: string[];
+  /** Projects to leave out of the new registry. */
+  drop?: string[];
+  dryRun?: boolean;
+}
+
+interface PlannedProject {
+  old: OldProject;
+  entry: Project;
+}
+
+/** The gate files and leftovers of the old layout that are dropped, not moved. */
+const DROPPED = ['policy.json', 'policy.approved.json', 'gates.confirmed.json', 'approvals.jsonl', 'locks', 'no-hooks', 'amigo-prompt.md', 'amigo-settings.json', 'test-terminals'];
+
+/** What moves into state/ as it is. */
+const TO_STATE = ['scratch', 'notices.json', 'drafts', 'hook-errors.log'];
+
+const git = (dir: string, ...args: string[]) => run('git', ['-C', dir, ...args]);
+
+function oldRegistry(env: NodeJS.ProcessEnv): OldProject[] {
+  const file = join(home(env), 'projects.json');
+  const list = readJson<{ projects?: OldProject[] }>(file, { projects: [] }).projects;
+  if (!Array.isArray(list)) throw new Error(`${file}: must look like {"projects": [...]}`);
+  return list;
+}
+
+/** Every old task that is not closed: its worktree and tab point at the old layout, so the cutover waits for it. */
+function openTasks(env: NodeJS.ProcessEnv): string[] {
+  const dir = join(home(env), 'tasks');
+  if (!existsSync(dir)) return [];
+  return readdirSync(dir).flatMap((id) => {
+    const t = readJson<{ status?: string } | null>(join(dir, id, 'task.json'), null);
+    return t && t.status !== 'closed' ? [`${id} (${t.status})`] : [];
+  });
+}
+
+/** Plan the new registry entry of every old project, or throw with every problem at once. */
+function plan(env: NodeJS.ProcessEnv, opts: MigrateOptions): PlannedProject[] {
+  const old = oldRegistry(env);
+  const names = new Set(old.map((p) => p.name));
+  const problems: string[] = [];
+  for (const n of [...(opts.live ?? []), ...(opts.drop ?? [])]) if (!names.has(n)) problems.push(`"${n}" is not a registered project (known: ${[...names].join(', ') || 'none'})`);
+  const today = new Date().toISOString().slice(0, 10);
+  const planned: PlannedProject[] = [];
+  for (const p of old) {
+    if (opts.drop?.includes(p.name)) continue;
+    if (!validProjectName(p.name)) {
+      problems.push(`${p.name}: not a valid project name`);
       continue;
     }
-    repaired++;
-    try {
-      const gitDir = findAdminDir(t.repo, t.worktree);
-      if (gitDir !== t.gitDir) mutateTask(t.id, (cur) => ({ gitDir, updatedAt: cur.updatedAt }), env);
-    } catch (err) {
-      warnings.push(`${t.id}: ${(err as Error).message}`);
+    if (!p.path || !existsSync(p.path) || !statSync(p.path).isDirectory()) {
+      problems.push(`${p.name}: its folder ${p.path} is missing (leave it out with --drop ${p.name})`);
+      continue;
     }
-    if (t.trustAdded) {
-      try {
-        moveFolderTrust(movePath(t.worktree, to, from), t.worktree, env);
-      } catch (err) {
-        warnings.push(`${t.id}: could not update ~/.claude.json: ${(err as Error).message}`);
-      }
+    const top = git(p.path, 'rev-parse', '--show-toplevel');
+    if (top.status !== 0) {
+      problems.push(`${p.name}: ${p.path} is not a git repo, and amigo now works only on clones (leave it out with --drop ${p.name})`);
+      continue;
     }
+    // The clone comes from the folder's origin, so pull requests and merges go where they always went; a folder without one is
+    // cloned as it is and stays local-only.
+    const origin = git(p.path, 'remote', 'get-url', 'origin');
+    const source = origin.status === 0 && origin.stdout.trim() ? origin.stdout.trim() : p.path;
+    const mode: DeliveryMode = source === p.path ? 'local-only' : 'no-mistakes';
+    planned.push({
+      old: p,
+      entry: {
+        name: p.name,
+        source,
+        path: clonePath(p.name, env),
+        mode,
+        yolo: true,
+        branchPrefix: DEFAULT_BRANCH_PREFIX,
+        addedAt: today,
+        ...(opts.live?.includes(p.name) ? { live: p.path } : {}),
+        ...(p.notes ? { notes: p.notes } : {}),
+        ...(p.live ? { liveCommands: p.live } : {}),
+        ...(p.watch?.length ? { watch: p.watch } : {}),
+      },
+    });
   }
-
-  const skills = removeLegacySkills(userHome);
-  // Every record is rewritten: the job is done. Warnings are told once, not kept alive by the marker.
-  rmSync(marker, { force: true });
-  return [
-    `${resumed ? 'Finished moving' : 'Moved'} ${from} to ${to} (${updated} task${updated === 1 ? '' : 's'}, ${repaired} worktree${repaired === 1 ? '' : 's'} repaired).`,
-    skills.length ? `Removed the old /${LEGACY_NAME} command (${skills.length} file${skills.length === 1 ? '' : 's'}): run amigo install-skill to add /amigo.` : '',
-    ...warnings.map((w) => `Warning: ${w}`),
-  ]
-    .filter(Boolean)
-    .join(' ');
+  if (problems.length) throw new Error(`Cannot migrate ${home(env)}:\n${problems.map((x) => `  - ${x}`).join('\n')}`);
+  return planned;
 }
 
-/** Throws while a task in `where` is at work: its tab holds paths inside the folder that is being moved or rewritten. */
-function refuseWhileWorking(env: NodeJS.ProcessEnv, where: string, to: string): void {
-  const inWhere = { ...env, AMIGO_HOME: where };
-  const busy = listTasks(inWhere).filter((t) => working(t, inWhere));
-  if (busy.length) {
-    throw new Error(`amigo now lives in ${to}, but ${where} still has tasks at work (${busy.map((t) => `${t.id} ${t.status}`).join(', ')}). Wait for them to finish, then run amigo again: it moves everything once.`);
-  }
-}
+const describe = (p: PlannedProject): string =>
+  `  ${p.entry.name}: clone ${p.entry.source} into ${p.entry.path} [${p.entry.mode}${p.entry.yolo ? ' +yolo' : ''}]${p.entry.live ? `, live: ${p.entry.live}` : ''}${p.old.checks?.length ? `; its checks are dropped (${p.old.checks.join(' | ')})` : ''}${p.old.risky?.length ? `; its risky paths are dropped (${p.old.risky.join(', ')})` : ''}`;
 
-/**
- * Once: when the home of the former name exists and the new one does not, move it. Refuses while any task is at work (its tab
- * is open, whatever its status). Rewrites the paths in task and config files, repairs the git worktrees of open tasks, moves
- * their ~/.claude.json trust entries and removes the old slash commands. A marker kept in the moved home until all of that is
- * done makes the next command finish a move that stopped halfway. Returns the one line to tell the user, or null when nothing
- * was to be done. Does nothing when AMIGO_HOME is set (an explicit home is never a migration).
- */
-export function migrateOldHome(env: NodeJS.ProcessEnv, userHome: string = os.homedir()): string | null {
-  if (env.AMIGO_HOME) return null;
-  const to = home(env);
-  const from = oldHome(env);
-  const marker = join(to, MIGRATION_MARKER);
+/** Move `from` to `to` unless `to` is already there (an earlier run moved it): then the leftover is removed. */
+function move(from: string, to: string): boolean {
+  if (!existsSync(from)) return false;
+  mkdirSync(join(to, '..'), { recursive: true });
   if (existsSync(to)) {
-    if (!existsSync(marker)) return null;
-    refuseWhileWorking(env, to, to);
-    return rewriteMovedHome(env, readJson<{ from?: string }>(marker, {}).from ?? from, to, userHome, marker, true);
+    rmSync(from, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+    return false;
   }
-  if (!existsSync(from)) return null;
-
-  refuseWhileWorking(env, from, to);
-  mkdirSync(dirname(to), { recursive: true });
-  writeFileSync(join(from, MIGRATION_MARKER), JSON.stringify({ from }));
-  try {
-    renameSync(from, to);
-  } catch (err) {
-    rmSync(join(from, MIGRATION_MARKER), { force: true });
-    throw new Error(`Could not move ${from} to ${to}: ${(err as Error).message}. Close any terminal or program that has a folder inside it open, then run amigo again.`);
-  }
-  return rewriteMovedHome(env, from, to, userHome, marker, false);
+  renameSync(from, to);
+  return true;
 }
 
-/** One line for a user whose shell still sets the former name's home variable while amigo has no home yet: amigo does not read it. */
-export function legacyHomeHint(env: NodeJS.ProcessEnv): string | null {
-  const set = legacyHomeVar(env);
-  if (env.AMIGO_HOME || !set || existsSync(home(env))) return null;
-  return `The former name's home variable is set (${set}), but amigo does not read it: set AMIGO_HOME to that folder to keep using it, or move it to ${home(env)}.`;
+/** Make the clone, or accept the one an earlier run made from the same source. */
+function ensureClone(p: Project): 'cloned' | 'kept' {
+  if (existsSync(p.path)) {
+    const origin = git(p.path, 'remote', 'get-url', 'origin');
+    if (origin.status === 0 && origin.stdout.trim() === p.source) return 'kept';
+    throw new Error(`${p.path} already exists and is not a clone of ${p.source}; amigo never overwrites a folder. Move it away, then run amigo migrate again.`);
+  }
+  mkdirSync(join(p.path, '..'), { recursive: true });
+  const r = run('git', ['clone', '--quiet', p.source, p.path], { timeoutMs: 30 * 60_000 });
+  if (r.error || r.status !== 0) {
+    rmSync(p.path, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+    throw new Error(`git clone ${p.source} failed: ${(r.error?.message || r.stderr || r.stdout).trim()}`);
+  }
+  return 'cloned';
+}
+
+/** Is this home still in the old layout? */
+export const needsMigration = (env: NodeJS.ProcessEnv): boolean => OLD_LAYOUT_FILES.some((f) => existsSync(join(home(env), f)));
+
+/** `amigo migrate`: convert the home. Returns the lines to print. */
+export function migrateHome(env: NodeJS.ProcessEnv, opts: MigrateOptions = {}): string[] {
+  const root = home(env);
+  if (!needsMigration(env)) return [`${root} already has the new layout (config/, data/, state/, projects/). Nothing to migrate.`];
+  const open = openTasks(env);
+  if (open.length) throw new Error(`Cannot migrate while tasks are open: ${open.join(', ')}. Close them with the amigo you have now, then run amigo migrate again.`);
+  const planned = plan(env, opts);
+  const lines = [
+    `${opts.dryRun ? 'Would migrate' : 'Migrating'} ${root} to config/, data/, state/ and projects/:`,
+    ...(planned.length ? planned.map(describe) : ['  (no projects)']),
+    `  config.json -> config/config.json; projects.json -> data/projects.json; tasks/ -> state/tasks/ (briefs to data/<id>/brief.md)`,
+    `  ${TO_STATE.join(', ')} -> state/`,
+    `  removed: ${DROPPED.join(', ')}`,
+  ];
+  if (opts.dryRun) return [...lines, 'Dry run: nothing was changed.'];
+
+  for (const dir of [configDir(env), dataDir(env), stateDir(env), projectsDir(env)]) mkdirSync(dir, { recursive: true });
+  for (const p of planned) lines.push(`  ${p.entry.name}: ${ensureClone(p.entry) === 'cloned' ? 'cloned' : 'clone already there'}`);
+  saveProjects(planned.map((p) => p.entry), env);
+
+  move(join(root, 'config.json'), configPath(env));
+
+  const oldTasks = join(root, 'tasks');
+  let tasks = 0;
+  if (existsSync(oldTasks)) {
+    for (const id of readdirSync(oldTasks)) {
+      move(join(oldTasks, id, 'brief.md'), join(taskDataDir(id, env), 'brief.md'));
+      const file = join(oldTasks, id, 'task.json');
+      const t = readJson<Record<string, unknown> | null>(file, null);
+      // A closed scratch task's folder moves with scratch/: its record follows it.
+      if (t && typeof t.cwd === 'string') {
+        const from = join(root, 'scratch');
+        if (t.cwd.replaceAll('\\', '/').toLowerCase().startsWith(`${from.replaceAll('\\', '/').toLowerCase()}/`)) {
+          writeJsonAtomic(file, { ...t, cwd: join(stateDir(env), 'scratch') + t.cwd.slice(from.length) });
+        }
+      }
+      if (move(join(oldTasks, id), join(tasksDir(env), id))) tasks++;
+    }
+    rmSync(oldTasks, { recursive: true, force: true });
+  }
+  for (const name of TO_STATE) move(join(root, name), join(stateDir(env), name));
+  for (const name of DROPPED) rmSync(join(root, name), { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+
+  const worktrees = join(root, 'worktrees');
+  if (existsSync(worktrees)) {
+    if (readdirSync(worktrees).length === 0) rmSync(worktrees, { recursive: true, force: true });
+    else lines.push(`  kept ${worktrees}: it still holds folders (old worktrees of closed tasks?); look at them, then delete it yourself`);
+  }
+  writeJsonAtomic(join(stateDir(env), 'migration.json'), { at: new Date().toISOString(), projects: planned.map((p) => p.entry.name), tasks });
+  // Last: with the old registry gone the home reads as migrated, so a run that stopped before this point is run again.
+  rmSync(join(root, 'projects.json'), { force: true });
+  if (!existsSync(projectsPath(env))) saveProjects([], env);
+  lines.push(`Done: ${planned.length} project${planned.length === 1 ? '' : 's'} registered as clones, ${tasks} task record${tasks === 1 ? '' : 's'} kept in state/tasks.`);
+  return lines;
 }
