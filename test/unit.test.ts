@@ -272,5 +272,23 @@ describe('amigo instructions', () => {
       cleanup(dir);
     }
   });
+
+  it('rule 5 allows pushing, opening a PR and merging to main after reviewer PASS and green CI while gating risky or outward actions on the user', () => {
+    const { dir, env } = makeHome();
+    try {
+      const prompt = amigoPrompt('fake', env);
+      const rule5 = prompt.split(/\r?\n/).find((line) => line.startsWith('5. '));
+      assert.ok(rule5, 'expected rule 5 in amigo instructions');
+      assert.doesNotMatch(rule5, /[\u2013\u2014]/, 'rule 5 must not use em or en dashes');
+      assert.doesNotMatch(rule5, /Only the user approves anything outward|approves `close --commit` and nothing more/i);
+      assert.match(rule5, /reviewer PASS/i);
+      assert.match(rule5, /green CI/i);
+      assert.match(rule5, /push.*PR.*merge.*`?main`?/i);
+      assert.match(rule5, /risky work.*dependencies.*hooks.*auth.*CI\/prod config/i);
+      assert.match(rule5, /deploys.*live migrations.*spending money.*messaging people.*user/i);
+    } finally {
+      cleanup(dir);
+    }
+  });
 });
 
