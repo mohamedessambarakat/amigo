@@ -11,9 +11,9 @@ import { codeRoot, home, scratchDir } from '../src/paths.ts';
 import { listTasks, getTask, beat, clearBeat } from '../src/tasks.ts';
 import { beginNotice, finishNotice, noticesPending, takeNotices, touchNotice } from '../src/notices.ts';
 import { moveTrust } from '../src/claude.ts';
-import { resolveExecutable } from '../src/command.ts';
+import { pointerLine, resolveExecutable } from '../src/command.ts';
 import { noticesPath } from '../src/paths.ts';
-import { addOrigin, cleanEnv, cleanup, cli, fakeGhEnv, ghCalls, git, idFrom, makeHome, makeRepo, moveFolder, releaseHeld, tmpDir, waitFor } from './helpers.ts';
+import { addOrigin, cleanEnv, cleanup, cli, fakeAgent, fakeGhEnv, ghCalls, git, idFrom, makeHome, makeRepo, moveFolder, releaseHeld, tmpDir, waitFor } from './helpers.ts';
 
 /** Poll the inbox until its text contains `needle` (the live checks run in a detached process). */
 async function inboxHas(env: NodeJS.ProcessEnv, needle: RegExp, timeoutMs = 30_000): Promise<string> {
@@ -66,6 +66,102 @@ describe('help and the bare command', () => {
       const old = cli(env, ['head', '--dry-run']);
       assert.equal(old.code, 1);
       assert.match(old.err, /Unknown command "head"/);
+    } finally {
+      cleanup(dir);
+    }
+  });
+
+  it('bare amigo passes Claude instructions via --append-system-prompt-file and a short first prompt, while keeping other agents unchanged', () => {
+    const { dir, env } = makeHome();
+    try {
+      const win = process.platform === 'win32';
+      const recorder = join(dir, 'record.mjs');
+      writeFileSync(
+        recorder,
+        [
+          "import { existsSync, readFileSync, writeFileSync } from 'node:fs';",
+          'const [outFile, ...argv] = process.argv.slice(2);',
+          "const pIdx = argv.indexOf('--append-system-prompt-file');",
+          "const sIdx = argv.indexOf('--settings');",
+          'const promptPath = pIdx >= 0 ? argv[pIdx + 1] : null;',
+          'const settingsPath = sIdx >= 0 ? argv[sIdx + 1] : null;',
+          'writeFileSync(outFile, JSON.stringify({',
+          '  argv,',
+          "  promptText: promptPath && existsSync(promptPath) ? readFileSync(promptPath, 'utf8') : null,",
+          "  settingsText: settingsPath && existsSync(settingsPath) ? readFileSync(settingsPath, 'utf8') : null,",
+          '}));',
+        ].join('\n'),
+      );
+      const makeShim = (name: string, outFile: string) => {
+        const shim = join(dir, win ? `${name}.cmd` : name);
+        writeFileSync(
+          shim,
+          win ? `@echo off\r\n"${process.execPath}" "${recorder}" "${outFile}" %*\r\n` : `#!/bin/sh\nexec "${process.execPath}" "${recorder}" "${outFile}" "$@"\n`,
+          { mode: 0o755 },
+        );
+        return shim;
+      };
+      const claudeOut = join(dir, 'claude-run.json');
+      const codexOut = join(dir, 'codex-run.json');
+      const claudeShim = makeShim('claude', claudeOut);
+      const codexShim = makeShim('codex', codexOut);
+      const claudeExe = join(dir, 'bin', 'claude.exe');
+      mkdirSync(join(dir, 'bin'), { recursive: true });
+      writeFileSync(claudeExe, '');
+
+      const amigoHome = home(env);
+      const promptPath = join(amigoHome, 'amigo-prompt.md');
+      const settingsPath = join(amigoHome, 'amigo-settings.json');
+      writeFileSync(
+        join(amigoHome, 'config.json'),
+        JSON.stringify({
+          agents: {
+            claude: { amigo: [claudeShim, '{prompt}'], member: [claudeShim, '{prompt}'] },
+            ...(win ? { claudeDirect: { amigo: [claudeExe, '{prompt}'], member: [claudeExe, '{prompt}'] } } : {}),
+            codex: { amigo: [codexShim, '{prompt}'], member: [codexShim, 'exec', '{prompt}'] },
+            fake: { amigo: [process.execPath, fakeAgent, '{prompt}'], member: [process.execPath, fakeAgent, '{prompt}'] },
+          },
+          memberMb: 0,
+          reserveMb: 0,
+        }),
+      );
+
+      // Dry run prints the exact launch command and writes nothing.
+      for (const agent of win ? ['claude', 'claudeDirect'] : ['claude']) {
+        const dry = cli(env, ['--agent', agent, '--dry-run']);
+        assert.equal(dry.code, 0, dry.err);
+        assert.match(dry.out, /--name amigo/);
+        assert.ok(dry.out.includes(`--settings`) && dry.out.includes(settingsPath), dry.out);
+        assert.ok(dry.out.includes(`--append-system-prompt-file`) && dry.out.includes(promptPath), dry.out);
+        assert.ok(dry.out.includes('"Brief me."'), dry.out);
+        assert.doesNotMatch(dry.out, /Read the file|# You are amigo/);
+      }
+      const fakeDry = cli(env, ['--agent', 'fake', '--dry-run']);
+      assert.equal(fakeDry.code, 0, fakeDry.err);
+      assert.doesNotMatch(fakeDry.out, /--append-system-prompt-file|--name|--settings|Brief me\./);
+      assert.match(fakeDry.out, /# You are amigo/);
+      const codexDry = cli(env, ['--agent', 'codex', '--dry-run']);
+      assert.equal(codexDry.code, 0, codexDry.err);
+      assert.doesNotMatch(codexDry.out, /--append-system-prompt-file|--name|--settings|Brief me\./);
+      assert.ok(win ? codexDry.out.includes(pointerLine(promptPath)) : codexDry.out.includes('# You are amigo'), codexDry.out);
+      assert.ok(!existsSync(promptPath) && !existsSync(settingsPath), 'dry run writes neither prompt nor settings');
+
+      // Real run for a non-Claude agent keeps its current prompt handling and writes no Claude settings.
+      const codexRun = cli(env, ['--agent', 'codex']);
+      assert.equal(codexRun.code, 0, codexRun.err);
+      const codexSeen = JSON.parse(readFileSync(codexOut, 'utf8')) as { argv: string[] };
+      assert.equal(codexSeen.argv.length, 1);
+      if (win) assert.equal(codexSeen.argv[0], pointerLine(promptPath));
+      else assert.match(codexSeen.argv[0] ?? '', /^# You are amigo[\s\S]*## Briefing/);
+      assert.ok(!existsSync(settingsPath), 'non-Claude agent writes no amigo-settings.json');
+
+      // Real run for Claude writes amigo-prompt.md and amigo-settings.json before launching and sends only the short first prompt.
+      const claudeRun = cli(env, ['--agent', 'claude']);
+      assert.equal(claudeRun.code, 0, claudeRun.err);
+      const claudeSeen = JSON.parse(readFileSync(claudeOut, 'utf8')) as { argv: string[]; promptText: string | null; settingsText: string | null };
+      assert.deepEqual(claudeSeen.argv, ['--name', 'amigo', '--settings', settingsPath, '--append-system-prompt-file', promptPath, 'Brief me.']);
+      assert.match(claudeSeen.promptText ?? '', /^# You are amigo[\s\S]*## Briefing/, 'amigo-prompt.md was written before launching Claude');
+      assert.deepEqual(JSON.parse(claudeSeen.settingsText ?? 'null'), { crossSessionInbound: 'accept' });
     } finally {
       cleanup(dir);
     }

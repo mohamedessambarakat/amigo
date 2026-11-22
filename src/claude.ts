@@ -68,13 +68,19 @@ export function claudeMemberTemplate(template: string[], o: { id: string; sessio
   return [cmd, '--name', memberName(o.id), o.resume ? '--resume' : '--session-id', o.sessionId, '--settings', o.settingsFile, ...rest.filter((a) => a !== '-p' && a !== '--print')];
 }
 
+/** Short visible first prompt when `amigo` launches Claude Code (the full lead instructions go via --append-system-prompt-file). */
+export const AMIGO_FIRST_PROMPT = 'Brief me.';
+
 /**
- * Amigo's extra flags when `amigo` starts Claude Code: its name, and its settings file (amigoSettings).
- * The settings go in a file, not inline JSON: an npm install starts through cmd.exe on Windows, which mangles the quotes.
+ * Amigo's extra flags when `amigo` starts Claude Code: its name, its settings file (amigoSettings), and the lead
+ * instructions via --append-system-prompt-file. Replacing {prompt} here with the short prompt also keeps Windows .cmd
+ * shims from substituting the pointer line in buildLaunch.
  */
-export function claudeAmigoTemplate(template: string[], settingsFile: string): string[] {
+export function claudeAmigoTemplate(template: string[], settingsFile: string, promptFile: string): string[] {
   const [cmd, ...rest] = template as [string, ...string[]];
-  return [cmd, '--name', AMIGO_NAME, '--settings', settingsFile, ...rest];
+  const hasPrompt = rest.some((a) => a.includes('{prompt}'));
+  const args = hasPrompt ? rest.map((a) => a.replace(/\{prompt\}/g, AMIGO_FIRST_PROMPT)) : [...rest, AMIGO_FIRST_PROMPT];
+  return [cmd, '--name', AMIGO_NAME, '--settings', settingsFile, '--append-system-prompt-file', promptFile, ...args];
 }
 
 /** Amigo's settings: accept messages from squad members. */
