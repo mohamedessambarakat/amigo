@@ -17,7 +17,7 @@ you ──▶ amigo ──spawn──▶ squad member 1 (worktree, branch amigo/
 
 ## Install
 
-You need Node.js 24.3 or newer, git, and an agent CLI that already works on your machine. Nothing to set up for the terminal: amigo finds the one amigo runs in and opens squad member tabs there (a new window, if that terminal has no way to open a tab).
+You need Node.js 24.3 or newer, git, an agent CLI that already works on your machine, and the herdr desktop app (`herdr-app`, with `herdr-app` and `hc` on PATH). amigo runs only inside a herdr-app terminal and refuses to start anywhere else; it opens each crew member in a herdr-app tab. It was tested with herdr-app 0.1.16 and hc 0.1.21; the briefing warns when another version is installed.
 
 ```sh
 git clone https://github.com/mohamedessambarakat/amigo
@@ -48,7 +48,7 @@ Running `add` again with the same name and folder updates the project and keeps 
 
 ## Start working
 
-In an agent session you already have open, type `/amigo` (`$amigo` in Codex). Or start amigo from any terminal:
+In an agent session you already have open in a herdr-app terminal, type `/amigo` (`$amigo` in Codex). Or start amigo from a herdr-app terminal:
 
 ```sh
 amigo
@@ -197,7 +197,7 @@ Give your agent the link to this repository and ask it to set up amigo. Agent, d
 
 - `~/.amigo/` holds `config.json`, `projects.json`, `notices.json` (background results waiting for your inbox), `scratch/<id>/`, `policy.json` (with `policy.approved.json`, `gates.confirmed.json` and `approvals.jsonl`, see above), `tasks/<id>/` (brief, prompt, task state, output log) and `worktrees/`.
 - `/amigo` runs `amigo brief --agent <name>`, which prints amigo's instructions with the briefing and starts the briefing's background checks; the session you are in becomes amigo.
-- Every squad member opens in a new tab of the terminal amigo runs in, found from the variables that terminal sets. A terminal with no way to open a tab from outside gets a new window instead. In herdr, a squad member with its own worktree gets a workspace of its own (named `<id> · <title>`) and any other squad member a tab in amigo's workspace; nothing is focused, and herdr closes the workspace with its last tab. On Windows the squad member's tab is a PowerShell pane (herdr's default shell); with another `default_shell` the squad member never starts and is reported as failed. The herdr desktop app (`herdr-app`, found from the `HC_TERMINAL_ID` its herdr-core terminals set) works the same way with its spaces and tabs, through `herdr-app` and `hc` on PATH. Queued squad members that start later open in the same terminal. The tab closes by itself when the squad member ends, also after an error; the error stays in `amigo status`, `inbox` and `attach`.
+- amigo runs only inside the herdr desktop app. It knows it is there when its own herdr-core terminal (`HC_TERMINAL_ID`) is live, shown by the app (it carries a `herdr.space` label) and shares this process's console (or tty); anywhere else `amigo`, `amigo brief` and `spawn` refuse and say why. Every terminal action goes through one backend (`src/terminal.ts`): open a crew member's tab, send it a line, read whether it is live and busy, close it, list this home's tabs. A crew member with its own worktree gets a space of its own (named `<id> · <title>`) and any other crew member a tab in amigo's space; nothing is focused, and the app closes the space with its last tab. Each crew member terminal is labelled `amigo.task=<id>` and `amigo.home=<tag>`, and amigo never types into or closes a terminal whose labels do not match. On Windows the tab's shell is PowerShell (herdr-core's default shell). The tab closes by itself when the crew member ends, also after an error; the error stays in `amigo status`, `inbox` and `attach`.
 - Squad members end each turn with `STATUS: done - ...`, `STATUS: blocked - ...` or `STATUS: question - ...`; that line is the result amigo sees in `amigo inbox` and `amigo wait`.
 - **Claude Code squad members** are interactive sessions named `amigo-<id>` (you can type into them in their tab). Hooks (in `tasks/<id>/claude-settings.json`) record each turn's STATUS line. When amigo is Claude Code too, each squad member messages the session that spawned it (by its messaging address, so amigo can be named anything and renamed freely) with SendMessage when a turn ends, and amigo can message a squad member whose session is open. A turn that ends without a STATUS line, or without that message, is sent back once. `amigo send` resumes the squad member's session. Before a squad member starts, amigo marks its folder as trusted in `~/.claude.json` (so the session opens without the trust dialog) and removes that entry when the squad member's worktree is closed.
 - **Other agents** run their `member` command once; the output stays in `tasks/<id>/output.log` (`amigo attach <id>` follows it). Without a STATUS line, the squad member is `done` if the agent exited cleanly, else `failed`. A follow-up runs it again with the brief, its last result and every follow-up.
@@ -221,7 +221,7 @@ npm run typecheck
 npm test
 ```
 
-Tests run the real CLI against a fake agent (`test/fake-agent.mjs`) and a fake GitHub CLI (`test/fake-gh.mjs`, found through `AMIGO_GH`, with a local bare repo as `origin`) in temporary folders, with squad member tabs replaced by detached processes (`AMIGO_TERMINAL=test`).
+Tests run the real CLI against a fake agent (`test/fake-agent.mjs`) and a fake GitHub CLI (`test/fake-gh.mjs`, found through `AMIGO_GH`, with a local bare repo as `origin`) in temporary folders, with crew member tabs replaced by detached processes (the test terminal backend, `AMIGO_TERMINAL=test`).
 
 | Folder | What is in it |
 |---|---|

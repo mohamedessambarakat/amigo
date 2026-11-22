@@ -12,7 +12,6 @@ import { scratchDir, taskDir } from './paths.ts';
 import { policyState } from './policy.ts';
 import { killTree } from './proc.ts';
 import { assessChanges, snapshot } from './risk.ts';
-import { removeTabConfig } from './terminal.ts';
 import { listTasks, mutateTask, requireTask, runnerAlive, type Task } from './tasks.ts';
 
 export interface CloseOptions {
@@ -203,8 +202,7 @@ export function closeMember(id: string, opts: CloseOptions, env: NodeJS.ProcessE
         out.push(`Warning: could not remove ${dir} from ~/.claude.json: ${(err as Error).message}`);
       }
     }
-    removeTabConfig(t.tabConfig);
-    mutateTask(id, () => ({ status: 'closed', pid: null, tabConfig: null, ...(committed ? { committed } : {}) }), env);
+    mutateTask(id, () => ({ status: 'closed', pid: null, ...(committed ? { committed } : {}) }), env);
     out.push(`Closed ${id}.`);
   } catch (err) {
     mutateTask(id, () => ({ status: previous === 'running' || previous === 'verifying' ? 'failed' : previous, pid: null }), env);
