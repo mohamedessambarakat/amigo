@@ -1,20 +1,18 @@
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { delimiter, isAbsolute, join } from 'node:path';
 import { describe, it } from 'node:test';
 import { COMMANDS, HELP } from '../src/cli.ts';
 import { confirmGates, gatesConfirmed } from '../src/gates.ts';
 import { pushBranch } from '../src/git.ts';
 import { legacyBranchName } from '../src/legacy.ts';
-import { movePath } from '../src/migrate.ts';
 import { codeRoot, home, scratchDir } from '../src/paths.ts';
-import { listTasks, getTask, beat, clearBeat } from '../src/tasks.ts';
+import { listTasks, getTask } from '../src/tasks.ts';
 import { beginNotice, finishNotice, noticesPending, takeNotices, touchNotice } from '../src/notices.ts';
 import { amigoPrompt, inbox, waitForMembers } from '../src/squad.ts';
-import { moveTrust } from '../src/claude.ts';
 import { pointerLine, resolveExecutable } from '../src/command.ts';
 import { noticesPath } from '../src/paths.ts';
-import { addOrigin, cleanEnv, cleanup, cli, fakeAgent, fakeGhEnv, ghCalls, git, idFrom, makeHome, makeRepo, moveFolder, releaseHeld, tmpDir, waitFor } from './helpers.ts';
+import { addOrigin, cleanup, cli, cloneOf, fakeAgent, fakeGhEnv, ghCalls, git, idFrom, makeHome, makeRepo, releaseHeld, tmpDir, waitFor } from './helpers.ts';
 
 /** Poll the inbox until its text contains `needle` (the live checks run in a detached process). */
 async function inboxHas(env: NodeJS.ProcessEnv, needle: RegExp, timeoutMs = 30_000): Promise<string> {
@@ -63,7 +61,7 @@ describe('help and the bare command', () => {
       assert.match(bare.out, /DRY RUN: would start amigo \(fake\)/);
       assert.match(cli(env, ['--agent', 'fake', '--dry-run']).out, /would start amigo \(fake\)/);
       assert.equal(cli(env, ['--agent', 'nope', '--dry-run']).code, 1);
-      assert.ok(!existsSync(join(home(env), 'tasks')) || readdirSync(join(home(env), 'tasks')).length === 0, 'a dry run starts nothing');
+      assert.ok(!existsSync(join(home(env), 'state', 'tasks')) || readdirSync(join(home(env), 'state', 'tasks')).length === 0, 'a dry run starts nothing');
       const old = cli(env, ['head', '--dry-run']);
       assert.equal(old.code, 1);
       assert.match(old.err, /Unknown command "head"/);
@@ -111,10 +109,10 @@ describe('help and the bare command', () => {
       writeFileSync(claudeExe, '');
 
       const amigoHome = home(env);
-      const promptPath = join(amigoHome, 'amigo-prompt.md');
-      const settingsPath = join(amigoHome, 'amigo-settings.json');
+      const promptPath = join(amigoHome, 'state', 'amigo-prompt.md');
+      const settingsPath = join(amigoHome, 'state', 'amigo-settings.json');
       writeFileSync(
-        join(amigoHome, 'config.json'),
+        join(amigoHome, 'config', 'config.json'),
         JSON.stringify({
           agents: {
             claude: { amigo: [claudeShim, '{prompt}'], member: [claudeShim, '{prompt}'] },
@@ -243,10 +241,10 @@ describe('startup briefing', () => {
     const env = { ...base, ...gh.env };
     try {
       const repo = makeRepo(join(dir, 'repo'));
-      git(repo, 'remote', 'add', 'origin', 'https://github.com/example/repo.git');
       const plain = makeRepo(join(dir, 'plain'));
       assert.equal(cli(env, ['add', repo]).code, 0);
-      assert.equal(cli(env, ['add', plain, '--live', 'node -e "console.log(\'LIVE-MARK\')"']).code, 0);
+      git(cloneOf(env, 'repo'), 'remote', 'set-url', 'origin', 'https://github.com/example/repo.git');
+      assert.equal(cli(env, ['add', plain, '--live-command', 'node -e "console.log(\'LIVE-MARK\')"']).code, 0);
       // Their own commands wait for the user's confirmation; the defaults of a GitHub project do not.
       const before = cli(env, ['brief', '--agent', 'fake']);
       assert.match(before.out, /Live commands of plain skipped: you have not confirmed them \(in a terminal: amigo confirm-gates plain\)/);
@@ -265,7 +263,7 @@ describe('startup briefing', () => {
       assert.doesNotMatch(text, /\[plain\] \$ gh/, 'and not the defaults');
       const calls = ghCalls(gh.log);
       assert.deepEqual(calls.map((c) => c.args.slice(0, 2).join(' ')).sort(), ['pr list', 'pr list', 'run list', 'run list'], 'the defaults ran at both starts');
-      for (const c of calls) assert.equal(c.cwd.toLowerCase(), repo.toLowerCase(), 'gh ran in the project folder, not in a worktree');
+      for (const c of calls) assert.equal(c.cwd.toLowerCase(), cloneOf(env, 'repo').toLowerCase(), 'gh ran in the clone, not in a worktree');
       assert.equal(listTasks(env).length, 0, 'live checks are not squad members');
       assert.equal(cli(env, ['inbox']).out.trim(), 'Inbox empty.', 'the entry is shown once');
     } finally {
@@ -279,12 +277,12 @@ describe('startup briefing', () => {
     const env = { ...base, ...gh.env, AMIGO_LIVE_TIMEOUT_MS: '800' };
     try {
       const repo = makeRepo(join(dir, 'repo'));
-      git(repo, 'remote', 'add', 'origin', 'https://github.com/example/repo.git');
-      cli(env, ['add', repo, '--live', 'node -e "setTimeout(() => {}, 30000)"']);
+      cli(env, ['add', repo, '--live-command', 'node -e "setTimeout(() => {}, 30000)"']);
+      git(cloneOf(env, 'repo'), 'remote', 'set-url', 'origin', 'https://github.com/example/repo.git');
       confirmGates('repo', env);
       cli(env, ['brief', '--agent', 'fake']);
       assert.match(await inboxHas(env, /timed out/), /\[repo\] \$ node -e .* \(timed out\)/);
-      cli(env, ['add', repo, '--live', '']);
+      cli(env, ['add', repo, '--live-command', '']);
       const off = cli(env, ['brief', '--agent', 'fake']);
       assert.doesNotMatch(off.out, /Live checks are running/, 'an empty list means no live checks');
       assert.equal(ghCalls(gh.log).length, 0);
@@ -298,21 +296,21 @@ describe('startup briefing', () => {
     try {
       const repo = makeRepo(join(dir, 'repo'));
       cli(env, ['add', repo, '--check', 'node -e "1"']);
-      const project = () => JSON.parse(readFileSync(join(home(env), 'projects.json'), 'utf8')).projects[0];
+      const project = () => JSON.parse(readFileSync(join(home(env), 'data', 'projects.json'), 'utf8')).projects[0];
       confirmGates('repo', env);
       assert.ok(gatesConfirmed(project(), env));
-      const out = cli(env, ['add', repo, '--live', 'echo hi', '--watch', 'is the site up?']).out;
-      assert.deepEqual(project().live, ['echo hi']);
+      const out = cli(env, ['add', repo, '--live-command', 'echo hi', '--watch', 'is the site up?']).out;
+      assert.deepEqual(project().liveCommands, ['echo hi']);
       assert.deepEqual(project().watch, ['is the site up?']);
       assert.deepEqual(project().checks, ['node -e "1"'], 'the checks stay');
       assert.ok(!gatesConfirmed(project(), env), 'new live commands and watch items are unconfirmed');
       assert.match(out, /not confirmed by you yet[\s\S]*the briefing skips its live commands and watch items/);
       confirmGates('repo', env);
       assert.ok(gatesConfirmed(project(), env));
-      cli(env, ['add', repo, '--live', 'echo changed']);
+      cli(env, ['add', repo, '--live-command', 'echo changed']);
       assert.ok(!gatesConfirmed(project(), env), 'changing them needs confirming again');
-      cli(env, ['add', repo, '--live', '', '--watch', '']);
-      assert.match(cli(env, ['projects']).out, /live: \(none\)/);
+      cli(env, ['add', repo, '--live-command', '', '--watch', '']);
+      assert.match(cli(env, ['projects']).out, /live commands: \(none\)/);
     } finally {
       cleanup(dir);
     }
@@ -324,12 +322,14 @@ describe('startup briefing', () => {
     const env = { ...base, ...gh.env };
     try {
       const repo = makeRepo(join(dir, 'repo'));
-      git(repo, 'remote', 'add', 'origin', 'https://github.com/example/repo.git');
       // What a cloned repository could ship: cmd.exe looks in the current folder before PATH.
       const pwned = join(dir, 'pwned.txt');
       writeFileSync(join(repo, 'gh.bat'), `@echo off\r\necho pwned> "${pwned}"\r\n`);
       writeFileSync(join(repo, 'gh'), `#!/bin/sh\necho pwned > "${pwned}"\n`, { mode: 0o755 });
+      git(repo, 'add', '.');
+      git(repo, 'commit', '-q', '-m', 'ship a gh');
       cli(env, ['add', repo]);
+      git(cloneOf(env, 'repo'), 'remote', 'set-url', 'origin', 'https://github.com/example/repo.git');
       assert.equal(cli(env, ['brief', '--agent', 'fake']).code, 0);
       const text = await inboxHas(env, /FAKE-RUN-LIST/);
       assert.match(text, /FAKE-PR-LIST/, 'the real (fake) gh ran');
@@ -344,13 +344,13 @@ describe('startup briefing', () => {
     try {
       const one = makeRepo(join(dir, 'one'));
       const two = makeRepo(join(dir, 'two'));
-      cli(env, ['add', one, '--live', '']);
-      cli(env, ['add', two, '--live', '']);
+      cli(env, ['add', one, '--live-command', '']);
+      cli(env, ['add', two, '--live-command', '']);
       assert.equal(cli(env, ['brief', '--agent', 'fake']).code, 0);
       assert.equal(listTasks(env).length, 0, 'no watch items: no squad member');
 
-      cli(env, ['add', one, '--live', '', '--watch', 'Is the staging site up?', '--watch', 'Any failing deploy?']);
-      cli(env, ['add', two, '--live', '', '--watch', 'Anything odd in the logs?']);
+      cli(env, ['add', one, '--live-command', '', '--watch', 'Is the staging site up?', '--watch', 'Any failing deploy?']);
+      cli(env, ['add', two, '--live-command', '', '--watch', 'Anything odd in the logs?']);
       const unconfirmed = cli(env, ['brief', '--agent', 'fake']);
       assert.match(unconfirmed.out, /Watch items of one skipped: you have not confirmed them \(in a terminal: amigo confirm-gates one\)/);
       assert.equal(listTasks(env).length, 0, 'unconfirmed watch items spawn nothing');
@@ -365,7 +365,7 @@ describe('startup briefing', () => {
       assert.equal(t.title, 'Briefing checks');
       assert.equal(t.scratch, true);
       assert.equal(t.cwd, scratchDir(t.id, env));
-      const brief1 = readFileSync(join(home(env), 'tasks', t.id, 'brief.md'), 'utf8');
+      const brief1 = readFileSync(join(home(env), 'data', t.id, 'brief.md'), 'utf8');
       for (const w of ['Is the staging site up?', 'Any failing deploy?', 'Anything odd in the logs?']) assert.ok(brief1.includes(w), w);
       assert.match(brief1, /Change nothing: no edits, no commits, no pushes/);
       assert.equal((await waitFor(t.id, env, ['done', 'failed'])).status, 'done');
@@ -392,306 +392,6 @@ describe('startup briefing', () => {
     } finally {
       cleanup(dir);
     }
-  });
-});
-
-describe('one-time migration from the former home', () => {
-  /** A user's machine: a fake home folder with the old data folder, a repo and an installed old skill. */
-  function setup() {
-    const dir = tmpDir();
-    const user = join(dir, 'user');
-    const old = join(user, '.octomaxxing');
-    mkdirSync(user, { recursive: true });
-    const base = makeHome();
-    // makeHome's own home is not used: the old folder is the home while the old data is built.
-    cleanup(base.dir);
-    mkdirSync(old, { recursive: true });
-    const fake = join(codeRoot, 'test', 'fake-agent.mjs');
-    writeFileSync(join(old, 'config.json'), JSON.stringify({ agents: { fake: { amigo: [process.execPath, fake, '{prompt}'], member: [process.execPath, fake, '{prompt}'] } }, memberMb: 0, reserveMb: 0 }));
-    const claudeJson = join(dir, 'claude.json');
-    const common = { ...cleanEnv(), AMIGO_TERMINAL: 'test', AMIGO_CLAUDE_JSON: claudeJson, AMIGO_FREE_MB: '4096' };
-    const building = { ...common, AMIGO_HOME: old };
-    // What the migrating command sees: no AMIGO_HOME, a user folder that is the temp one, the old home located by AMIGO_OLD_HOME.
-    const migrating = { ...common, HOME: user, USERPROFILE: user, AMIGO_OLD_HOME: old };
-    return { dir, user, old, claudeJson, building, migrating, fake };
-  }
-
-  it('moves a home with a finished open task: its worktree, status and close still work, and the old skill goes', async () => {
-    const s = setup();
-    try {
-      const repo = makeRepo(join(s.dir, 'repo'));
-      assert.equal(cli(s.building, ['add', repo]).code, 0);
-      const id = idFrom(cli(s.building, ['spawn', '--project', 'repo'], 'Title: Write a file\nDone when: it exists').out);
-      const done = await waitFor(id, s.building, ['done']);
-      const oldWorktree = done.worktree as string;
-      assert.ok(oldWorktree.startsWith(s.old), 'the task lives in the old home');
-      assert.match(git(repo, 'worktree', 'list'), /\.octomaxxing/);
-
-      // The old data as the old version wrote it: its config keys and its trust entry in ~/.claude.json.
-      const cfg = JSON.parse(readFileSync(join(s.old, 'config.json'), 'utf8'));
-      writeFileSync(join(s.old, 'config.json'), JSON.stringify({ agents: { fake: { head: cfg.agents.fake.amigo, arm: cfg.agents.fake.member } }, armMb: 0, reserveMb: 0 }));
-      const task = JSON.parse(readFileSync(join(s.old, 'tasks', id, 'task.json'), 'utf8'));
-      writeFileSync(join(s.old, 'tasks', id, 'task.json'), JSON.stringify({ ...task, trustAdded: true, headAddress: 'uds:/tmp/x', updatedAt: '2026-01-02T03:04:05.000Z' }));
-      writeFileSync(s.claudeJson, JSON.stringify({ numStartups: 3, projects: { [oldWorktree.replaceAll('\\', '/')]: { allowedTools: [], hasTrustDialogAccepted: true, lastCost: 1.5 } } }));
-      const skill = join(s.user, '.claude', 'skills', 'octomaxxing', 'SKILL.md');
-      mkdirSync(join(s.user, '.claude', 'skills', 'octomaxxing'), { recursive: true });
-      writeFileSync(skill, '---\nname: octomaxxing\n---\n<!-- installed by octomaxxing -->\nrun it\n');
-      const foreign = join(s.user, '.gemini', 'commands', 'octomaxxing.toml');
-      mkdirSync(join(s.user, '.gemini', 'commands'), { recursive: true });
-      writeFileSync(foreign, 'description = "somebody else wrote this"\n');
-
-      const r = cli(s.migrating, ['status', id]);
-      assert.equal(r.code, 0, r.err);
-      assert.match(r.err, /Moved .*\.octomaxxing to .*\.amigo \(1 task, 1 worktree repaired\)\./);
-      assert.match(r.err, /amigo install-skill/);
-      assert.match(r.out, new RegExp(`${id}\\s+done`));
-      assert.match(r.out, /changed files[\s\S]*member-output\.txt/, 'git runs in the moved worktree');
-
-      const moved = join(s.user, '.amigo');
-      assert.ok(existsSync(moved));
-      assert.ok(!existsSync(s.old), 'the old folder is gone');
-      const worktrees = git(repo, 'worktree', 'list');
-      assert.ok(worktrees.replaceAll('\\', '/').toLowerCase().includes(join(moved, 'worktrees').replaceAll('\\', '/').toLowerCase()), `git worktree list shows the new path:\n${worktrees}`);
-      assert.doesNotMatch(worktrees, /\.octomaxxing/);
-
-      const migrated = getTask(id, { ...s.migrating, AMIGO_HOME: moved })!;
-      assert.ok(migrated.worktree!.startsWith(moved));
-      assert.ok(migrated.cwd.startsWith(moved));
-      assert.equal((migrated as unknown as Record<string, unknown>).headAddress, undefined);
-      assert.equal(migrated.amigoAddress, 'uds:/tmp/x');
-      assert.equal(migrated.updatedAt, '2026-01-02T03:04:05.000Z', 'moving a record keeps its age');
-      const config = JSON.parse(readFileSync(join(moved, 'config.json'), 'utf8'));
-      assert.ok(config.agents.fake.amigo && config.agents.fake.member && config.memberMb === 0, 'old config keys are renamed');
-      assert.ok(!('head' in config.agents.fake) && !('armMb' in config));
-
-      assert.ok(!existsSync(skill), 'the old skill file written by the former name is removed');
-      assert.ok(existsSync(foreign), 'a file it did not write is kept');
-      const trust = JSON.parse(readFileSync(s.claudeJson, 'utf8'));
-      assert.equal(trust.numStartups, 3, 'other fields of ~/.claude.json are kept');
-      const keys = Object.keys(trust.projects).map((k) => k.toLowerCase());
-      assert.ok(keys.some((k) => k.includes('.amigo/worktrees')), 'trust follows the worktree');
-      assert.ok(!keys.some((k) => k.includes('.octomaxxing')), 'and the old entry is gone');
-      const entry = Object.entries(trust.projects).find(([k]) => k.toLowerCase().includes('.amigo/worktrees'))?.[1] as Record<string, unknown>;
-      assert.equal(entry.lastCost, 1.5, 'the entry keeps its other fields');
-      assert.equal(entry.hasTrustDialogAccepted, true);
-
-      // The second command does not migrate again, and the task closes with a commit on its (new-named) branch.
-      const closed = cli(s.migrating, ['close', id, '--commit']);
-      assert.equal(closed.code, 0, closed.err);
-      assert.doesNotMatch(closed.err, /Moved/);
-      assert.match(closed.out, /Committed \w+ to branch amigo\//);
-      assert.ok(!existsSync(migrated.worktree!), 'worktree removed');
-      assert.equal(git(repo, 'show', '--name-only', '--format=', `amigo/${id}`).trim(), 'member-output.txt');
-    } finally {
-      cleanup(s.dir);
-    }
-  });
-
-  it('refuses while a task is running, and moves nothing', async () => {
-    const s = setup();
-    try {
-      const repo = makeRepo(join(s.dir, 'repo'));
-      cli(s.building, ['add', repo]);
-      const id = idFrom(cli(s.building, ['spawn', '--project', 'repo'], 'Title: Slow\nMODE:hold\nwork').out);
-      assert.equal(getTask(id, s.building)?.status, 'running');
-      const r = cli(s.migrating, ['status']);
-      assert.equal(r.code, 1);
-      assert.match(r.err, /still has tasks at work \(\S+ running\)\. Wait for them to finish/);
-      assert.ok(existsSync(s.old), 'the old home stays where it was');
-      assert.ok(!existsSync(join(s.user, '.amigo')), 'no new home was made');
-      assert.equal(cli(s.migrating, ['help']).code, 0, 'help still works');
-      releaseHeld(s.building);
-      await waitFor(id, s.building, ['done']);
-      const ok = cli(s.migrating, ['status']);
-      assert.equal(ok.code, 0, ok.err);
-      assert.match(ok.err, /Moved /);
-    } finally {
-      releaseHeld(s.building);
-      cleanup(s.dir);
-    }
-  });
-
-  it('does nothing when AMIGO_HOME is set or ~/.amigo already exists', () => {
-    const s = setup();
-    try {
-      mkdirSync(join(s.user, '.amigo'));
-      assert.doesNotMatch(cli(s.migrating, ['projects']).err, /Moved/);
-      assert.ok(existsSync(s.old), 'the old home is left alone');
-      assert.doesNotMatch(cli({ ...s.migrating, AMIGO_HOME: join(s.dir, 'elsewhere') }, ['projects']).err, /Moved/);
-    } finally {
-      cleanup(s.dir);
-    }
-  });
-
-  it('refuses while any task has a live tab, whatever its status says', async () => {
-    const s = setup();
-    try {
-      const repo = makeRepo(join(s.dir, 'repo'));
-      cli(s.building, ['add', repo]);
-      const id = idFrom(cli(s.building, ['spawn', '--project', 'repo'], 'Title: Quick\nwork').out);
-      assert.equal((await waitFor(id, s.building, ['done'])).status, 'done');
-      await new Promise((r) => setTimeout(r, 500));
-      beat(id, s.building); // a tab of this task is open and beating
-      const r = cli(s.migrating, ['status']);
-      assert.equal(r.code, 1);
-      assert.match(r.err, /still has tasks at work \(\S+ done\)/);
-      assert.ok(existsSync(s.old) && !existsSync(join(s.user, '.amigo')), 'nothing moved');
-      clearBeat(id, s.building);
-      assert.equal(cli(s.migrating, ['status']).code, 0);
-    } finally {
-      cleanup(s.dir);
-    }
-  });
-
-  it('finishes a move that stopped halfway: the next command rewrites what is left', async () => {
-    const s = setup();
-    try {
-      const repo = makeRepo(join(s.dir, 'repo'));
-      cli(s.building, ['add', repo]);
-      const id = idFrom(cli(s.building, ['spawn', '--project', 'repo'], 'Title: Half\nwork').out);
-      await waitFor(id, s.building, ['done']);
-      const cfg = JSON.parse(readFileSync(join(s.old, 'config.json'), 'utf8'));
-      writeFileSync(join(s.old, 'config.json'), JSON.stringify({ agents: { fake: { head: cfg.agents.fake.amigo, arm: cfg.agents.fake.member } }, armMb: 0, reserveMb: 0 }));
-      // What a crash right after the rename leaves: the folder moved, the marker in it, nothing inside rewritten.
-      const moved = join(s.user, '.amigo');
-      writeFileSync(join(s.old, '.migration-incomplete'), JSON.stringify({ from: s.old }));
-      moveFolder(s.old, moved);
-      assert.match(JSON.stringify(JSON.parse(readFileSync(join(moved, 'tasks', id, 'task.json'), 'utf8'))), /\.octomaxxing/, 'the task still has old paths');
-
-      const r = cli(s.migrating, ['status', id]);
-      assert.equal(r.code, 0, r.err);
-      assert.match(r.err, /Finished moving .* \(1 task, 1 worktree repaired\)/);
-      assert.match(r.out, /changed files[\s\S]*member-output\.txt/, 'git works in the repaired worktree');
-      const config = JSON.parse(readFileSync(join(moved, 'config.json'), 'utf8'));
-      assert.ok(config.agents.fake.amigo && config.agents.fake.member && config.memberMb === 0);
-      assert.doesNotMatch(readFileSync(join(moved, 'tasks', id, 'task.json'), 'utf8'), /\.octomaxxing/);
-      assert.ok(!existsSync(join(moved, '.migration-incomplete')), 'the marker is removed at the end');
-      assert.doesNotMatch(cli(s.migrating, ['status']).err, /moving|Moved/, 'and nothing is repeated');
-    } finally {
-      cleanup(s.dir);
-    }
-  });
-
-  it('a session of the former name still counts as a squad member: managing commands are refused and its Stop hook still records', async () => {
-    const s = setup();
-    try {
-      const repo = makeRepo(join(s.dir, 'repo'));
-      cli(s.building, ['add', repo]);
-      const id = idFrom(cli(s.building, ['spawn', '--project', 'repo'], 'Title: Old session\nMODE:hold\nwork').out);
-      assert.equal(getTask(id, s.building)?.status, 'running');
-      const { AMIGO_HOME: _home, ...common } = s.building;
-      const oldSession = { ...common, HOME: s.user, USERPROFILE: s.user, AMIGO_OLD_HOME: s.old, OCTOMAXXING_TASK: id, OCTOMAXXING_HOME: s.old };
-      const refused = cli(oldSession, ['spawn', '--scratch'], 'x');
-      assert.equal(refused.code, 1);
-      assert.match(refused.err, new RegExp('You are running inside squad member ' + id));
-      assert.ok(existsSync(s.old) && !existsSync(join(s.user, '.amigo')), 'and nothing moved');
-
-      const hook = cli(oldSession, ['_hook', 'stop'], JSON.stringify({ last_assistant_message: 'STATUS: done - hook saw it' }));
-      assert.equal(hook.code, 0, hook.err);
-      const after = getTask(id, s.building)!;
-      assert.equal(after.summary, 'hook saw it', "the old session's hook wrote to the old home");
-    } finally {
-      releaseHeld(s.building);
-      await waitFor(getTask(listTasks(s.building)[0]!.id, s.building) ? listTasks(s.building)[0]!.id : '', s.building, ['done', 'failed']).catch(() => undefined);
-      cleanup(s.dir);
-    }
-  });
-
-  it('tells a user whose shell still sets the former home variable that amigo does not read it', () => {
-    const s = setup();
-    try {
-      const env = { ...s.migrating, AMIGO_OLD_HOME: join(s.dir, 'nothing-here'), OCTOMAXXING_HOME: join(s.dir, 'somewhere') };
-      const first = cli(env, ['projects']);
-      assert.match(first.err, /home variable is set .*somewhere.*set AMIGO_HOME to that folder to keep using it, or move it to .*\.amigo/);
-      assert.doesNotMatch(cli(env, ['projects']).err, /home variable is set/, 'once ~/.amigo exists the hint is gone');
-      assert.doesNotMatch(cli({ ...env, AMIGO_HOME: join(s.dir, 'chosen') }, ['projects']).err, /home variable is set/, 'and AMIGO_HOME answers it');
-    } finally {
-      cleanup(s.dir);
-    }
-  });
-
-  it('moves a trust entry with all its fields, and trusts the folder when it had no entry', () => {
-    const config = { numStartups: 1, projects: { 'C:/old/wt': { allowedTools: ['x'], hasTrustDialogAccepted: true, lastCost: 2 } } };
-    const moved = moveTrust(config, 'C:\\old\\wt', 'C:/new/wt') as { projects: Record<string, Record<string, unknown>> };
-    assert.deepEqual(Object.keys(moved.projects), ['C:/new/wt']);
-    assert.deepEqual(moved.projects['C:/new/wt'], { allowedTools: ['x'], hasTrustDialogAccepted: true, lastCost: 2 });
-    assert.equal(moveTrust(moved, 'C:/old/wt', 'C:/new/wt'), null, 'moving again changes nothing');
-    const fresh = moveTrust({ projects: {} }, 'C:/old/wt', 'C:/new/wt') as { projects: Record<string, unknown> };
-    assert.ok(fresh.projects['C:/new/wt']);
-  });
-
-  it('a repair that fails (the repo folder is gone) is warned about once: the marker goes and the next command is quiet', async () => {
-    const s = setup();
-    try {
-      const repo = makeRepo(join(s.dir, 'repo'));
-      cli(s.building, ['add', repo]);
-      const id = idFrom(cli(s.building, ['spawn', '--project', 'repo'], 'Title: Orphan\nwork').out);
-      await waitFor(id, s.building, ['done']);
-      cleanup(repo); // the project's own folder is deleted before the move
-      const first = cli(s.migrating, ['projects']);
-      assert.equal(first.code, 0, first.err);
-      assert.match(first.err, /Moved .*\(1 task, 0 worktrees repaired\)\./);
-      assert.equal((first.err.match(/Warning: git worktree repair failed/g) ?? []).length, 1, 'one warning');
-      assert.ok(!existsSync(join(s.user, '.amigo', '.migration-incomplete')), 'the marker is gone');
-      const second = cli(s.migrating, ['projects']);
-      assert.doesNotMatch(second.err, /Moved|moving|Warning/, 'nothing repeats');
-    } finally {
-      cleanup(s.dir);
-    }
-  });
-
-  it('a move that stopped halfway refuses to go on while a task has a live tab, and leaves finished records alone', async () => {
-    const s = setup();
-    try {
-      const repo = makeRepo(join(s.dir, 'repo'));
-      cli(s.building, ['add', repo]);
-      const id = idFrom(cli(s.building, ['spawn', '--project', 'repo'], 'Title: Resume\nwork').out);
-      await waitFor(id, s.building, ['done']);
-      const moved = join(s.user, '.amigo');
-      writeFileSync(join(s.old, '.migration-incomplete'), JSON.stringify({ from: s.old }));
-      moveFolder(s.old, moved);
-      const inMoved = { ...s.building, AMIGO_HOME: moved };
-      await new Promise((r) => setTimeout(r, 500));
-      beat(id, inMoved);
-      const refused = cli(s.migrating, ['projects']);
-      assert.equal(refused.code, 1);
-      assert.match(refused.err, /still has tasks at work/);
-      assert.ok(existsSync(join(moved, '.migration-incomplete')), 'the marker stays until the job is done');
-      assert.match(readFileSync(join(moved, 'tasks', id, 'task.json'), 'utf8'), /\.octomaxxing/, 'nothing was rewritten');
-      clearBeat(id, inMoved);
-
-      // A record an earlier run already rewrote is not written again (a write could undo a live status change).
-      const file = join(moved, 'tasks', id, 'task.json');
-      const text = readFileSync(file, 'utf8').split(s.old.replaceAll('\\', '\\\\')).join(moved.replaceAll('\\', '\\\\'));
-      writeFileSync(file, text);
-      await new Promise((r) => setTimeout(r, 100));
-      const before = statSync(file).mtimeMs;
-      const ok = cli(s.migrating, ['projects']);
-      assert.equal(ok.code, 0, ok.err);
-      assert.match(ok.err, /Finished moving .*\(0 tasks, 1 worktree repaired\)/);
-      assert.equal(statSync(file).mtimeMs, before, 'the finished record was left alone');
-    } finally {
-      cleanup(s.dir);
-    }
-  });
-
-  it('a squad member never migrates: its read-only commands leave the old home where it is', () => {
-    const s = setup();
-    try {
-      const member = { ...s.migrating, AMIGO_TASK: 'x-1' };
-      const r = cli(member, ['projects']);
-      assert.doesNotMatch(r.err, /Moved/);
-      assert.ok(existsSync(join(s.old, 'config.json')), 'the old home is untouched');
-    } finally {
-      cleanup(s.dir);
-    }
-  });
-
-  it('rewrites only paths that point inside the old home', () => {
-    assert.equal(movePath('/u/.octomaxxing/worktrees/a', '/u/.octomaxxing', '/u/.amigo'), '/u/.amigo/worktrees/a');
-    assert.equal(movePath('/u/.octomaxxing', '/u/.octomaxxing', '/u/.amigo'), '/u/.amigo');
-    assert.equal(movePath('/u/.octomaxxing-other/x', '/u/.octomaxxing', '/u/.amigo'), '/u/.octomaxxing-other/x');
-    assert.equal(movePath('/work/repo', '/u/.octomaxxing', '/u/.amigo'), '/work/repo');
   });
 });
 
@@ -805,7 +505,7 @@ describe('the briefing text in the instructions', () => {
       const none = cli(env, ['brief', '--agent', 'fake']);
       assert.doesNotMatch(none.out, /live checks/i, 'no origin on GitHub: no live checks, no mention');
       assert.match(none.out, /after you handle a result while anything is still running or queued/);
-      git(repo, 'remote', 'add', 'origin', 'https://github.com/example/repo.git');
+      git(cloneOf(env, 'repo'), 'remote', 'set-url', 'origin', 'https://github.com/example/repo.git');
       const some = cli(env, ['brief', '--agent', 'fake']);
       assert.match(
         some.out,

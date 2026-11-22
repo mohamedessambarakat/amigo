@@ -13,7 +13,7 @@ import { descendants, run as runCmd } from '../src/proc.ts';
 import { beat, saveTask, type Task } from '../src/tasks.ts';
 import { TESTED_VERSIONS, ancestry, backendVersionWarnings, herdrLabel, homeTag, installedVersions, insideAppTerminal, tabScript, tabShellLine, terminalBackend, versionWarnings, type Placement } from '../src/terminal.ts';
 import type { RunResult } from '../src/proc.ts';
-import { cleanup, cli, makeHome, releaseHeld, tmpDir, waitFor } from './helpers.ts';
+import { cleanup, cli, makeHome, makeRepo, releaseHeld, tmpDir, waitFor } from './helpers.ts';
 
 const platform = process.platform;
 const scriptName = platform === 'win32' ? 'tab.cmd' : 'tab.sh';
@@ -120,16 +120,14 @@ describe('terminal backend selection', () => {
   it('the bare start, brief and spawn refuse outside herdr-app before they start anything', () => {
     const { dir, env } = makeHome();
     try {
-      const folder = join(dir, 'p');
-      mkdirSync(folder);
-      assert.equal(cli(env, ['add', folder]).code, 0);
+      assert.equal(cli(env, ['add', makeRepo(join(dir, 'p'))]).code, 0);
       const outside = { ...env, AMIGO_TERMINAL: '', HC_TERMINAL_ID: '', TERM_PROGRAM: 'xterm' };
       for (const args of [['--dry-run'], ['brief'], ['spawn', '--project', 'p']]) {
         const r = cli(outside, args, 'Title: x');
         assert.notEqual(r.code, 0, args.join(' '));
         assert.match(r.err, /amigo runs only inside the herdr desktop app \(herdr-app\)/, args.join(' '));
       }
-      assert.ok(!existsSync(join(env.AMIGO_HOME as string, 'tasks')) || readdirSync(join(env.AMIGO_HOME as string, 'tasks')).length === 0, 'no task was made');
+      assert.ok(!existsSync(join(env.AMIGO_HOME as string, 'state', 'tasks')) || readdirSync(join(env.AMIGO_HOME as string, 'state', 'tasks')).length === 0, 'no task was made');
     } finally {
       cleanup(dir);
     }
@@ -256,7 +254,7 @@ describe('crew member tabs', () => {
       const home = env.AMIGO_HOME as string;
       const now = new Date().toISOString();
       const task = (id: string, more: Partial<Task>): Task => ({ id, title: 'Fix the footer', project: 'p', agent: 'fake', cwd: dir, repo: null, worktree: null, branch: null, baseSha: null, status: 'running', createdAt: now, updatedAt: now, runs: 1, followUps: [], seen: true, ...more });
-      mkdirSync(join(home, 'tasks', '1-a'), { recursive: true });
+      mkdirSync(join(home, 'state', 'tasks', '1-a'), { recursive: true });
       saveTask(task('1-a', { endpoint: { backend: 'herdr-app', task: '1-a', space: 'sp4', tab: 'tb4', terminal: 't4' } }), env);
       assert.deepEqual(herdrPlacement(task('2-b', { worktree: '/w/2-b' }), env, 'sp1'), { label: '2-b · Fix the footer', ownSpace: true, spaces: ['sp1'] });
       assert.deepEqual(herdrPlacement(task('3-c', {}), env, 'sp1'), { label: '3-c · Fix the footer', ownSpace: false, spaces: ['sp1'] });
@@ -411,14 +409,15 @@ describe('herdr-app backend', () => {
       const home = env.AMIGO_HOME as string;
       const now = new Date().toISOString();
       const start = (id: string, worktree: string | null) => {
-        mkdirSync(join(home, 'tasks', id), { recursive: true });
-        writeFileSync(join(home, 'tasks', id, 'brief.md'), 'Title: g\n');
+        mkdirSync(join(home, 'state', 'tasks', id), { recursive: true });
+        mkdirSync(join(home, 'data', id), { recursive: true });
+        writeFileSync(join(home, 'data', id, 'brief.md'), 'Title: g\n');
         const t: Task = { id, title: 'g', project: 'p', agent: 'fake', cwd: dir, repo: null, worktree, branch: null, baseSha: null, status: 'queued', createdAt: now, updatedAt: now, runs: 0, followUps: [], seen: true };
         saveTask(t, env);
         const h = fakeHerdrApp(['sp1']);
         assert.equal(startMember(t, loadConfig(appEnv(env)), appEnv(env), h.runner), true);
-        const saved = JSON.parse(readFileSync(join(home, 'tasks', id, 'task.json'), 'utf8')) as Task;
-        const script = readFileSync(join(home, 'tasks', id, scriptName), 'utf8');
+        const saved = JSON.parse(readFileSync(join(home, 'state', 'tasks', id, 'task.json'), 'utf8')) as Task;
+        const script = readFileSync(join(home, 'state', 'tasks', id, scriptName), 'utf8');
         return { calls: h.calls.filter((c) => c[0] === 'hc' || c[0] === 'herdr-app').map((c) => c.slice(0, c[0] === 'hc' ? 2 : 5).join(' ')), saved, script };
       };
       const own = start('8-w', join(dir, 'wt'));
@@ -440,13 +439,14 @@ describe('herdr-app backend', () => {
     try {
       const home = env.AMIGO_HOME as string;
       const now = new Date().toISOString();
-      mkdirSync(join(home, 'tasks', '3-o'), { recursive: true });
-      writeFileSync(join(home, 'tasks', '3-o', 'brief.md'), 'Title: o\n');
+      mkdirSync(join(home, 'state', 'tasks', '3-o'), { recursive: true });
+      mkdirSync(join(home, 'data', '3-o'), { recursive: true });
+      writeFileSync(join(home, 'data', '3-o', 'brief.md'), 'Title: o\n');
       const t: Task = { id: '3-o', title: 'o', project: 'p', agent: 'fake', cwd: dir, repo: null, worktree: null, branch: null, baseSha: null, status: 'queued', createdAt: now, updatedAt: now, runs: 0, followUps: [], seen: true };
       saveTask(t, env);
       const h = fakeHerdrApp(['sp1'], { noLabel: true });
       assert.equal(startMember(t, loadConfig(env), appEnv(env), h.runner), false);
-      const saved = JSON.parse(readFileSync(join(home, 'tasks', '3-o', 'task.json'), 'utf8')) as Task;
+      const saved = JSON.parse(readFileSync(join(home, 'state', 'tasks', '3-o', 'task.json'), 'utf8')) as Task;
       assert.equal(saved.status, 'failed');
       assert.match(saved.summary ?? '', /Could not start: amigo runs only inside the herdr desktop app/);
       assert.ok(!h.calls.some((c) => c[0] === 'herdr-app'), 'no tab was opened');
@@ -468,7 +468,7 @@ describe('test backend', () => {
       assert.deepEqual(b.state(ep), { liveness: 'live', busy: 'unknown' });
       assert.equal(b.state({ ...ep, task: '2-b' }).liveness, 'foreign');
       b.send(ep, 'hello');
-      assert.equal(readFileSync(join(env.AMIGO_HOME as string, 'test-terminals', `${ep.terminal}.input`), 'utf8'), 'hello\n');
+      assert.equal(readFileSync(join(env.AMIGO_HOME as string, 'state', 'test-terminals', `${ep.terminal}.input`), 'utf8'), 'hello\n');
       assert.deepEqual(b.list(), [{ task: '1-a', terminal: ep.terminal, space: null, tab: null, liveness: 'live' }]);
       b.close(ep);
       assert.equal(b.state(ep).liveness, 'absent');
@@ -674,18 +674,18 @@ describe('Claude Code squad members', () => {
     const { dir, env } = makeHome(0, [missingClaude, '{prompt}']);
     try {
       const home = env.AMIGO_HOME as string;
-      mkdirSync(join(home, 'tasks', 'x-1'), { recursive: true });
-      writeFileSync(join(home, 'tasks', 'x-1', 'prompt.md'), 'Follow-up from amigo: go on\n');
+      mkdirSync(join(home, 'state', 'tasks', 'x-1'), { recursive: true });
+      writeFileSync(join(home, 'state', 'tasks', 'x-1', 'prompt.md'), 'Follow-up from amigo: go on\n');
       const transcript = join(dir, 'projects', 'gone', 'S-1.jsonl');
       const now = new Date().toISOString();
       saveTask({ id: 'x-1', title: 't', project: 'p', agent: 'fake', cwd: dir, repo: null, worktree: null, branch: null, baseSha: null, status: 'running', createdAt: now, updatedAt: now, runs: 2, followUps: ['go on'], followUpsSent: 0, seen: true, sessionId: 'S-1', sessionStarted: true, transcriptPath: transcript }, env);
       const r = cli(env, ['_tab', 'x-1', '--run', '2']);
       assert.notEqual(r.code, 0, 'the tab stays open on the error');
-      const log = readFileSync(join(home, 'tasks', 'x-1', 'output.log'), 'utf8');
+      const log = readFileSync(join(home, 'state', 'tasks', 'x-1', 'output.log'), 'utf8');
       const why = `can't resume: no transcript for session S-1 at ${transcript}`;
       assert.ok(log.includes(`amigo: ${why}`), log);
       assert.ok(!/could not start/.test(log), 'claude was never launched');
-      const t = JSON.parse(readFileSync(join(home, 'tasks', 'x-1', 'task.json'), 'utf8')) as Task;
+      const t = JSON.parse(readFileSync(join(home, 'state', 'tasks', 'x-1', 'task.json'), 'utf8')) as Task;
       assert.deepEqual([t.status, t.summary, t.pid, t.sessionStarted], ['failed', why, null, true]);
     } finally {
       cleanup(dir);
@@ -698,11 +698,11 @@ describe('Claude Code squad members', () => {
     const { dir, env } = makeHome();
     try {
       const home = env.AMIGO_HOME as string;
-      mkdirSync(join(home, 'tasks', 'x-1'), { recursive: true });
+      mkdirSync(join(home, 'state', 'tasks', 'x-1'), { recursive: true });
       const now = new Date().toISOString();
       saveTask({ id: 'x-1', title: 't', project: 'p', agent: 'claude', cwd: dir, repo: null, worktree: null, branch: null, baseSha: null, status: 'running', createdAt: now, updatedAt: now, runs: 1, followUps: [], seen: true }, env);
       await applyHook('prompt', { transcript_path: '/t/S.jsonl' }, 'x-1', env);
-      assert.equal((JSON.parse(readFileSync(join(home, 'tasks', 'x-1', 'task.json'), 'utf8')) as Task).transcriptPath, '/t/S.jsonl');
+      assert.equal((JSON.parse(readFileSync(join(home, 'state', 'tasks', 'x-1', 'task.json'), 'utf8')) as Task).transcriptPath, '/t/S.jsonl');
     } finally {
       cleanup(dir);
     }
@@ -712,10 +712,10 @@ describe('Claude Code squad members', () => {
     const { dir, env } = makeHome();
     try {
       const home = env.AMIGO_HOME as string;
-      mkdirSync(join(home, 'tasks', 'x-1'), { recursive: true });
+      mkdirSync(join(home, 'state', 'tasks', 'x-1'), { recursive: true });
       const now = new Date().toISOString();
       saveTask({ id: 'x-1', title: 't', project: 'p', agent: 'claude', cwd: dir, repo: null, worktree: null, branch: null, baseSha: null, status: 'running', createdAt: now, updatedAt: now, runs: 1, followUps: [], seen: true }, env);
-      const task = () => JSON.parse(readFileSync(join(home, 'tasks', 'x-1', 'task.json'), 'utf8')) as Task;
+      const task = () => JSON.parse(readFileSync(join(home, 'state', 'tasks', 'x-1', 'task.json'), 'utf8')) as Task;
 
       const blocked = JSON.parse(await applyHook('stop', { last_assistant_message: 'all done' }, 'x-1', env));
       assert.equal(blocked.decision, 'block');
@@ -737,7 +737,7 @@ describe('Claude Code squad members', () => {
       writeFileSync(transcript, [JSON.stringify({ type: 'user', message: { content: 'go' } }), JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', name: 'SendMessage', input: { to: 'uds:/tmp/head.sock' } }] } })].join('\n'));
       assert.equal(await applyHook('stop', { last_assistant_message: 'STATUS: question - which color?', transcript_path: transcript }, 'x-1', env), '');
       assert.deepEqual([task().status, task().summary], ['question', 'which color?']);
-      assert.match(readFileSync(join(home, 'tasks', 'x-1', 'output.log'), 'utf8'), /=== turn ended .*\n.*which color\?/);
+      assert.match(readFileSync(join(home, 'state', 'tasks', 'x-1', 'output.log'), 'utf8'), /=== turn ended .*\n.*which color\?/);
 
       // A turn that dies on an API error must not leave the task running.
       saveTask({ ...task(), status: 'running' }, env);
@@ -765,11 +765,8 @@ describe('memory gate and wait', () => {
     const { dir, env } = makeHome();
     try {
       const low = { ...env, AMIGO_FREE_MB: '10' };
-      writeFileSync(join(env.AMIGO_HOME as string, 'config.json'), readFileSync(join(env.AMIGO_HOME as string, 'config.json'), 'utf8').replace('"memberMb":0', '"memberMb":600').replace('"reserveMb":0', '"reserveMb":2048'));
-      for (const p of ['a', 'b']) {
-        mkdirSync(join(dir, p));
-        cli(low, ['add', join(dir, p)]);
-      }
+      writeFileSync(join(env.AMIGO_HOME as string, 'config', 'config.json'), readFileSync(join(env.AMIGO_HOME as string, 'config', 'config.json'), 'utf8').replace('"memberMb":0', '"memberMb":600').replace('"reserveMb":0', '"reserveMb":2048'));
+      for (const p of ['a', 'b']) cli(low, ['add', makeRepo(join(dir, p))]);
       const first = cli(low, ['spawn', '--project', 'a'], 'Title: one\nMODE:hold').out;
       assert.match(first, /^Started/);
       const second = cli(low, ['spawn', '--project', 'b'], 'Title: two').out;
@@ -787,13 +784,13 @@ describe('memory gate and wait', () => {
     const { dir, env } = makeHome();
     try {
       const home = env.AMIGO_HOME as string;
-      mkdirSync(join(home, 'tasks', 'x-1'), { recursive: true });
+      mkdirSync(join(home, 'state', 'tasks', 'x-1'), { recursive: true });
       const now = new Date().toISOString();
       saveTask({ id: 'x-1', title: 't', project: 'p', agent: 'fake', cwd: dir, repo: null, worktree: null, branch: null, baseSha: null, status: 'running', createdAt: now, updatedAt: now, runs: 2, followUps: [], seen: true }, env);
       assert.match(cli(env, ['_tab', 'x-1', '--run', '1']).out, /not starting it/);
       beat('x-1', env);
       assert.match(cli(env, ['_tab', 'x-1', '--run', '2']).out, /not starting it/, 'a live tab already owns this run');
-      assert.ok(!existsSync(join(home, 'tasks', 'x-1', 'output.log')), 'no agent ran');
+      assert.ok(!existsSync(join(home, 'state', 'tasks', 'x-1', 'output.log')), 'no agent ran');
     } finally {
       cleanup(dir);
     }
@@ -806,9 +803,7 @@ describe('memory gate and wait', () => {
   it('wait returns when a squad member finishes and says so when nothing is open', async () => {
     const { dir, env } = makeHome();
     try {
-      const folder = join(dir, 'p');
-      mkdirSync(folder);
-      cli(env, ['add', folder]);
+      cli(env, ['add', makeRepo(join(dir, 'p'))]);
       assert.match(cli(env, ['wait']).out, /Nothing is running or queued/);
       const out = cli(env, ['spawn', '--project', 'p'], 'Title: write').out;
       const id = /task:\s+(\S+)/.exec(out)![1]!;

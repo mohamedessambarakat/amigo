@@ -69,9 +69,9 @@ export function reviewProblem(t: Task, snap: Snapshot, risk: Risk): string | nul
  * What a project's checks, risky globs, live commands and watch items hash to: the gates a self-approval rests on, and what the
  * startup briefing may run or hand to an agent. Live and watch count only when set, so a project without them keeps its old hash.
  */
-export const gatesHash = (p: Pick<Project, 'checks' | 'risky' | 'live' | 'watch'>): string =>
+export const gatesHash = (p: Pick<Project, 'checks' | 'risky' | 'liveCommands' | 'watch'>): string =>
   createHash('sha256')
-    .update(JSON.stringify({ checks: p.checks ?? [], risky: p.risky ?? [], ...(p.live?.length ? { live: p.live } : {}), ...(p.watch?.length ? { watch: p.watch } : {}) }))
+    .update(JSON.stringify({ checks: p.checks ?? [], risky: p.risky ?? [], ...(p.liveCommands?.length ? { live: p.liveCommands } : {}), ...(p.watch?.length ? { watch: p.watch } : {}) }))
     .digest('hex');
 
 /** Have the project's checks, risky globs, live commands and watch items, as they are now, been confirmed by the user (see confirmGates)? */

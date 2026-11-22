@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
 import { appendFileSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join, posix, win32 } from 'node:path';
-import { home } from './paths.ts';
+import { home, stateDir } from './paths.ts';
 import { killTree, run, type RunResult } from './proc.ts';
 
 /**
@@ -436,7 +436,7 @@ interface FakeRecord {
  * (one JSON file per terminal, and the lines sent to it in <terminal>.input), so any amigo process of the test home sees them.
  */
 function testBackend(env: NodeJS.ProcessEnv): TerminalBackend {
-  const dir = join(home(env), 'test-terminals');
+  const dir = join(stateDir(env), 'test-terminals');
   const tag = homeTag(env);
   const recordFile = (terminal: string) => join(dir, `${terminal}.json`);
   const load = (terminal: string): FakeRecord | null => {

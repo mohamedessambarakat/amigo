@@ -42,10 +42,10 @@ export function defaultLive(project: Project, env: NodeJS.ProcessEnv): LiveComma
  * terminal): they are shell commands that start in the project folder at every amigo start. Otherwise `skipped` says so.
  */
 export function livePlan(project: Project, env: NodeJS.ProcessEnv): { commands: LiveCommand[]; skipped?: string } {
-  if (project.live === undefined) return { commands: defaultLive(project, env) };
-  if (!project.live.length) return { commands: [] };
+  if (project.liveCommands === undefined) return { commands: defaultLive(project, env) };
+  if (!project.liveCommands.length) return { commands: [] };
   if (!gatesConfirmed(project, env)) return { commands: [], skipped: `Live commands of ${project.name} skipped: you have not confirmed them (in a terminal: amigo confirm-gates ${project.name}).` };
-  return { commands: project.live.map((command) => ({ kind: 'shell' as const, command, label: command })) };
+  return { commands: project.liveCommands.map((command) => ({ kind: 'shell' as const, command, label: command })) };
 }
 
 /** The text of the briefing that comes from local state alone: what finished, what waits on the user, what is open. */

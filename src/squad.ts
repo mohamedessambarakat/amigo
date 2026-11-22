@@ -19,12 +19,12 @@ import {
 } from './claude.ts';
 import { buildLaunch, describeLaunch, type Launch } from './command.ts';
 import { decodeSubjectFile, parseCommitSubject } from './commit.ts';
-import { checkGitState, findProject, loadConfig, loadProjects, pickAgent, type Config } from './config.ts';
+import { findProject, loadConfig, loadProjects, pickAgent, type Config } from './config.ts';
 import { withLock, writeJsonAtomic } from './fsx.ts';
 import { recordVerdict, reviewPassed, treeOf } from './gates.ts';
-import { branchName, changedFiles, createWorktree, isGitRepo } from './git.ts';
+import { branchName, changedFiles } from './git.ts';
 import { fetchIssue, type Issue } from './github.ts';
-import { cliPath, codeRoot, home, lockPath, scratchDir, taskDir, worktreesDir } from './paths.ts';
+import { cliPath, codeRoot, draftsDir, home, lockPath, scratchDir, stateDir, taskDataDir, taskDir } from './paths.ts';
 import { noticesPending, takeNotices, type Notice } from './notices.ts';
 import { killTree } from './proc.ts';
 import { freeMemMb, ramAllows } from './ram.ts';
@@ -52,6 +52,7 @@ import {
   type Task,
 } from './tasks.ts';
 import { checksFor, describeVerification, verifyDone } from './verify.ts';
+import { leaseWorktree } from './worktree.ts';
 
 const readPrompt = (name: string): string => readFileSync(join(codeRoot, 'prompts', name), 'utf8').trim();
 
@@ -173,9 +174,7 @@ export function spawnMember(input: SpawnInput, opts: { dryRun?: boolean }, env: 
   if (input.issue !== undefined) {
     if (!input.project) throw new Error('--issue needs --project <name>');
     const project = findProject(loadProjects(env), input.project);
-    if (!existsSync(project.path)) throw new Error(`Project folder ${project.path} does not exist`);
-    // gh reads the folder's git config, so a folder a squad member turned into a repo is refused before gh runs there.
-    checkGitState(project, !opts.dryRun, env);
+    if (!existsSync(project.path)) throw new Error(`The clone of ${project.name} is missing at ${project.path}. Add the project again: amigo add ${project.source} --name ${project.name}`);
     issue = fetchIssue(input.issue, project.path, env);
     // The task is named after the issue unless the brief names it: the issue's title stays out of the brief's own first line.
     input = { ...input, brief: briefWithIssue(input.brief, issue), title: input.title ?? (/^title:/i.test(input.brief.trim()) ? undefined : issue.title) };
@@ -210,29 +209,32 @@ export function spawnMember(input: SpawnInput, opts: { dryRun?: boolean }, env: 
     task = { ...base, project: 'scratch', scratch: true, ...(input.briefing ? { briefing: true } : {}), cwd: scratchDir(id, env), repo: null, worktree: null, branch: null, baseSha: null };
   } else {
     const project = findProject(loadProjects(env), input.project as string);
-    if (!existsSync(project.path)) throw new Error(`Project folder ${project.path} does not exist`);
-    checkGitState(project, !opts.dryRun, env);
-    if (isGitRepo(project.path)) {
-      const worktree = join(worktreesDir(env), `${project.name}-${id}`);
-      task = { ...base, project: project.name, cwd: worktree, repo: project.path, worktree, branch: branchName(id), baseSha: null, ...(dependency ? { after: dependency.id } : {}) };
-    } else {
-      if (dependency) throw new Error(`Project ${project.name} is not a git repo, so a task cannot start from another task's commit`);
-      task = { ...base, project: project.name, cwd: project.path, repo: null, worktree: null, branch: null, baseSha: null };
-    }
+    if (!existsSync(project.path)) throw new Error(`The clone of ${project.name} is missing at ${project.path}. Add the project again: amigo add ${project.source} --name ${project.name}`);
+    // The worktree is leased from treehouse's pool when the task starts (spawn, or once the task it follows is closed).
+    task = { ...base, project: project.name, cwd: '', repo: project.path, worktree: null, branch: branchName(id, project.branchPrefix), baseSha: null, leased: true, ...(dependency ? { after: dependency.id } : {}) };
   }
 
   const launch = memberLaunch(task, config, memberPrompt(task, input.brief, notesFor(task, env)), env);
   if (issue) task.issue = { number: issue.number, url: issue.url, title: issue.title };
-  const where = task.worktree ? `new worktree ${task.worktree} on branch ${task.branch} (from ${task.after ? `${task.after}'s commit, once it is closed with one` : task.repo})` : `${task.cwd} (${task.scratch && !task.reviewOf ? 'scratch folder, not git' : 'in place'}${task.reviewOf ? `, reviewing ${task.reviewOf}` : ''})`;
+  const where = task.leased
+    ? `a worktree of ${task.repo} leased from treehouse, on new branch ${task.branch} (from ${task.after ? `${task.after}'s commit, once it is closed with one` : "origin's tip"})`
+    : `${task.cwd} (${task.scratch && !task.reviewOf ? 'scratch folder, not git' : 'in place'}${task.reviewOf ? `, reviewing ${task.reviewOf}` : ''})`;
   const text = [`task:    ${id}  "${title}"`, `folder:  ${where}`, `agent:   ${agent} (in a new tab, as ${memberName(id)})`, `command: ${describeLaunch(launch)}`].join('\n');
   if (opts.dryRun) return { task, text: `DRY RUN, nothing was started.\n${text}` };
 
   if (task.scratch && !task.reviewOf) mkdirSync(task.cwd, { recursive: true });
+  mkdirSync(taskDataDir(id, env), { recursive: true });
   writeFileSync(briefFile(id, env), input.brief.trim() + '\n');
   // A task that follows another gets its worktree from the other's commit, when it starts (see startMember).
-  if (task.worktree && task.repo && task.branch && !task.after) {
-    mkdirSync(worktreesDir(env), { recursive: true });
-    Object.assign(task, createWorktree(task.repo, task.worktree, task.branch));
+  if (task.leased && task.repo && task.branch && !task.after) {
+    try {
+      const made = leaseWorktree(task.repo, id, task.branch, env);
+      Object.assign(task, { worktree: made.worktree, cwd: made.worktree, baseSha: made.baseSha, gitDir: made.gitDir });
+    } catch (err) {
+      rmSync(taskDir(id, env), { recursive: true, force: true });
+      rmSync(taskDataDir(id, env), { recursive: true, force: true });
+      throw err;
+    }
   }
   saveTask(task, env);
   drain(env);
@@ -309,12 +311,12 @@ export function drain(env: NodeJS.ProcessEnv = process.env): string[] {
         if (dep.state === 'blocked') mutateTask(t.id, (cur) => (cur.status === 'queued' ? { status: 'blocked', seen: false, summary: dep.why } : null), env);
         if (dep.state !== 'go') continue;
       }
-      if (busy.has(t.cwd) || (open.has(t.cwd) && !t.reviewOf) || runnerAlive(t.id, env)) continue;
+      if ((t.cwd && busy.has(t.cwd)) || (t.cwd && open.has(t.cwd) && !t.reviewOf) || runnerAlive(t.id, env)) continue;
       free ??= freeMemMb(env);
       if ((running.length > 0 || started.length > 0) && !ramAllows(free, config.memberMb, config.reserveMb, starting)) break;
       if (startMember(t, config, env)) {
         started.push(t.id);
-        busy.add(t.cwd);
+        busy.add(requireTask(t.id, env).cwd);
         starting++;
       }
     }
@@ -342,13 +344,12 @@ export function herdrPlacement(t: Task, env: NodeJS.ProcessEnv, amigoSpace: stri
 /** Start one queued squad member: write its prompt, mark it running, open its tab. Exported with a runner so tests need no real terminal. */
 export function startMember(t: Task, config: Config, env: NodeJS.ProcessEnv, runner?: Runner): boolean {
   try {
-    if (t.after && t.worktree && t.repo && t.branch && !t.baseSha) {
+    if (t.after && t.leased && t.repo && t.branch && !t.baseSha) {
       // The task follows another one: its worktree starts from the commit that one was closed with.
       const from = requireTask(t.after, env).committed;
       if (!from) throw new Error(`${t.after} has no commit to start from`);
-      mkdirSync(worktreesDir(env), { recursive: true });
-      const made = createWorktree(t.repo, t.worktree, t.branch, from);
-      t = mutateTask(t.id, () => made, env);
+      const made = leaseWorktree(t.repo, t.id, t.branch, env, from);
+      t = mutateTask(t.id, () => ({ worktree: made.worktree, cwd: made.worktree, baseSha: made.baseSha, gitDir: made.gitDir }), env);
     }
     const claude = isClaude(memberTemplate(t, config));
     const backend = terminalBackend(env, runner ? { runner } : {});
@@ -826,7 +827,7 @@ const CLAUDE_AMIGO = `## Talking to squad members (you are Claude Code)
 export function amigoPrompt(agent: string, env: NodeJS.ProcessEnv = process.env, briefing = '', opts: { live?: boolean } = {}): string {
   const config = loadConfig(env);
   const others = Object.keys(config.agents).filter((a) => a !== agent);
-  const drafts = join(home(env), 'drafts');
+  const drafts = draftsDir(env);
   const claude = isClaude(config.agents[agent]?.amigo ?? config.agents[agent]?.member ?? []);
   return [
     readPrompt('amigo.md'),
@@ -842,9 +843,9 @@ export async function runAmigo(agentName: string | undefined, opts: { dryRun?: b
   const agent = pickAgent(config, agentName, env);
   const template = config.agents[agent]!.amigo;
   if (!template) throw new Error(`Agent "${agent}" has no "amigo" template: start amigo with /amigo inside it (amigo install-skill), or use --agent with another agent.`);
-  const file = join(home(env), 'amigo-prompt.md');
+  const file = join(stateDir(env), 'amigo-prompt.md');
   const prompt = amigoPrompt(agent, env, opts.briefing, { live: opts.live });
-  const amigoSettingsFile = join(home(env), 'amigo-settings.json');
+  const amigoSettingsFile = join(stateDir(env), 'amigo-settings.json');
   const claude = isClaude(template);
   const launch = buildLaunch(claude ? claudeAmigoTemplate(template, amigoSettingsFile, file) : template, { prompt, promptFile: file }, env);
   if (opts.dryRun) {

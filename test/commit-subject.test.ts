@@ -8,7 +8,7 @@ import { branchCommits, commitsAhead, effectiveBase, headSubject } from '../src/
 import { codeRoot } from '../src/paths.ts';
 import { applyHook, takeCommitSubject } from '../src/squad.ts';
 import { getTask, saveTask, type Task } from '../src/tasks.ts';
-import { addOrigin, allowPrs, cleanup, cli, fakeGhEnv, ghCalls, git, idFrom, makeHome, makeRepo, waitFor } from './helpers.ts';
+import { addOrigin, allowPrs, cleanup, cli, cloneOf, fakeGhEnv, ghCalls, git, idFrom, makeHome, makeRepo, waitFor } from './helpers.ts';
 
 const SUBJECT_RE = /^(feat|fix|refactor|docs|style|test|chore|perf|build|ci)(\([a-z0-9-]+\))?: .+/;
 
@@ -57,7 +57,7 @@ describe('commit subjects', () => {
   it('hook path: the COMMIT line of the final message is recorded, and a later report without one clears it', async () => {
     const { dir, env } = makeHome();
     try {
-      mkdirSync(join(env.AMIGO_HOME as string, 'tasks', 'x-1'), { recursive: true });
+      mkdirSync(join(env.AMIGO_HOME as string, 'state', 'tasks', 'x-1'), { recursive: true });
       const now = new Date().toISOString();
       saveTask({ id: 'x-1', title: 't', project: 'p', agent: 'claude', cwd: dir, repo: null, worktree: null, branch: null, baseSha: null, status: 'running', createdAt: now, updatedAt: now, runs: 1, followUps: [], seen: true }, env);
       await applyHook('stop', { last_assistant_message: 'did it\nCOMMIT: fix(close): check subjects\nSTATUS: done - ok' }, 'x-1', env);
@@ -81,7 +81,7 @@ describe('commit subjects', () => {
         cli(env, ['add', repo]);
         const id = idFrom(cli(env, ['spawn', '--project', 'repo', '--issue', '12'], '').out);
         const done = await waitFor(id, env, ['done', 'failed']);
-        assert.match(readFileSync(join(env.AMIGO_HOME as string, 'tasks', id, 'output.log'), 'utf8'), /^COMMIT: feat: spoof$/m, 'the echoed pair is in the log');
+        assert.match(readFileSync(join(env.AMIGO_HOME as string, 'state', 'tasks', id, 'output.log'), 'utf8'), /^COMMIT: feat: spoof$/m, 'the echoed pair is in the log');
         assert.equal(done.commitSubject, undefined);
         assert.match(cli(env, ['close', id, '--commit']).err, /no commit subject/);
       } finally {
@@ -96,8 +96,8 @@ describe('commit subjects', () => {
       const repo = makeRepo(join(dir, 'repo'));
       cli(env, ['add', repo]);
       const id = idFrom(cli(env, ['spawn', '--project', 'repo'], 'Title: Write it').out);
-      const prompt = readFileSync(join(env.AMIGO_HOME as string, 'tasks', id, 'prompt.md'), 'utf8');
-      const file = join(env.AMIGO_HOME as string, 'tasks', id, 'commit-subject.txt');
+      const prompt = readFileSync(join(env.AMIGO_HOME as string, 'state', 'tasks', id, 'prompt.md'), 'utf8');
+      const file = join(env.AMIGO_HOME as string, 'state', 'tasks', id, 'commit-subject.txt');
       assert.ok(prompt.includes(file), 'the prompt names the file');
       assert.equal((await waitFor(id, env, ['done', 'failed'])).commitSubject, 'feat: write member output');
       assert.ok(!existsSync(file), 'read once, then removed');
@@ -131,12 +131,13 @@ describe('commit subjects', () => {
     try {
       const repo = makeRepo(join(dir, 'repo'));
       cli(env, ['add', repo]);
+      const clone = cloneOf(env, 'repo');
       const id = idFrom(cli(env, ['spawn', '--project', 'repo'], 'Title: Write the member output file').out);
       await waitFor(id, env, ['done', 'failed']);
       assert.equal(getTask(id, env)?.commitSubject, 'feat: write member output');
       const closed = cli(env, ['close', id, '--commit']);
       assert.equal(closed.code, 0, closed.err);
-      const subject = git(repo, 'log', '-1', '--format=%B', `amigo/${id}`).trim();
+      const subject = git(clone, 'log', '-1', '--format=%B', `amigo/${id}`).trim();
       assert.equal(subject, 'feat: write member output');
       assert.match(subject, SUBJECT_RE);
       assert.ok(subject.length <= 50);
@@ -150,6 +151,7 @@ describe('commit subjects', () => {
     try {
       const repo = makeRepo(join(dir, 'repo'));
       cli(env, ['add', repo]);
+      const clone = cloneOf(env, 'repo');
       const none = idFrom(cli(env, ['spawn', '--project', 'repo'], 'Title: No subject\nMODE:nocommit').out);
       const bad = idFrom(cli(env, ['spawn', '--project', 'repo'], 'Title: Bad subject\nMODE:badcommit').out);
       await waitFor(none, env, ['done', 'failed']);
@@ -170,7 +172,7 @@ describe('commit subjects', () => {
 
       const ok = cli(env, ['close', none, '--commit', '-m', 'test: add member output']);
       assert.equal(ok.code, 0, ok.err);
-      assert.equal(git(repo, 'log', '-1', '--format=%s', `amigo/${none}`).trim(), 'test: add member output');
+      assert.equal(git(clone, 'log', '-1', '--format=%s', `amigo/${none}`).trim(), 'test: add member output');
     } finally {
       cleanup(dir);
     }
@@ -182,14 +184,15 @@ describe('commit subjects', () => {
     const env = { ...base, ...gh.env, FAKE_GH_FAIL_PR_ONCE: join(dir, 'pr-failed-once') };
     try {
       const repo = makeRepo(join(dir, 'repo'));
-      addOrigin(dir, repo);
+      const bare = addOrigin(dir, repo);
       allowPrs(env);
-      cli(env, ['add', repo]);
+      cli(env, ['add', bare, '--name', 'repo']);
+      const clone = cloneOf(env, 'repo');
       const id = idFrom(cli(env, ['spawn', '--project', 'repo'], 'Title: Fix the "quoted" footer').out);
       await waitFor(id, env, ['done']);
       const first = cli(env, ['close', id, '--commit', '--pr']);
       assert.equal(first.code, 1, 'gh pr create failed');
-      assert.equal(git(repo, 'log', '-1', '--format=%s', `amigo/${id}`).trim(), 'feat: write member output', 'the commit was made');
+      assert.equal(git(clone, 'log', '-1', '--format=%s', `amigo/${id}`).trim(), 'feat: write member output', 'the commit was made');
       const retry = cli(env, ['close', id, '--commit', '--pr']);
       assert.equal(retry.code, 0, retry.err);
       const creates = ghCalls(gh.log).filter((c) => c.args[0] === 'pr' && c.args[1] === 'create');
@@ -207,7 +210,7 @@ describe('commit subjects', () => {
       cli(env, ['add', repo]);
       const id = idFrom(cli(env, ['spawn', '--project', 'repo'], 'Title: Write it').out);
       await waitFor(id, env, ['done', 'failed']);
-      mkdirSync(join(env.AMIGO_HOME as string, 'tasks', id, 'commit-subject.txt', 'inner'), { recursive: true });
+      mkdirSync(join(env.AMIGO_HOME as string, 'state', 'tasks', id, 'commit-subject.txt', 'inner'), { recursive: true });
       writeFileSync(join(dir, 'msg.txt'), 'again');
       assert.equal(cli(env, ['send', id, '--file', join(dir, 'msg.txt')]).code, 0);
       const after = await waitFor(id, env, ['done', 'failed']);
@@ -222,8 +225,8 @@ describe('commit subjects', () => {
   it('takeCommitSubject reads at most 512 bytes, decodes UTF-16 with a BOM, and refuses other binary text clearly', () => {
     const { dir, env } = makeHome();
     try {
-      const file = join(env.AMIGO_HOME as string, 'tasks', 'x-1', 'commit-subject.txt');
-      mkdirSync(join(env.AMIGO_HOME as string, 'tasks', 'x-1'), { recursive: true });
+      const file = join(env.AMIGO_HOME as string, 'state', 'tasks', 'x-1', 'commit-subject.txt');
+      mkdirSync(join(env.AMIGO_HOME as string, 'state', 'tasks', 'x-1'), { recursive: true });
       const take = (bytes: Buffer) => {
         writeFileSync(file, bytes);
         const r = takeCommitSubject('x-1', env);
@@ -255,7 +258,7 @@ describe('commit subjects', () => {
       const repo = makeRepo(join(dir, 'repo'));
       const bare = addOrigin(dir, repo);
       allowPrs(env);
-      cli(env, ['add', repo]);
+      cli(env, ['add', bare, '--name', 'repo']);
       const bad = idFrom(cli(env, ['spawn', '--project', 'repo'], 'Title: Bad self commit\nMODE:badselfcommit').out);
       const good = idFrom(cli(env, ['spawn', '--project', 'repo'], 'Title: Good self commit\nMODE:goodselfcommit').out);
       await waitFor(bad, env, ['done']);
@@ -266,7 +269,7 @@ describe('commit subjects', () => {
       assert.match(refused.err, new RegExp(`amigo/${bad} has a commit that breaks the commit rule: [0-9a-f]{7,} "Totally not a valid subject": it must start with a type`));
       assert.match(refused.err, /reword or squash it|reset --soft/);
       assert.equal(ghCalls(gh.log).length, 0, 'gh was never called');
-      assert.equal(git(bare, 'branch', '--list').trim(), 'main', 'nothing was pushed');
+      assert.equal(git(bare, 'branch', '--list').replace('* ', '').trim(), 'main', 'nothing was pushed');
       assert.equal(getTask(bad, env)?.status, 'done');
       assert.match(cli(env, ['close', bad, '--commit']).err, /breaks the commit rule/, 'a plain --commit refuses too');
 
@@ -285,9 +288,9 @@ describe('commit subjects', () => {
     const env = { ...base, ...gh.env };
     try {
       const repo = makeRepo(join(dir, 'repo'));
-      addOrigin(dir, repo);
+      const bare = addOrigin(dir, repo);
       allowPrs(env);
-      cli(env, ['add', repo]);
+      cli(env, ['add', bare, '--name', 'repo']);
       const id = idFrom(cli(env, ['spawn', '--project', 'repo'], 'Title: Ask about the "quoted" thing\nMODE:question').out);
       await waitFor(id, env, ['question']);
       const closed = cli(env, ['close', id, '--commit', '--pr']);
@@ -304,28 +307,29 @@ describe('commit subjects', () => {
     const env = { ...base, ...gh.env };
     try {
       const repo = makeRepo(join(dir, 'repo'));
-      addOrigin(dir, repo);
+      const bare = addOrigin(dir, repo);
       allowPrs(env);
-      cli(env, ['add', repo]);
+      cli(env, ['add', bare, '--name', 'repo']);
+      const clone = cloneOf(env, 'repo');
       const id = idFrom(cli(env, ['spawn', '--project', 'repo'], 'Title: Rebased work\nMODE:goodselfcommit').out);
       const done = await waitFor(id, env, ['done']);
       const wt = done.worktree as string;
       const baseSha = done.baseSha as string;
 
       // Advance main with a commit whose subject does not match the commit rule (like repo history).
-      writeFileSync(join(repo, 'main-only.txt'), 'from main\n');
-      git(repo, 'add', '.');
-      git(repo, 'commit', '-q', '-m', 'feat!: rebrand octomaxxing to amigo');
-      git(repo, 'push', '-q', 'origin', 'main');
-      const mainTip = git(repo, 'rev-parse', 'main').trim();
+      writeFileSync(join(clone, 'main-only.txt'), 'from main\n');
+      git(clone, 'add', '.');
+      git(clone, 'commit', '-q', '-m', 'feat!: rebrand octomaxxing to amigo');
+      git(clone, 'push', '-q', 'origin', 'main');
+      const mainTip = git(clone, 'rev-parse', 'main').trim();
 
       git(wt, 'rebase', '-q', 'main');
-      assert.equal(effectiveBase(repo, `amigo/${id}`, baseSha), mainTip);
+      assert.equal(effectiveBase(clone, `amigo/${id}`, baseSha), mainTip);
       assert.deepEqual(
-        branchCommits(repo, `amigo/${id}`, baseSha).map((c) => c.message.trim()),
+        branchCommits(clone, `amigo/${id}`, baseSha).map((c) => c.message.trim()),
         ['fix: commit it myself'],
       );
-      assert.equal(commitsAhead(repo, `amigo/${id}`, baseSha), 1);
+      assert.equal(commitsAhead(clone, `amigo/${id}`, baseSha), 1);
 
       const closed = cli(env, ['close', id, '--commit', '--pr']);
       assert.equal(closed.code, 0, closed.err);
@@ -342,26 +346,27 @@ describe('commit subjects', () => {
     const env = { ...base, ...gh.env };
     try {
       const repo = makeRepo(join(dir, 'repo'));
-      addOrigin(dir, repo);
+      const bare = addOrigin(dir, repo);
       allowPrs(env);
-      cli(env, ['add', repo]);
+      cli(env, ['add', bare, '--name', 'repo']);
+      const clone = cloneOf(env, 'repo');
       const id = idFrom(cli(env, ['spawn', '--project', 'repo'], 'Title: Merged main\nMODE:goodselfcommit').out);
       const done = await waitFor(id, env, ['done']);
       const wt = done.worktree as string;
       const baseSha = done.baseSha as string;
 
-      writeFileSync(join(repo, 'main-only.txt'), 'from main\n');
-      git(repo, 'add', '.');
-      git(repo, 'commit', '-q', '-m', 'feat!: rebrand octomaxxing to amigo');
-      git(repo, 'push', '-q', 'origin', 'main');
+      writeFileSync(join(clone, 'main-only.txt'), 'from main\n');
+      git(clone, 'add', '.');
+      git(clone, 'commit', '-q', '-m', 'feat!: rebrand octomaxxing to amigo');
+      git(clone, 'push', '-q', 'origin', 'main');
 
       git(wt, 'merge', '-q', '--no-edit', 'main');
       assert.deepEqual(
-        branchCommits(repo, `amigo/${id}`, baseSha).map((c) => c.message.trim()),
+        branchCommits(clone, `amigo/${id}`, baseSha).map((c) => c.message.trim()),
         ['fix: commit it myself'],
       );
-      assert.equal(commitsAhead(repo, `amigo/${id}`, baseSha), 1);
-      assert.equal(headSubject(repo, `amigo/${id}`, baseSha), 'fix: commit it myself');
+      assert.equal(commitsAhead(clone, `amigo/${id}`, baseSha), 1);
+      assert.equal(headSubject(clone, `amigo/${id}`, baseSha), 'fix: commit it myself');
 
       const closed = cli(env, ['close', id, '--commit', '--pr']);
       assert.equal(closed.code, 0, closed.err);
@@ -380,27 +385,28 @@ describe('commit subjects', () => {
       const repo = makeRepo(join(dir, 'repo'));
       const bare = addOrigin(dir, repo);
       allowPrs(env);
-      cli(env, ['add', repo]);
+      cli(env, ['add', bare, '--name', 'repo']);
+      const clone = cloneOf(env, 'repo');
       const id = idFrom(cli(env, ['spawn', '--project', 'repo'], 'Title: Empty rebased\nMODE:question').out);
       const asked = await waitFor(id, env, ['question']);
       const wt = asked.worktree as string;
       const baseSha = asked.baseSha as string;
 
-      writeFileSync(join(repo, 'main-only.txt'), 'from main\n');
-      git(repo, 'add', '.');
-      git(repo, 'commit', '-q', '-m', 'feat!: rebrand octomaxxing to amigo');
-      git(repo, 'push', '-q', 'origin', 'main');
+      writeFileSync(join(clone, 'main-only.txt'), 'from main\n');
+      git(clone, 'add', '.');
+      git(clone, 'commit', '-q', '-m', 'feat!: rebrand octomaxxing to amigo');
+      git(clone, 'push', '-q', 'origin', 'main');
 
       git(wt, 'rebase', '-q', 'main');
-      assert.deepEqual(branchCommits(repo, `amigo/${id}`, baseSha), []);
-      assert.equal(commitsAhead(repo, `amigo/${id}`, baseSha), 0);
-      assert.equal(headSubject(repo, `amigo/${id}`, baseSha), null);
+      assert.deepEqual(branchCommits(clone, `amigo/${id}`, baseSha), []);
+      assert.equal(commitsAhead(clone, `amigo/${id}`, baseSha), 0);
+      assert.equal(headSubject(clone, `amigo/${id}`, baseSha), null);
 
       const closed = cli(env, ['close', id, '--commit', '--pr']);
       assert.equal(closed.code, 0, closed.err);
       assert.match(closed.out, /Nothing was committed, so no pull request was opened/);
       assert.equal(ghCalls(gh.log).length, 0, 'gh was never called');
-      assert.equal(git(bare, 'branch', '--list').trim(), 'main', 'nothing was pushed');
+      assert.equal(git(bare, 'branch', '--list').replace('* ', '').trim(), 'main', 'nothing was pushed');
       assert.equal(getTask(id, env)?.committed, undefined);
       assert.equal(getTask(id, env)?.pr, undefined);
     } finally {
@@ -413,15 +419,16 @@ describe('commit subjects', () => {
     try {
       const repo = makeRepo(join(dir, 'repo'));
       cli(env, ['add', repo]);
+      const clone = cloneOf(env, 'repo');
       const id = idFrom(cli(env, ['spawn', '--project', 'repo'], 'Title: Bad rebased\nMODE:badselfcommit').out);
       const done = await waitFor(id, env, ['done']);
       const wt = done.worktree as string;
       const baseSha = done.baseSha as string;
 
-      writeFileSync(join(repo, 'main-only.txt'), 'from main\n');
-      git(repo, 'add', '.');
-      git(repo, 'commit', '-q', '-m', 'feat!: rebrand octomaxxing to amigo');
-      const mainTip = git(repo, 'rev-parse', 'main').trim();
+      writeFileSync(join(clone, 'main-only.txt'), 'from main\n');
+      git(clone, 'add', '.');
+      git(clone, 'commit', '-q', '-m', 'feat!: rebrand octomaxxing to amigo');
+      const mainTip = git(clone, 'rev-parse', 'main').trim();
 
       git(wt, 'rebase', '-q', 'main');
 
@@ -443,8 +450,8 @@ describe('commit subjects', () => {
 
       const closed = cli(env, ['close', id, '--commit', '-m', 'fix: rebased work']);
       assert.equal(closed.code, 0, closed.err);
-      assert.equal(git(repo, 'rev-parse', `amigo/${id}^`).trim(), mainTip);
-      assert.equal(git(repo, 'show', '--name-only', '--format=', `amigo/${id}`).trim(), 'member-output.txt');
+      assert.equal(git(clone, 'rev-parse', `amigo/${id}^`).trim(), mainTip);
+      assert.equal(git(clone, 'show', '--name-only', '--format=', `amigo/${id}`).trim(), 'member-output.txt');
     } finally {
       cleanup(dir);
     }
@@ -455,6 +462,7 @@ describe('commit subjects', () => {
     try {
       const repo = makeRepo(join(dir, 'repo'));
       cli(env, ['add', repo]);
+      const clone = cloneOf(env, 'repo');
       const first = idFrom(cli(env, ['spawn', '--project', 'repo'], 'Title: First step').out);
       const second = idFrom(cli(env, ['spawn', '--after', first], 'Title: Second step\nMODE:badselfcommit').out);
       await waitFor(first, env, ['done']);
@@ -465,11 +473,11 @@ describe('commit subjects', () => {
       const secondDone = await waitFor(second, env, ['done']);
       assert.equal(secondDone.baseSha, firstSha, 'baseSha is ahead of main');
       assert.deepEqual(
-        branchCommits(repo, `amigo/${second}`, firstSha).map((c) => c.message.trim()),
+        branchCommits(clone, `amigo/${second}`, firstSha).map((c) => c.message.trim()),
         ['Totally not a valid subject'],
       );
-      assert.equal(commitsAhead(repo, `amigo/${second}`, firstSha), 1);
-      assert.equal(effectiveBase(repo, `amigo/${second}`, firstSha), firstSha);
+      assert.equal(commitsAhead(clone, `amigo/${second}`, firstSha), 1);
+      assert.equal(effectiveBase(clone, `amigo/${second}`, firstSha), firstSha);
 
       const refused = cli(env, ['close', second, '--commit']);
       assert.equal(refused.code, 1);
@@ -477,10 +485,10 @@ describe('commit subjects', () => {
       assert.match(refused.err, new RegExp(`reset --soft ${firstSha.slice(0, 7)}`));
 
       git(secondDone.worktree as string, 'reset', '--soft', firstSha.slice(0, 7));
-      assert.equal(commitsAhead(repo, `amigo/${second}`, firstSha), 0);
+      assert.equal(commitsAhead(clone, `amigo/${second}`, firstSha), 0);
       const closed = cli(env, ['close', second, '--commit', '-m', 'feat: second step']);
       assert.equal(closed.code, 0, closed.err);
-      assert.equal(git(repo, 'rev-parse', `amigo/${second}^`).trim(), firstSha);
+      assert.equal(git(clone, 'rev-parse', `amigo/${second}^`).trim(), firstSha);
     } finally {
       cleanup(dir);
     }
@@ -494,7 +502,7 @@ describe('commit subjects', () => {
       const repo = makeRepo(join(dir, 'repo'));
       const bare = addOrigin(dir, repo);
       allowPrs(env);
-      cli(env, ['add', repo]);
+      cli(env, ['add', bare, '--name', 'repo']);
       const id = idFrom(cli(env, ['spawn', '--project', 'repo'], 'Title: Race target').out);
       const done = await waitFor(id, env, ['done']);
       const wt = done.worktree as string;
@@ -504,7 +512,7 @@ describe('commit subjects', () => {
       git(wt, 'commit', '-q', '-m', 'Snuck in without a type');
 
       assert.throws(() => openPullRequest(done, env), /breaks the commit rule.*"Snuck in without a type"/);
-      assert.equal(git(bare, 'branch', '--list').trim(), 'main', 'nothing was pushed');
+      assert.equal(git(bare, 'branch', '--list').replace('* ', '').trim(), 'main', 'nothing was pushed');
       assert.equal(ghCalls(gh.log).length, 0, 'gh was never called');
     } finally {
       cleanup(dir);

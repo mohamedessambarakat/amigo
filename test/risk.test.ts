@@ -5,7 +5,7 @@ import { describe, it } from 'node:test';
 import { parseVerdict } from '../src/gates.ts';
 import { assessChanges, docsOrTestsOnly, globMatches, snapshot, type Change } from '../src/risk.ts';
 import { getTask } from '../src/tasks.ts';
-import { cleanup, cli, git, idFrom, makeHome, makeRepo, releaseHeld, waitFor } from './helpers.ts';
+import { cleanup, cli, cloneOf, git, idFrom, makeHome, makeRepo, releaseHeld, waitFor } from './helpers.ts';
 
 const change = (path: string, added = 1, removed = 0, deleted = false): Change => ({ path, added, removed, deleted });
 
@@ -161,6 +161,7 @@ describe('mandatory review', () => {
     try {
       const repo = makeRepo(join(dir, 'repo'));
       cli(env, ['add', repo]);
+      const clone = cloneOf(env, 'repo');
       const id = idFrom(cli(env, ['spawn', '--project', 'repo'], 'Title: Four files\nMODE:big').out);
       const t = await waitFor(id, env, ['done', 'failed']);
       assert.match(cli(env, ['status', id]).out, /risk:\s+non-trivial - 4 files and 4 lines changed/);
@@ -182,7 +183,7 @@ describe('mandatory review', () => {
       const closed = cli(env, ['close', id, '--commit']);
       assert.equal(closed.code, 0, closed.err);
       assert.match(closed.out, /Committed \w+ to branch amigo\//);
-      assert.equal(git(repo, 'show', '--name-only', '--format=', `amigo/${id}`).trim().split(/\r?\n/).length, 4);
+      assert.equal(git(clone, 'show', '--name-only', '--format=', `amigo/${id}`).trim().split(/\r?\n/).length, 4);
     } finally {
       cleanup(dir);
     }
@@ -193,6 +194,7 @@ describe('mandatory review', () => {
     try {
       const repo = makeRepo(join(dir, 'repo'));
       cli(env, ['add', repo]);
+      const clone = cloneOf(env, 'repo');
       const id = idFrom(cli(env, ['spawn', '--project', 'repo'], 'Title: Touch auth\nMODE:risky').out);
       const t = await waitFor(id, env, ['done', 'failed']);
       assert.match(cli(env, ['status', id]).out, /risk:\s+needs-you - touches src\/auth\/login\.txt \(auth\)/);
@@ -226,7 +228,7 @@ describe('mandatory review', () => {
       rmSync(join(t.worktree as string, 'extra.txt'));
       const closed = cli(env, ['close', id, '--commit']);
       assert.equal(closed.code, 0, closed.err);
-      assert.equal(git(repo, 'rev-parse', '--abbrev-ref', 'HEAD').trim(), 'main', 'nothing merged');
+      assert.equal(git(clone, 'rev-parse', '--abbrev-ref', 'HEAD').trim(), 'main', 'nothing merged');
     } finally {
       cleanup(dir);
     }

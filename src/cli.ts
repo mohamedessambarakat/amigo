@@ -8,14 +8,15 @@ import { undoSelfApproved } from './approvals.ts';
 import { applyHook, attach, amigoPrompt, inbox, runAmigo, runTab, sendFollowUp, spawnMember, statusText, waitForMembers } from './squad.ts';
 import { runLiveChecks, startBriefing } from './briefing.ts';
 import { adoptLegacyEnv } from './legacy.ts';
-import { legacyHomeHint, migrateOldHome } from './migrate.ts';
+import { migrateHome } from './migrate.ts';
+import { addProject, tangleBranch } from './projects.ts';
+import { syncProjects } from './sync.ts';
 import { closeMember } from './close.ts';
 import { confirmGates, gatesConfirmed } from './gates.ts';
-import { addNote, addProject, ensureHome, findProject, loadConfig, loadProjects, pickAgent } from './config.ts';
+import { addNote, ensureHome, findProject, loadConfig, loadProjects, pickAgent } from './config.ts';
 import { describePolicy, policyState, storeApproval } from './policy.ts';
-import { isGitRepo } from './git.ts';
 import { resolveId } from './tasks.ts';
-import { codeRoot, configPath, home } from './paths.ts';
+import { codeRoot, configPath, home, stateDir } from './paths.ts';
 import { installSkills, removeSkills } from './skills.ts';
 import { terminalBackend } from './terminal.ts';
 
@@ -24,9 +25,13 @@ export const HELP = `amigo: your right hand. Runs the squad.
   amigo [--agent <name>] [--dry-run]                start amigo in this terminal: a briefing first, then you just talk to it
   amigo install-skill [<agent>] [--remove]          add /amigo to your agent CLIs (all found on PATH, or one)
   amigo brief --agent <name>                        print amigo's instructions and the briefing (what /amigo runs)
-  amigo add <path> [--name <name>] [--notes <text>] [--check <cmd>]... [--risky <glob>]... [--live <cmd>]... [--watch <text>]...
-                                                    register a project folder; the same name and folder again updates it
+  amigo add <git url or path> [--name <name>] [--mode no-mistakes|direct-PR|local-only] [--yolo | --no-yolo] [--branch-prefix <p>]
+            [--live <folder>] [--notes <text>] [--check <cmd>]... [--risky <glob>]... [--live-command <cmd>]... [--watch <text>]...
+                                                    clone a project into projects/<name> and register it; the same name and source again updates it
   amigo projects                                    list registered projects
+  amigo sync [<project>]                            refresh the clones from origin (fast-forward only; anything unsafe is reported, never touched)
+  amigo migrate [--live <project>]... [--drop <project>]... [--dry-run]
+                                                    convert a home from before this version: projects become clones, the old gate files go
   amigo note <project> <text>                       add a line to a project's notes (every later squad member gets it)
   amigo spawn (--project <name> | --review <id> | --scratch) [--title <t>] [--agent <name>] [--after <id>] [--issue <n>] [--brief-file <file>] [--dry-run]
                                                     start a squad member; the brief comes from stdin unless --brief-file is given
@@ -44,10 +49,10 @@ export const HELP = `amigo: your right hand. Runs the squad.
   amigo help                                        this text (-h or --help anywhere in a command prints it too)
   amigo --version                                   print the version
 
-Data lives in ${'$'}AMIGO_HOME (default ~/.amigo).`;
+Data lives in ${'$'}AMIGO_HOME (default ~/.amigo): config/, data/, state/ and projects/.`;
 
 /** Every command the help lists, for the tests that keep the help and the dispatch below in step. */
-export const COMMANDS: readonly string[] = ['install-skill', 'brief', 'add', 'projects', 'note', 'spawn', 'status', 'inbox', 'wait', 'send', 'attach', 'close', 'policy', 'approve-policy', 'confirm-gates', 'undo', 'help'];
+export const COMMANDS: readonly string[] = ['install-skill', 'brief', 'add', 'projects', 'sync', 'migrate', 'note', 'spawn', 'status', 'inbox', 'wait', 'send', 'attach', 'close', 'policy', 'approve-policy', 'confirm-gates', 'undo', 'help'];
 
 function readStdin(what: string): string {
   if (process.stdin.isTTY) throw new Error(`Pass the ${what} on stdin or as a file (see amigo help)`);
@@ -70,7 +75,7 @@ function parse(argv: string[], options: ParseArgsOptionsConfig) {
 
 /** Commands that start, change or close squad members. A squad member must never run them on other squad members. */
 // Commands only amigo may run. inbox, wait and brief count too: a squad member running them marks results seen or starts the briefing's checks. So does the bare start.
-const MANAGING = new Set(['spawn', 'send', 'close', 'install-skill', 'add', 'note', 'approve-policy', 'confirm-gates', 'undo', 'inbox', 'wait', 'brief']);
+const MANAGING = new Set(['spawn', 'send', 'close', 'install-skill', 'add', 'sync', 'migrate', 'note', 'approve-policy', 'confirm-gates', 'undo', 'inbox', 'wait', 'brief']);
 
 export async function main(argv: string[], rawEnv: NodeJS.ProcessEnv = process.env): Promise<number> {
   // A session the former name started still counts as a squad member, in the home it was started with.
@@ -104,7 +109,7 @@ export async function main(argv: string[], rawEnv: NodeJS.ProcessEnv = process.e
       const raw = process.stdin.isTTY ? '' : readFileSync(0, 'utf8');
       if (env.AMIGO_TASK) out(await applyHook(rest[0] ?? '', raw.trim() ? JSON.parse(raw) : {}, env.AMIGO_TASK, env));
     } catch (err) {
-      appendFileSync(join(home(env), 'hook-errors.log'), `${new Date().toISOString()} ${rest[0]}: ${(err as Error).message}\n`);
+      appendFileSync(join(stateDir(env), 'hook-errors.log'), `${new Date().toISOString()} ${rest[0]}: ${(err as Error).message}\n`);
     }
     return 0;
   }
@@ -116,17 +121,11 @@ export async function main(argv: string[], rawEnv: NodeJS.ProcessEnv = process.e
     return 0;
   }
   const helping = cmd === 'help';
-  // Once: the home of the former name moves to ~/.amigo (it refuses while tasks are running; help still works). A squad member never moves anything.
-  if (!helping && !env.AMIGO_TASK) {
-    const hint = legacyHomeHint(env);
-    if (hint) process.stderr.write(`${hint}\n`);
-    const moved = migrateOldHome(env);
-    if (moved) process.stderr.write(`${moved}\n`);
-  }
   const removing = cmd === 'install-skill' && rest.includes('--remove');
-  if (!removing && !helping && ensureHome(env)) {
+  // migrate works on a home in the old layout, which ensureHome refuses.
+  if (!removing && !helping && cmd !== 'migrate' && ensureHome(env)) {
     process.stderr.write(
-      `Created ${home(env)} (config.json, projects.json).\nNext: amigo install-skill (or add your agent to ${configPath(env)}, see the README), then: amigo add <project folder>\n\n`,
+      `Created ${home(env)} (config/, data/, state/, projects/).\nNext: amigo install-skill (or add your agent to ${configPath(env)}, see the README), then: amigo add <git url or path>\n\n`,
     );
   }
   switch (cmd) {
@@ -154,6 +153,12 @@ export async function main(argv: string[], rawEnv: NodeJS.ProcessEnv = process.e
       return 0;
     }
 
+    case 'migrate': {
+      const { values } = parse(rest, { live: { type: 'string', multiple: true }, drop: { type: 'string', multiple: true }, 'dry-run': { type: 'boolean' } });
+      for (const line of migrateHome(env, { live: values.live as string[] | undefined, drop: values.drop as string[] | undefined, dryRun: Boolean(values['dry-run']) })) out(line);
+      return 0;
+    }
+
     case 'install-skill': {
       const { values, positionals } = parse(rest, { remove: { type: 'boolean' } });
       const lines = values.remove ? removeSkills(positionals[0]) : installSkills(positionals[0], env);
@@ -162,17 +167,47 @@ export async function main(argv: string[], rawEnv: NodeJS.ProcessEnv = process.e
     }
 
     case 'add': {
-      const { values, positionals } = parse(rest, { name: { type: 'string' }, notes: { type: 'string' }, check: { type: 'string', multiple: true }, risky: { type: 'string', multiple: true }, live: { type: 'string', multiple: true }, watch: { type: 'string', multiple: true } });
-      if (!positionals[0]) throw new Error('add needs a folder: amigo add <path>');
+      const { values, positionals } = parse(rest, {
+        name: { type: 'string' },
+        mode: { type: 'string' },
+        yolo: { type: 'boolean' },
+        'no-yolo': { type: 'boolean' },
+        'branch-prefix': { type: 'string' },
+        live: { type: 'string' },
+        notes: { type: 'string' },
+        check: { type: 'string', multiple: true },
+        risky: { type: 'string', multiple: true },
+        'live-command': { type: 'string', multiple: true },
+        watch: { type: 'string', multiple: true },
+      });
+      if (!positionals[0]) throw new Error('add needs a git URL or a folder to clone: amigo add <git url or path>');
+      if (values.yolo && values['no-yolo']) throw new Error('--yolo and --no-yolo contradict each other');
       // A repeated flag replaces the whole list; an empty value (--check "") clears it.
       const list = (v: unknown): string[] | undefined => (v === undefined ? undefined : (v as string[]).filter((x) => x.trim() !== ''));
-      const { project: p, updated } = addProject(positionals[0], { name: values.name as string | undefined, notes: values.notes as string | undefined, checks: list(values.check), risky: list(values.risky), live: list(values.live), watch: list(values.watch) }, env);
-      out(`${updated ? 'Updated' : 'Added'} ${p.name} -> ${p.path} (${isGitRepo(p.path) ? 'git: each squad member gets its own worktree' : 'not git: one squad member at a time works in the folder itself'})`);
+      const { project: p, updated, cloned } = addProject(
+        positionals[0],
+        {
+          name: values.name as string | undefined,
+          mode: values.mode as string | undefined,
+          yolo: values.yolo ? true : values['no-yolo'] ? false : undefined,
+          branchPrefix: values['branch-prefix'] as string | undefined,
+          live: values.live as string | undefined,
+          notes: values.notes as string | undefined,
+          checks: list(values.check),
+          risky: list(values.risky),
+          liveCommands: list(values['live-command']),
+          watch: list(values.watch),
+        },
+        env,
+      );
+      out(`${updated ? 'Updated' : 'Added'} ${p.name}: ${cloned ? 'cloned' : 'clone of'} ${p.source} ${cloned ? 'into' : 'at'} ${p.path}`);
+      out(`delivery: ${p.mode}${p.yolo ? ' +yolo (amigo may merge green work itself)' : ', yolo off (the Boss says "merge it")'}; branches ${p.branchPrefix}<task id>`);
+      if (p.live) out(`live install: ${p.live} (fast-forwarded after a confirmed merge)`);
       out(p.checks?.length ? `checks: ${p.checks.join(' | ')}` : 'checks: none (finished work will show as unverified)');
       if (p.risky?.length) out(`risky paths: ${p.risky.join(', ')}`);
-      if (p.live) out(p.live.length ? `live commands (briefing): ${p.live.join(' | ')}` : 'live commands (briefing): none');
+      if (p.liveCommands) out(p.liveCommands.length ? `live commands (briefing): ${p.liveCommands.join(' | ')}` : 'live commands (briefing): none');
       if (p.watch?.length) out(`watch (briefing): ${p.watch.join(' | ')}`);
-      if ((p.checks?.length || p.risky?.length || p.live?.length || p.watch?.length) && !gatesConfirmed(p, env)) out(`These checks and risky paths${p.live?.length || p.watch?.length ? ', live commands and watch items' : ''} are not confirmed by you yet, so close --self refuses for ${p.name}${p.live?.length || p.watch?.length ? ', and the briefing skips its live commands and watch items' : ''}. To confirm, run in a terminal: amigo confirm-gates ${p.name}`);
+      if ((p.checks?.length || p.risky?.length || p.liveCommands?.length || p.watch?.length) && !gatesConfirmed(p, env)) out(`These checks and risky paths${p.liveCommands?.length || p.watch?.length ? ', live commands and watch items' : ''} are not confirmed by you yet, so close --self refuses for ${p.name}${p.liveCommands?.length || p.watch?.length ? ', and the briefing skips its live commands and watch items' : ''}. To confirm, run in a terminal: amigo confirm-gates ${p.name}`);
       return 0;
     }
 
@@ -190,13 +225,29 @@ export async function main(argv: string[], rawEnv: NodeJS.ProcessEnv = process.e
       parse(rest, {});
       const projects = loadProjects(env);
       if (!projects.length) {
-        out('No projects yet: amigo add <path>');
+        out('No projects yet: amigo add <git url or path>');
         return 0;
       }
       for (const p of projects) {
-        const mode = !existsSync(p.path) ? 'MISSING FOLDER' : isGitRepo(p.path) ? 'git, worktree per squad member' : 'in place, one squad member at a time';
-        out(`${p.name}  ${p.path}  (${mode})${p.notes ? `\n    notes: ${p.notes.replace(/\n/g, '\n           ')}` : ''}${p.checks?.length ? `\n    checks: ${p.checks.join(' | ')}` : ''}${p.risky?.length ? `\n    risky paths: ${p.risky.join(', ')}` : ''}${p.live ? `\n    live: ${p.live.length ? p.live.join(' | ') : '(none)'}` : ''}${p.watch?.length ? `\n    watch: ${p.watch.join(' | ')}` : ''}`);
+        const tangled = existsSync(p.path) ? tangleBranch(p.path) : null;
+        const state = !existsSync(p.path) ? 'CLONE MISSING' : tangled ? `CLONE ON BRANCH ${tangled}, not its default` : 'clone';
+        const extra = [
+          p.branchPrefix !== 'amigo/' ? `branches: ${p.branchPrefix}<task id>` : '',
+          p.live ? `live install: ${p.live}` : '',
+          p.notes ? `notes: ${p.notes.replace(/\n/g, '\n           ')}` : '',
+          p.checks?.length ? `checks: ${p.checks.join(' | ')}` : '',
+          p.risky?.length ? `risky paths: ${p.risky.join(', ')}` : '',
+          p.liveCommands ? `live commands: ${p.liveCommands.length ? p.liveCommands.join(' | ') : '(none)'}` : '',
+          p.watch?.length ? `watch: ${p.watch.join(' | ')}` : '',
+        ].filter(Boolean);
+        out([`${p.name}  [${p.mode}${p.yolo ? ' +yolo' : ''}]  ${p.path}  (${state}, from ${p.source})`, ...extra.map((l) => `    ${l}`)].join('\n'));
       }
+      return 0;
+    }
+
+    case 'sync': {
+      const { positionals } = parse(rest, {});
+      for (const line of syncProjects(positionals[0], env)) out(line);
       return 0;
     }
 
@@ -304,7 +355,7 @@ export async function main(argv: string[], rawEnv: NodeJS.ProcessEnv = process.e
       const { positionals } = parse(rest, {});
       if (!positionals[0]) throw new Error('confirm-gates needs a project: amigo confirm-gates <project>');
       const p = findProject(loadProjects(env), positionals[0]);
-      const shown = `project ${p.name}\nchecks:      ${p.checks?.length ? p.checks.join(' | ') : '(none)'}\nrisky paths: ${p.risky?.length ? p.risky.join(', ') : '(none beyond the built-in ones)'}${p.live?.length ? `\nlive:        ${p.live.join(' | ')}` : ''}${p.watch?.length ? `\nwatch:       ${p.watch.join(' | ')}` : ''}`;
+      const shown = `project ${p.name}\nchecks:      ${p.checks?.length ? p.checks.join(' | ') : '(none)'}\nrisky paths: ${p.risky?.length ? p.risky.join(', ') : '(none beyond the built-in ones)'}${p.liveCommands?.length ? `\nlive:        ${p.liveCommands.join(' | ')}` : ''}${p.watch?.length ? `\nwatch:       ${p.watch.join(' | ')}` : ''}`;
       await personSays('confirm-gates', shown, 'confirm', `that ${p.name} is gated by exactly these checks and risky paths, and may run exactly these live commands and hand exactly these watch items to an agent at every start`, out);
       confirmGates(p.name, env);
       out("Confirmed. Any later change to this project's checks, risky paths, live commands or watch items needs confirming again before --self works or the briefing uses them.");

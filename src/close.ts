@@ -7,6 +7,7 @@ import { forgetFolder } from './claude.ts';
 import { loadProjects } from './config.ts';
 import { gatesConfirmed, reviewProblem, selfApproval } from './gates.ts';
 import { branchCommits, branchSha, changedFiles, commitAll, commitsAhead, committedFiles, deleteBranchIfUnused, effectiveBase, hasRemote, headSubject, onOriginDefault, pushBranch, removeWorktree } from './git.ts';
+import { returnWorktree } from './worktree.ts';
 import { checkPrTitle, openDraftPr, requireGh } from './github.ts';
 import { scratchDir, taskDir } from './paths.ts';
 import { policyState } from './policy.ts';
@@ -181,7 +182,8 @@ export function closeMember(id: string, opts: CloseOptions, env: NodeJS.ProcessE
         }
       }
       if (opts.commit && t.baseSha && commitsAhead(t.repo, t.branch, t.baseSha) > 0) committed = branchSha(t.repo, t.branch) ?? undefined;
-      removeWorktree(t.repo, t.worktree);
+      if (t.leased) returnWorktree(t.repo, t.worktree, env, t.gitDir);
+      else removeWorktree(t.repo, t.worktree);
       if (deleteBranchIfUnused(t.repo, t.branch, t.baseSha)) out.push(`Removed the unused branch ${t.branch}.`);
       else if (branchSha(t.repo, t.branch)) out.push(`Branch ${t.branch} kept. Nothing was merged${opts.pr ? '' : ' or pushed'}.`);
     } else if (t.scratch && !t.reviewOf && t.briefing && t.cwd === scratchDir(t.id, env)) {

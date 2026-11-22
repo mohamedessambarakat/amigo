@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { after, describe, it } from 'node:test';
 import { age, memberPrompt, amigoPrompt, titleOf } from '../src/squad.ts';
 import { INLINE_LIMIT, buildLaunch, pointerLine, quoteForCmd, resolveExecutable } from '../src/command.ts';
-import { nameFromPath, pickAgent, validateConfig, validateProjects } from '../src/config.ts';
+import { nameFromSource, pickAgent, validateConfig, validateProjects } from '../src/config.ts';
 import { commitAll, looksSecret, porcelainPath } from '../src/git.ts';
 import { HEARTBEAT_MS, memberNumber, beat, newId, nextMemberNumber, parseStatus, resolveId, runnerAlive, saveTask, type Task } from '../src/tasks.ts';
 import { installSkills, removeSkills } from '../src/skills.ts';
@@ -37,15 +37,25 @@ describe('config', () => {
 
   it('validates projects', () => {
     const abs = join(tmp, 'x');
-    assert.deepEqual(validateProjects({ projects: [{ name: 'x', path: abs, notes: 'n' }] }), [{ name: 'x', path: abs, notes: 'n' }]);
-    assert.throws(() => validateProjects({ projects: [{ name: 'x', path: 'relative' }] }), /absolute/);
-    assert.throws(() => validateProjects({ projects: [{ name: 'x', path: abs }, { name: 'x', path: abs }] }), /twice/);
+    const env = { AMIGO_HOME: abs };
+    assert.deepEqual(validateProjects({ projects: [{ name: 'x', source: 'https://example.com/x.git', notes: 'n' }] }, 'p', env), [
+      { name: 'x', source: 'https://example.com/x.git', path: join(abs, 'projects', 'x'), mode: 'no-mistakes', yolo: false, branchPrefix: 'amigo/', notes: 'n' },
+    ]);
+    assert.deepEqual(validateProjects({ projects: [{ name: 'x', source: 's', mode: 'local-only', yolo: true, branchPrefix: '', live: abs }] }, 'p', env)[0], { name: 'x', source: 's', path: join(abs, 'projects', 'x'), mode: 'local-only', yolo: true, branchPrefix: '', live: abs });
+    assert.throws(() => validateProjects({ projects: [{ name: 'x' }] }), /needs a "source"/);
+    assert.throws(() => validateProjects({ projects: [{ name: 'x', source: 's', mode: 'yolo' }] }), /"mode" must be one of no-mistakes, direct-PR, local-only/);
+    assert.throws(() => validateProjects({ projects: [{ name: 'x', source: 's', branchPrefix: 'a b/' }] }), /branchPrefix/);
+    assert.throws(() => validateProjects({ projects: [{ name: 'x', source: 's', live: 'relative' }] }), /absolute/);
+    assert.throws(() => validateProjects({ projects: [{ name: 'x', source: 's' }, { name: 'x', source: 's' }] }), /twice/);
     assert.throws(() => validateProjects([]), /must look like/);
   });
 
-  it('derives a project name from a folder', () => {
-    assert.equal(nameFromPath('/home/sam/My App'), 'my-app');
-    assert.equal(nameFromPath('/x/.hidden'), 'hidden');
+  it('derives a project name from a clone source', () => {
+    assert.equal(nameFromSource('/home/sam/My App'), 'my-app');
+    assert.equal(nameFromSource('/x/.hidden'), 'hidden');
+    assert.equal(nameFromSource('https://github.com/me/Tripwire.git'), 'tripwire');
+    assert.equal(nameFromSource('git@github.com:me/noira-orders.git'), 'noira-orders');
+    assert.equal(nameFromSource('C:\\work\\amigo\\'), 'amigo');
   });
 });
 
@@ -161,7 +171,7 @@ describe('agent templates and skills', () => {
       const skill = join(userHome, '.claude', 'skills', 'amigo', 'SKILL.md');
       assert.match(readFileSync(skill, 'utf8'), /^---\nname: amigo\n[\s\S]*amigo brief --agent claude/);
       assert.ok(lines.some((l) => l.includes('added its template')));
-      assert.deepEqual(JSON.parse(readFileSync(join(env.AMIGO_HOME as string, 'config.json'), 'utf8')).agents.claude, TEMPLATES.claude);
+      assert.deepEqual(JSON.parse(readFileSync(join(env.AMIGO_HOME as string, 'config', 'config.json'), 'utf8')).agents.claude, TEMPLATES.claude);
       assert.ok(!installSkills('claude', env, userHome).some((l) => l.includes('added its template')), 'never adds an agent twice');
 
       installSkills('codex', env, userHome);
@@ -191,7 +201,7 @@ describe('runner heartbeat', () => {
   it('counts a runner as alive only while its heartbeat is fresh', () => {
     const { dir, env } = makeHome();
     try {
-      mkdirSync(join(env.AMIGO_HOME as string, 'tasks', 'hb-1'), { recursive: true });
+      mkdirSync(join(env.AMIGO_HOME as string, 'state', 'tasks', 'hb-1'), { recursive: true });
       assert.equal(runnerAlive('hb-1', env), false);
       beat('hb-1', env);
       assert.equal(runnerAlive('hb-1', env), true);

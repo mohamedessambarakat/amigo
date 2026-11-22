@@ -9,7 +9,7 @@ import { assessChanges, docsOrTestsOnly, snapshot } from '../src/risk.ts';
 import { policyState, storeApproval } from '../src/policy.ts';
 import { approvalsPath, policyPath } from '../src/paths.ts';
 import { getTask } from '../src/tasks.ts';
-import { addOrigin, cleanup, cli, fakeGhEnv, ghCalls, git, idFrom, makeHome, makeRepo, makeRepoWithChecks, waitFor } from './helpers.ts';
+import { addOrigin, cleanup, repointOrigin, cli, cloneOf, fakeGhEnv, ghCalls, git, idFrom, makeHome, makeRepo, makeRepoWithChecks, waitFor } from './helpers.ts';
 
 const lines = (env: NodeJS.ProcessEnv): { event: string; id: string; [k: string]: unknown }[] =>
   existsSync(approvalsPath(env))
@@ -25,14 +25,15 @@ const setPolicy = (env: NodeJS.ProcessEnv, change: (policy: Record<string, any>)
   writeFileSync(policyPath(env), JSON.stringify(p, null, 2));
 };
 
-/** A project with a passing check and one finished squad member that only wrote a docs file: everything but the policy is in order. */
+/** A project with a passing check and one finished squad member that only wrote a docs file: everything but the policy is in order. Returns amigo's clone as `repo`. */
 async function finishedDocsTask(dir: string, env: NodeJS.ProcessEnv, extra = ''): Promise<{ repo: string; id: string }> {
   const repo = makeRepoWithChecks(join(dir, 'repo'));
   assert.equal(cli(env, ['add', repo, '--check', 'node ok.mjs']).code, 0);
   confirmGates('repo', env); // what the user does by hand with confirm-gates
   const id = idFrom(cli(env, ['spawn', '--project', 'repo'], `Title: Update the notes\nMODE:docs${extra}`).out);
   assert.equal((await waitFor(id, env, ['done', 'blocked', 'failed'])).status, 'done');
-  return { repo, id };
+  // amigo's clone: the task's branch lives there, and its origin is the source repo.
+  return { repo: cloneOf(env, 'repo'), id };
 }
 
 describe('approval policy', () => {
@@ -121,7 +122,7 @@ describe('approval policy', () => {
     const { dir, env } = makeHome();
     try {
       const { repo, id } = await finishedDocsTask(dir, env);
-      addOrigin(dir, repo);
+      repointOrigin(dir, repo);
       storeApproval(env);
       assert.equal(cli(env, ['close', id, '--commit', '--self']).code, 0);
       const tip = git(repo, 'rev-parse', `amigo/${id}`).trim();
@@ -184,7 +185,7 @@ describe('approval policy', () => {
     const env = { ...base, ...gh.env };
     try {
       const { repo, id } = await finishedDocsTask(dir, env);
-      const bare = addOrigin(dir, repo);
+      const bare = repointOrigin(dir, repo);
       storeApproval(env);
       const noPr = cli(env, ['close', id, '--commit', '--self', '--pr']);
       assert.equal(noPr.code, 1);
@@ -198,7 +199,7 @@ describe('approval policy', () => {
       assert.equal(refused.code, 1);
       assert.match(refused.err, /the policy's "pr" is "after-human-yes", so a pull request needs the user's yes, not --self/);
       assert.equal(getTask(id, env)?.status, 'done');
-      assert.equal(git(bare, 'branch', '--list').trim(), 'main', 'nothing was pushed');
+      assert.equal(git(bare, 'branch', '--list').replace('* ', '').trim(), 'main', 'nothing was pushed');
       assert.equal(ghCalls(gh.log).length, 0, 'gh was not called');
 
       setPolicy(env, (p) => (p.pr = 'also-self-approved'));
@@ -222,7 +223,7 @@ describe('approval policy', () => {
     const env = { ...base, ...gh.env };
     try {
       const { repo, id } = await finishedDocsTask(dir, env);
-      const bare = addOrigin(dir, repo);
+      const bare = repointOrigin(dir, repo);
       const unapproved = cli(env, ['close', id, '--commit', '--pr']);
       assert.equal(unapproved.code, 1);
       assert.match(unapproved.err, /--pr needs an approved policy that allows pull requests, and the policy has not been approved yet/);
@@ -231,7 +232,7 @@ describe('approval policy', () => {
       assert.equal(off.code, 1);
       assert.match(off.err, /The approved policy does not allow pull requests \("pr": "never"/);
       assert.equal(getTask(id, env)?.status, 'done', 'nothing was committed');
-      assert.equal(git(bare, 'branch', '--list').trim(), 'main', 'nothing was pushed');
+      assert.equal(git(bare, 'branch', '--list').replace('* ', '').trim(), 'main', 'nothing was pushed');
       assert.equal(ghCalls(gh.log).length, 0, 'gh was not called');
       assert.equal(cli(env, ['close', id, '--commit']).code, 0, 'a plain local commit needs no policy');
     } finally {
@@ -242,9 +243,9 @@ describe('approval policy', () => {
   it('--self refuses after a non-interactive change of the project checks, until the user confirms them', async () => {
     const { dir, env } = makeHome();
     try {
-      const { repo, id } = await finishedDocsTask(dir, env);
+      const { id } = await finishedDocsTask(dir, env);
       storeApproval(env);
-      const changed = cli(env, ['add', repo, '--check', 'node fail.mjs']);
+      const changed = cli(env, ['add', join(dir, 'repo'), '--check', 'node fail.mjs']);
       assert.equal(changed.code, 0, changed.err);
       assert.match(changed.out, /not confirmed by you yet, so close --self refuses for repo\. To confirm, run in a terminal: amigo confirm-gates repo/);
       const r = cli(env, ['close', id, '--commit', '--self']);
@@ -259,9 +260,9 @@ describe('approval policy', () => {
       assert.match(cli(env, ['close', id, '--commit', '--self']).err, /the project's checks changed after these results were recorded/);
 
       // Loosening the risky globs by editing projects.json by hand is caught the same way.
-      assert.equal(cli(env, ['add', repo, '--check', 'node ok.mjs', '--risky', 'src/**']).code, 0);
+      assert.equal(cli(env, ['add', join(dir, 'repo'), '--check', 'node ok.mjs', '--risky', 'src/**']).code, 0);
       confirmGates('repo', env);
-      const file = join(env.AMIGO_HOME as string, 'projects.json');
+      const file = join(env.AMIGO_HOME as string, 'data', 'projects.json');
       const projects = JSON.parse(readFileSync(file, 'utf8'));
       delete projects.projects[0].risky;
       writeFileSync(file, JSON.stringify(projects));
@@ -540,30 +541,6 @@ echo ran > "${fwd(marker)}"
       assert.equal(close.code, 1);
       assert.match(close.err, refused);
       assert.equal(existsSync(marker), false);
-    } finally {
-      cleanup(dir);
-    }
-  });
-
-  it('spawn refuses a project that was not a git repo when added but is one now, until it is added again', () => {
-    const { dir, env } = makeHome();
-    try {
-      const folder = join(dir, 'plain');
-      mkdirSync(folder);
-      writeFileSync(join(folder, 'a.txt'), 'hello\n');
-      assert.equal(cli(env, ['add', folder]).code, 0);
-      assert.equal(JSON.parse(readFileSync(join(env.AMIGO_HOME as string, 'projects.json'), 'utf8')).projects[0].wasGit, false);
-      // What a squad member working in place can do: turn the folder into a repo.
-      git(folder, 'init', '-q', '-b', 'main');
-      git(folder, 'add', '.');
-      git(folder, 'commit', '-q', '-m', 'init');
-      const refused = cli(env, ['spawn', '--project', 'plain'], 'Title: x');
-      assert.equal(refused.code, 1);
-      assert.match(refused.err, /was not a git repo when you added it, but .* is one now/);
-      assert.equal(existsSync(join(env.AMIGO_HOME as string, 'worktrees')), false, 'no worktree was created');
-      assert.equal(cli(env, ['spawn', '--project', 'plain', '--dry-run'], 'Title: x').code, 1, 'a dry run refuses too');
-      assert.equal(cli(env, ['add', folder]).code, 0, 'the user adds it again');
-      assert.equal(cli(env, ['spawn', '--project', 'plain', '--dry-run'], 'Title: x').code, 0);
     } finally {
       cleanup(dir);
     }

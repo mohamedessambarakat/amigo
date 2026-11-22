@@ -3,10 +3,11 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 import { applyHook, stopHookSeconds } from '../src/squad.ts';
-import { addProject, loadProjects } from '../src/config.ts';
+import { loadProjects } from '../src/config.ts';
+import { addProject } from '../src/projects.ts';
 import { getTask, saveTask } from '../src/tasks.ts';
 import { runCheck } from '../src/verify.ts';
-import { cleanup, cli, idFrom, makeHome, makeRepoWithChecks, releaseChecks, waitFor } from './helpers.ts';
+import { cleanup, cli, git, idFrom, makeHome, makeRepo, makeRepoWithChecks, releaseChecks, waitFor } from './helpers.ts';
 
 describe('verification gates', () => {
   it('a failing check sends the squad member a follow-up with its output, and the task shows verifying meanwhile', async () => {
@@ -77,9 +78,12 @@ describe('verification gates', () => {
       const folder = join(dir, 'p');
       mkdirSync(folder);
       writeFileSync(join(folder, 'fail.mjs'), "console.error('boom-from-check');\nprocess.exit(1);\n");
+      git(folder, 'init', '-q', '-b', 'main');
+      git(folder, 'add', '.');
+      git(folder, 'commit', '-q', '-m', 'init');
       addProject(folder, { checks: ['node fail.mjs'] }, env);
       const home = env.AMIGO_HOME as string;
-      mkdirSync(join(home, 'tasks', 'x-1'), { recursive: true });
+      mkdirSync(join(home, 'state', 'tasks', 'x-1'), { recursive: true });
       const now = new Date().toISOString();
       saveTask({ id: 'x-1', title: 't', project: 'p', agent: 'claude', cwd: folder, repo: null, worktree: null, branch: null, baseSha: null, status: 'running', createdAt: now, updatedAt: now, runs: 1, followUps: [], seen: true }, env);
       const stop = async () => await applyHook('stop', { last_assistant_message: 'STATUS: done - all good' }, 'x-1', env);
@@ -112,8 +116,7 @@ describe('verification gates', () => {
   it('add sets checks, and adding the same project again updates only what is given', () => {
     const { dir, env } = makeHome();
     try {
-      const folder = join(dir, 'p');
-      mkdirSync(folder);
+      const folder = makeRepo(join(dir, 'p'));
       cli(env, ['add', folder, '--notes', 'be careful', '--check', 'npm test', '--check', 'npm run lint', '--risky', 'legacy/**']);
       assert.deepEqual(loadProjects(env)[0]?.checks, ['npm test', 'npm run lint']);
       const again = cli(env, ['add', folder, '--check', 'make test']);
@@ -122,10 +125,9 @@ describe('verification gates', () => {
       assert.deepEqual([p?.notes, p?.checks, p?.risky], ['be careful', ['make test'], ['legacy/**']], 'checks replaced, notes and risky kept');
       cli(env, ['add', folder, '--check', '']);
       assert.equal(loadProjects(env)[0]?.checks, undefined, 'an empty --check clears the list');
-      mkdirSync(join(dir, 'other'));
-      const clash = cli(env, ['add', join(dir, 'other'), '--name', 'p']);
+      const clash = cli(env, ['add', makeRepo(join(dir, 'other')), '--name', 'p']);
       assert.equal(clash.code, 1);
-      assert.match(clash.err, /already exists for/);
+      assert.match(clash.err, /already exists, cloned from/);
     } finally {
       cleanup(dir);
     }

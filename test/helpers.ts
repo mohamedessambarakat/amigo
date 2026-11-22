@@ -42,11 +42,11 @@ export function moveFolder(from: string, to: string): void {
  * Tests set only what they need on top.
  */
 export function cleanEnv(from: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
-  return Object.fromEntries(Object.entries(from).filter(([k]) => !/^(AMIGO_|GIT_)/.test(k.toUpperCase())));
+  return Object.fromEntries(Object.entries(from).filter(([k]) => !/^(AMIGO_|GIT_|TREEHOUSE_)/.test(k.toUpperCase())));
 }
 
 // Code that falls back to process.env, git and other child processes see the clean environment too.
-for (const k of Object.keys(process.env)) if (/^(AMIGO_|GIT_)/.test(k.toUpperCase())) delete process.env[k];
+for (const k of Object.keys(process.env)) if (/^(AMIGO_|GIT_|TREEHOUSE_)/.test(k.toUpperCase())) delete process.env[k];
 
 // Code that falls back to process.env (a function called without an env) must never reach the real ~/.amigo or ~/.claude.json: point it at a throwaway home.
 const strayHome = mkdtempSync(join(os.tmpdir(), 'amigo-stray-home-'));
@@ -61,11 +61,25 @@ process.on('exit', () => rmSync(strayHome, { recursive: true, force: true }));
 export function makeHome(members = 0, member: string[] = [process.execPath, fakeAgent, '{prompt}']): { dir: string; env: NodeJS.ProcessEnv } {
   const dir = tmpDir();
   const home = join(dir, 'home');
-  mkdirSync(home, { recursive: true });
-  writeFileSync(join(home, 'config.json'), JSON.stringify({ agents: { fake: { amigo: [process.execPath, fakeAgent, '{prompt}'], member } }, memberMb: members ? 100 : 0, reserveMb: 0 }));
-  const env: NodeJS.ProcessEnv = { ...cleanEnv(), AMIGO_HOME: home, AMIGO_TERMINAL: 'test', AMIGO_CLAUDE_JSON: join(dir, 'claude.json'), AMIGO_FREE_MB: String(members ? members * 100 + 50 : 4096) };
+  mkdirSync(join(home, 'config'), { recursive: true });
+  writeFileSync(join(home, 'config', 'config.json'), JSON.stringify({ agents: { fake: { amigo: [process.execPath, fakeAgent, '{prompt}'], member } }, memberMb: members ? 100 : 0, reserveMb: 0 }));
+  const env: NodeJS.ProcessEnv = { ...cleanEnv(), AMIGO_HOME: home, AMIGO_TERMINAL: 'test', AMIGO_CLAUDE_JSON: join(dir, 'claude.json'), AMIGO_FREE_MB: String(members ? members * 100 + 50 : 4096), ...fakeTreehouseEnv(dir) };
   return { dir, env };
 }
+
+/** The environment for the fake treehouse (test/fake-treehouse.mjs): its pool is the home's own state/worktrees. */
+export function fakeTreehouseEnv(dir: string, script = join(codeRoot, 'test', 'fake-treehouse.mjs')): NodeJS.ProcessEnv {
+  const win = process.platform === 'win32';
+  const shim = join(dir, win ? 'treehouse.cmd' : 'treehouse');
+  writeFileSync(shim, win ? `@echo off\r\n"${process.execPath}" "${script}" %*\r\n` : `#!/bin/sh\nexec "${process.execPath}" "${script}" "$@"\n`, { mode: 0o755 });
+  return { AMIGO_TREEHOUSE: shim, FAKE_TREEHOUSE_LOG: join(dir, 'treehouse.log') };
+}
+
+/** amigo's clone of a registered project. */
+export const cloneOf = (env: NodeJS.ProcessEnv, name: string): string => join(env.AMIGO_HOME as string, 'projects', name);
+
+/** The path of a file in a task's runtime folder (state/tasks/<id>). */
+export const taskFilePath = (env: NodeJS.ProcessEnv, id: string, file: string): string => join(env.AMIGO_HOME as string, 'state', 'tasks', id, file);
 
 export function git(cwd: string, ...args: string[]): string {
   return execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', ...args], { cwd, encoding: 'utf8' });
@@ -134,7 +148,7 @@ export function releaseHeld(env: NodeJS.ProcessEnv): void {
 export function addOrigin(dir: string, repo: string): string {
   const bare = join(dir, 'origin.git');
   mkdirSync(bare, { recursive: true });
-  git(bare, 'init', '-q', '--bare');
+  git(bare, 'init', '-q', '--bare', '-b', 'main');
   git(repo, 'remote', 'add', 'origin', bare);
   git(repo, 'push', '-q', 'origin', 'main'); // the base of every task is on origin's default branch
   return bare;
@@ -167,4 +181,15 @@ export function allowPrs(env: NodeJS.ProcessEnv, pr: 'after-human-yes' | 'also-s
   p.pr = pr;
   writeFileSync(policyPath(env), JSON.stringify(p, null, 2));
   storeApproval(env);
+}
+
+/** Point a clone's origin at a new bare repo holding its main (for tests that check what was pushed): returns the bare repo. */
+export function repointOrigin(dir: string, clone: string): string {
+  const bare = join(dir, 'origin.git');
+  mkdirSync(bare, { recursive: true });
+  git(bare, 'init', '-q', '--bare', '-b', 'main');
+  git(clone, 'push', '-q', bare, 'main');
+  git(clone, 'remote', 'set-url', 'origin', bare);
+  git(clone, 'fetch', '-q', 'origin');
+  return bare;
 }

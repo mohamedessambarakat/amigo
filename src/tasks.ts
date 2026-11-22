@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { readJson, withLock, writeJsonAtomic } from './fsx.ts';
-import { lockPath, taskDir, tasksDir } from './paths.ts';
+import { lockPath, taskDataDir, taskDir, tasksDir } from './paths.ts';
 import type { Endpoint } from './terminal.ts';
 
 /**
@@ -54,11 +54,13 @@ export interface Task {
   agent: string;
   /** Where the agent runs: a worktree for git projects, else the project folder. */
   cwd: string;
-  /** Git projects only: the main checkout, the worktree, its branch and the commit it started from. */
+  /** Builds only: amigo's clone of the project, the worktree, its branch and the commit it started from. */
   repo: string | null;
   worktree: string | null;
   branch: string | null;
   baseSha: string | null;
+  /** The worktree was leased from treehouse's pool (every build since projects became clones): close returns it to the pool. */
+  leased?: boolean;
   /** The worktree's git dir under the repo (recorded when the worktree is made): git runs against it, never against <worktree>/.git. Missing on older tasks. */
   gitDir?: string;
   /** The messaging address (`uds:<socket>`) of the Claude session that spawned this squad member; it gets the squad member's results. */
@@ -167,7 +169,8 @@ export function resolveId(ref: string, env: NodeJS.ProcessEnv = process.env): st
 }
 
 export const taskFile = (id: string, env: NodeJS.ProcessEnv = process.env): string => join(taskDir(id, env), 'task.json');
-export const briefFile = (id: string, env: NodeJS.ProcessEnv = process.env): string => join(taskDir(id, env), 'brief.md');
+/** The brief is a durable record: data/<id>/brief.md, beside a survey's report. */
+export const briefFile = (id: string, env: NodeJS.ProcessEnv = process.env): string => join(taskDataDir(id, env), 'brief.md');
 export const promptFile = (id: string, env: NodeJS.ProcessEnv = process.env): string => join(taskDir(id, env), 'prompt.md');
 export const logFile = (id: string, env: NodeJS.ProcessEnv = process.env): string => join(taskDir(id, env), 'output.log');
 /** Where a squad member without hooks writes its proposed commit subject; read and removed when its run ends. */

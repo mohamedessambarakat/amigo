@@ -3,10 +3,11 @@ import { dirname, join, resolve } from 'node:path';
 import { checkCommitMessage } from './commit.ts';
 import { sleepSync } from './fsx.ts';
 import { legacyBranchName } from './legacy.ts';
-import { home } from './paths.ts';
+import { stateDir } from './paths.ts';
 import { run, runOrThrow, type RunOptions, type RunResult } from './proc.ts';
 
-const samePath = (a: string, b: string): boolean => {
+/** Do two paths name the same place (real paths, case-insensitive on Windows)? */
+export const samePath = (a: string, b: string): boolean => {
   const n = (p: string) => {
     let r = resolve(p);
     try {
@@ -119,24 +120,17 @@ export function worktreeGit(repo: string, worktree: string, args: string[], opts
  * repo or worktree config. Forward slashes, so the value survives Windows paths.
  */
 export function noHooks(env: NodeJS.ProcessEnv = process.env): string[] {
-  const dir = join(home(env), 'no-hooks');
+  const dir = join(stateDir(env), 'no-hooks');
   mkdirSync(dir, { recursive: true });
   return ['-c', `core.hooksPath=${dir.replaceAll('\\', '/')}`];
 }
 
-export const branchName = (id: string): string => `amigo/${id}`;
+/** A build's branch: the project's registered prefix (amigo/ unless it names another) and the task id. */
+export const branchName = (id: string, prefix = 'amigo/'): string => `${prefix}${id}`;
 
 export function isGitRepo(path: string): boolean {
   const r = run('git', ['-C', path, 'rev-parse', '--is-inside-work-tree']);
   return r.status === 0 && r.stdout.trim() === 'true';
-}
-
-/** New worktree on a new branch, starting from the repo's current HEAD, or from `from`. Returns the commit it starts from and its git dir (to be recorded on the task). */
-export function createWorktree(repo: string, worktree: string, branch: string, from = 'HEAD'): { baseSha: string; gitDir: string } {
-  const start = run('git', ['-C', repo, 'rev-parse', '--verify', `${from}^{commit}`]);
-  if (start.status !== 0) throw new Error(`${repo} has no commits yet, so amigo cannot create a worktree for it`);
-  runOrThrow('git', ['-C', repo, 'worktree', 'add', '-q', '-b', branch, worktree, start.stdout.trim()]);
-  return { baseSha: start.stdout.trim(), gitDir: findAdminDir(repo, worktree) };
 }
 
 /** Changed, new and deleted files (git status --porcelain), every untracked file listed. */
@@ -375,10 +369,10 @@ export function deleteBranch(repo: string, branch: string): void {
 
 /**
  * Push one branch (never any other) to origin and make it the branch's upstream. With the task's id, only that task's own
- * branch goes: amigo/<id>, or the branch a migrated task made before the rename. Without one, any amigo/ branch.
+ * branch goes: <prefix><id> for the project's prefix, or the branch a migrated task made before the rename. Without one, any amigo/ branch.
  */
 export function pushBranch(repo: string, branch: string, env: NodeJS.ProcessEnv = process.env, taskId?: string): void {
-  const ok = taskId ? branch === branchName(taskId) || branch === legacyBranchName(taskId) : branch.startsWith('amigo/');
-  if (!ok) throw new Error(`Refusing to push ${branch}: amigo pushes only the amigo/<id> branch of a task, and only its own`);
+  const ok = taskId ? branch === taskId || branch.endsWith(`/${taskId}`) || branch === legacyBranchName(taskId) : branch.startsWith('amigo/');
+  if (!ok) throw new Error(`Refusing to push ${branch}: amigo pushes only the <prefix><id> branch of a task, and only its own`);
   runOrThrow('git', ['-C', repo, ...noHooks(env), 'push', '--set-upstream', 'origin', `refs/heads/${branch}:refs/heads/${branch}`]);
 }
