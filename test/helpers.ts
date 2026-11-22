@@ -63,8 +63,17 @@ export function makeHome(members = 0, member: string[] = [process.execPath, fake
   const home = join(dir, 'home');
   mkdirSync(join(home, 'config'), { recursive: true });
   writeFileSync(join(home, 'config', 'config.json'), JSON.stringify({ agents: { fake: { amigo: [process.execPath, fakeAgent, '{prompt}'], member } }, memberMb: members ? 100 : 0, reserveMb: 0 }));
-  const env: NodeJS.ProcessEnv = { ...cleanEnv(), AMIGO_HOME: home, AMIGO_TERMINAL: 'test', AMIGO_CLAUDE_JSON: join(dir, 'claude.json'), AMIGO_FREE_MB: String(members ? members * 100 + 50 : 4096), ...fakeTreehouseEnv(dir) };
+  const env: NodeJS.ProcessEnv = { ...cleanEnv(), AMIGO_HOME: home, AMIGO_TERMINAL: 'test', AMIGO_CLAUDE_JSON: join(dir, 'claude.json'), AMIGO_FREE_MB: String(members ? members * 100 + 50 : 4096), ...fakeTreehouseEnv(dir), AMIGO_TASKS_AXI: fakeTasksAxi };
   return { dir, env };
+}
+
+/** The fake tasks-axi (test/fake-tasks-axi.mjs). It only acts once a home keeps a backlog: see startBacklog. */
+export const fakeTasksAxi = join(codeRoot, 'test', 'fake-tasks-axi.mjs');
+
+/** Make the home keep a backlog (data/backlog.md exists), so spawn and close move its items. */
+export function startBacklog(env: NodeJS.ProcessEnv): void {
+  mkdirSync(join(env.AMIGO_HOME as string, 'data'), { recursive: true });
+  writeFileSync(join(env.AMIGO_HOME as string, 'data', 'backlog.md'), JSON.stringify({ tasks: [] }));
 }
 
 /** The environment for the fake treehouse (test/fake-treehouse.mjs): its pool is the home's own state/worktrees. */

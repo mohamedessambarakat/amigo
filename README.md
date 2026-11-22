@@ -92,6 +92,16 @@ amigo add https://github.com/me/my-app.git --name my-app --live-command "npm out
 
 Work that belongs to no project runs in a scratch folder: `amigo spawn --scratch` gives the squad member its own folder `~/.amigo/state/scratch/<id>/` (not git, so no checks: its result shows as "unverified"). Several scratch squad members run in parallel, each in its own folder. `close` keeps the folder and prints its path.
 
+### Builds and surveys
+
+A task is a **build** (the default: it changes a project) or a **survey** (`spawn --survey`): its deliverable is a written report at `~/.amigo/data/<id>/report.md`, never a commit or a pull request. A survey's worktree is a laboratory whose edits and scratch commits are thrown away when it is closed, and every push from its session is refused. `close` refuses a survey until its report exists and its open questions for the Boss are recorded: each one is held in the backlog (`amigo hold <id> --reason "<question and options>" --origin <survey>`), then `amigo complete <survey> <held ids>` (or `--none`, which the survey may run itself when it found no such question). `close --force` discards a survey without its report.
+
+### Backlog, dispatch and capacity
+
+- **Backlog.** Once `~/.amigo/data/backlog.md` exists (the first `amigo backlog add` or `amigo hold` creates it), the work queue is kept there by [tasks-axi](https://github.com/kunchenguid/tasks-axi) (0.2.6 or newer, `npm install -g tasks-axi`). `spawn` adds the task's item (or dispatches an existing one with `--task <id>`, which refuses one that is held, blocked or already In flight), the crew member's start moves it In flight, and `close` moves it to Done with what it delivered. A decision is an item held for the Boss (`amigo hold`, `--until <date>` when he says "later"); `amigo answer` records his exact words and closes the call, or `--release` lets the held work go on. Closing a task whose item is still held for the Boss keeps the item open.
+- **Dispatch profiles.** An optional `~/.amigo/config/crew-dispatch.json` lists rules (`when` a kind of task, `use` profiles of `agent`, `model`, `effort`) and a `default`. amigo picks the rule that fits; `amigo dispatch <n>` resolves it in declared order to spawn flags, and while the file exists every spawn names its `--agent`. A Claude Code crew member gets `--model` and `--effort`; other agents record them only. `--effort max` needs the Boss (`--boss-max`, or a profile of his that declares it).
+- **Capacity.** An optional `~/.amigo/config/lane-capacity` caps how many crew members run at once: a number, or `auto` to measure free memory, CPU load and disk on every start (keys: `min-avail-gb`, `min-disk-gb`, `max-load1`, `max-lanes`, `reserve-flag`). With `admit-spawns` a crew member beyond it stays queued; without it `amigo capacity` only reports. `~/.amigo/config/project-capacity` holds `<project> <n>` lines: at most n crew members of that project at once, counted until each one's PR is recorded or it is closed.
+
 You can use every command yourself too:
 
 ```
@@ -110,6 +120,8 @@ amigo: your right hand. Runs the squad.
   amigo note <project> <text>                       add a line to a project's notes (every later squad member gets it)
   amigo spawn (--project <name> | --review <id> | --scratch) [--title <t>] [--agent <name>] [--after <id>] [--issue <n>] [--brief-file <file>] [--dry-run]
                                                     start a squad member; the brief comes from stdin unless --brief-file is given
+            [--survey] [--task <backlog id>] [--model <m>] [--effort low|medium|high|xhigh|max] [--boss-max]
+                                                    a survey writes data/<id>/report.md and never pushes; --task dispatches a backlog item
   amigo status [<id>]                               tasks by station, or one in detail (checks, risk, changed files)
   amigo inbox                                       squad members that finished since you last looked, and background results
   amigo wait [<id>...] [--timeout-min <n>]          wait until a squad member finishes a turn (default 60 min)
@@ -117,6 +129,15 @@ amigo: your right hand. Runs the squad.
   amigo attach <id>                                 print a squad member's results and follow it while it runs
   amigo close <id> [--commit [-m <message>] [--pr] [--self]] [--force]
                                                     finish a squad member: --commit keeps its work on branch amigo/<id>; --pr needs an approved policy whose pr is not never
+  amigo backlog [<tasks-axi command> [args...]]     the work queue (data/backlog.md) through tasks-axi: list, ready, add, show, update...
+  amigo hold <id> --reason <text> [--until YYYY-MM-DD] [--title <t> [--project <p>]] [--origin <survey id>]
+                                                    hold a backlog item for the Boss's call (--title creates it); --until defers it to a date
+  amigo answer <id> [--release] (<the Boss's words> | --file <file>)
+                                                    record the Boss's exact answer: closes the call, or --release lets the held work go on
+  amigo complete <survey id> (--none | <held item id>...)
+                                                    attest a survey's open Boss calls (or none), so close may tear it down
+  amigo dispatch [<rule number> | default]          the dispatch profiles, or one rule resolved to spawn flags
+  amigo capacity                                    lanes in use, open lanes and host headroom, and project caps
   amigo policy                                      show the self-approval policy and whether it is approved
   amigo approve-policy                              approve the policy as it is now (needs a terminal and your typed yes)
   amigo confirm-gates <project>                     confirm a project's checks, risky paths, live commands and watch items as they are now, so --self and the briefing may rely on them (terminal + typed yes)

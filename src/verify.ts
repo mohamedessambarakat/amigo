@@ -14,7 +14,7 @@ export const MAX_CHECK_RETRIES = 2;
 
 /** The project's checks that apply to this task: none for a reviewer, which changes nothing. */
 export function checksFor(t: Task, env: NodeJS.ProcessEnv): string[] {
-  return t.reviewOf || t.scratch ? [] : (loadProjects(env).find((p) => p.name === t.project)?.checks ?? []);
+  return t.reviewOf || t.scratch || t.kind === 'survey' ? [] : (loadProjects(env).find((p) => p.name === t.project)?.checks ?? []);
 }
 
 /** Run one process, killing it (and what it started) after timeoutMs. Output goes to a file, so a stuck child cannot hold a pipe open. */

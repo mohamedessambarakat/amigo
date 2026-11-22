@@ -14,6 +14,8 @@ import { policyState } from './policy.ts';
 import { killTree } from './proc.ts';
 import { assessChanges, snapshot } from './risk.ts';
 import { listTasks, mutateTask, requireTask, runnerAlive, type Task } from './tasks.ts';
+import { closeItem, findItem, replayPendingCloses, reportLink } from './backlog.ts';
+import { discardSurveyBranch, reportWritten, surveyCloseProblem } from './survey.ts';
 
 export interface CloseOptions {
   commit?: boolean;
@@ -140,6 +142,13 @@ export function closeMember(id: string, opts: CloseOptions, env: NodeJS.ProcessE
   if (reviewers.length) throw new Error(`Close the review first: ${reviewers.map((r) => r.id).join(', ')}`);
   if ((opts.pr || opts.self) && !opts.commit) throw new Error('--pr and --self only make sense with --commit');
   if (opts.self && opts.force) throw new Error('--self cannot be combined with --force: self-approval has no overrides');
+  const survey = surveyCloseProblem(requireTask(id, env), opts, env);
+  if (survey) throw new Error(survey);
+  // A home that keeps a backlog needs a working tasks-axi before anything is cleaned up, so the transition cannot be skipped.
+  if (requireTask(id, env).backlogItem) {
+    replayPendingCloses(env);
+    findItem(id, env);
+  }
   if (opts.commit) checkBranchCommits(requireTask(id, env));
   const message = opts.commit ? commitMessage(requireTask(id, env), opts.message) : undefined;
   const prTitle = opts.pr ? pullRequestTitle(requireTask(id, env), message) : null;
@@ -177,14 +186,16 @@ export function closeMember(id: string, opts: CloseOptions, env: NodeJS.ProcessE
             if (pr.url && selfReasons) logApproval({ event: 'pr', id, project: t.project, branch: t.branch, url: pr.url }, env);
           }
         } else {
-          const changes = opts.force ? [] : changedFiles(t.repo, t.worktree, t.gitDir);
+          // A survey's worktree is a laboratory: its scratch edits are discarded, the report is what it delivered.
+          const changes = opts.force || t.kind === 'survey' ? [] : changedFiles(t.repo, t.worktree, t.gitDir);
           if (changes.length) throw new Error(`Task ${id} has ${changes.length} changed files. Use --commit to keep them on branch ${t.branch}, or --force to discard them.`);
         }
       }
       if (opts.commit && t.baseSha && commitsAhead(t.repo, t.branch, t.baseSha) > 0) committed = branchSha(t.repo, t.branch) ?? undefined;
       if (t.leased) returnWorktree(t.repo, t.worktree, env, t.gitDir);
       else removeWorktree(t.repo, t.worktree);
-      if (deleteBranchIfUnused(t.repo, t.branch, t.baseSha)) out.push(`Removed the unused branch ${t.branch}.`);
+      if (t.kind === 'survey') out.push(...discardSurveyBranch(t.repo, t.branch));
+      else if (deleteBranchIfUnused(t.repo, t.branch, t.baseSha)) out.push(`Removed the unused branch ${t.branch}.`);
       else if (branchSha(t.repo, t.branch)) out.push(`Branch ${t.branch} kept. Nothing was merged${opts.pr ? '' : ' or pushed'}.`);
     } else if (t.scratch && !t.reviewOf && t.briefing && t.cwd === scratchDir(t.id, env)) {
       // The briefing's own squad member leaves nothing worth keeping; every other scratch member keeps its folder.
@@ -204,8 +215,19 @@ export function closeMember(id: string, opts: CloseOptions, env: NodeJS.ProcessE
         out.push(`Warning: could not remove ${dir} from ~/.claude.json: ${(err as Error).message}`);
       }
     }
-    mutateTask(id, () => ({ status: 'closed', pid: null, ...(committed ? { committed } : {}) }), env);
+    const closed = mutateTask(id, () => ({ status: 'closed', pid: null, ...(committed ? { committed } : {}) }), env);
     out.push(`Closed ${id}.`);
+    if (closed.backlogItem) {
+      const deliverable =
+        closed.kind === 'survey'
+          ? opts.force && !reportWritten(closed) ? { note: 'discarded' } : { report: reportLink(id, env) }
+          : closed.pr
+            ? { pr: closed.pr }
+            : committed
+              ? { note: `committed ${committed.slice(0, 12)} on ${closed.branch}` }
+              : { note: 'discarded' };
+      out.push(...closeItem(id, deliverable, env));
+    }
   } catch (err) {
     mutateTask(id, () => ({ status: previous === 'running' || previous === 'verifying' ? 'failed' : previous, pid: null }), env);
     throw err;

@@ -116,7 +116,20 @@ export interface Task {
   commitSubject?: string;
   /** False until amigo has seen this result in `inbox`. */
   seen: boolean;
+  /** What the task delivers: a build (the default) changes a project; a survey writes `report` and never pushes (see survey.ts). */
+  kind?: TaskKind;
+  /** A survey's report: data/<id>/report.md, the one thing that outlives it. */
+  report?: string;
+  /** The dispatch profile's model and effort (see dispatch.ts); passed to a Claude Code crew member, recorded for other agents. */
+  model?: string;
+  effort?: string;
+  /** The backlog item this task owns (same id), when the home keeps a backlog (see backlog.ts). */
+  backlogItem?: boolean;
+  /** A survey's completion gate (amigo complete): its open Boss calls were inventoried, and these held items carry them. */
+  decisions?: { holds: string[]; at: string };
 }
+
+export type TaskKind = 'build' | 'survey';
 
 const ID_RE = /^[a-z0-9][a-z0-9-]{0,47}$/;
 

@@ -19,6 +19,7 @@ import { resolveId } from './tasks.ts';
 import { codeRoot, configPath, home, stateDir } from './paths.ts';
 import { installSkills, removeSkills } from './skills.ts';
 import { terminalBackend } from './terminal.ts';
+import { planCommand } from './plan-commands.ts';
 
 export const HELP = `amigo: your right hand. Runs the squad.
 
@@ -35,6 +36,8 @@ export const HELP = `amigo: your right hand. Runs the squad.
   amigo note <project> <text>                       add a line to a project's notes (every later squad member gets it)
   amigo spawn (--project <name> | --review <id> | --scratch) [--title <t>] [--agent <name>] [--after <id>] [--issue <n>] [--brief-file <file>] [--dry-run]
                                                     start a squad member; the brief comes from stdin unless --brief-file is given
+            [--survey] [--task <backlog id>] [--model <m>] [--effort low|medium|high|xhigh|max] [--boss-max]
+                                                    a survey writes data/<id>/report.md and never pushes; --task dispatches a backlog item
   amigo status [<id>]                               tasks by station, or one in detail (checks, risk, changed files)
   amigo inbox                                       squad members that finished since you last looked, and background results
   amigo wait [<id>...] [--timeout-min <n>]          wait until a squad member finishes a turn (default 60 min)
@@ -42,6 +45,15 @@ export const HELP = `amigo: your right hand. Runs the squad.
   amigo attach <id>                                 print a squad member's results and follow it while it runs
   amigo close <id> [--commit [-m <message>] [--pr] [--self]] [--force]
                                                     finish a squad member: --commit keeps its work on branch amigo/<id>; --pr needs an approved policy whose pr is not never
+  amigo backlog [<tasks-axi command> [args...]]     the work queue (data/backlog.md) through tasks-axi: list, ready, add, show, update...
+  amigo hold <id> --reason <text> [--until YYYY-MM-DD] [--title <t> [--project <p>]] [--origin <survey id>]
+                                                    hold a backlog item for the Boss's call (--title creates it); --until defers it to a date
+  amigo answer <id> [--release] (<the Boss's words> | --file <file>)
+                                                    record the Boss's exact answer: closes the call, or --release lets the held work go on
+  amigo complete <survey id> (--none | <held item id>...)
+                                                    attest a survey's open Boss calls (or none), so close may tear it down
+  amigo dispatch [<rule number> | default]          the dispatch profiles, or one rule resolved to spawn flags
+  amigo capacity                                    lanes in use, open lanes and host headroom, and project caps
   amigo policy                                      show the self-approval policy and whether it is approved
   amigo approve-policy                              approve the policy as it is now (needs a terminal and your typed yes)
   amigo confirm-gates <project>                     confirm a project's checks, risky paths, live commands and watch items as they are now, so --self and the briefing may rely on them (terminal + typed yes)
@@ -52,7 +64,7 @@ export const HELP = `amigo: your right hand. Runs the squad.
 Data lives in ${'$'}AMIGO_HOME (default ~/.amigo): config/, data/, state/ and projects/.`;
 
 /** Every command the help lists, for the tests that keep the help and the dispatch below in step. */
-export const COMMANDS: readonly string[] = ['install-skill', 'brief', 'add', 'projects', 'sync', 'migrate', 'note', 'spawn', 'status', 'inbox', 'wait', 'send', 'attach', 'close', 'policy', 'approve-policy', 'confirm-gates', 'undo', 'help'];
+export const COMMANDS: readonly string[] = ['install-skill', 'brief', 'add', 'projects', 'sync', 'migrate', 'note', 'spawn', 'status', 'inbox', 'wait', 'send', 'attach', 'close', 'backlog', 'hold', 'answer', 'complete', 'dispatch', 'capacity', 'policy', 'approve-policy', 'confirm-gates', 'undo', 'help'];
 
 function readStdin(what: string): string {
   if (process.stdin.isTTY) throw new Error(`Pass the ${what} on stdin or as a file (see amigo help)`);
@@ -262,6 +274,11 @@ export async function main(argv: string[], rawEnv: NodeJS.ProcessEnv = process.e
         issue: { type: 'string' },
         'brief-file': { type: 'string' },
         'dry-run': { type: 'boolean' },
+        survey: { type: 'boolean' },
+        task: { type: 'string' },
+        model: { type: 'string' },
+        effort: { type: 'string' },
+        'boss-max': { type: 'boolean' },
       });
       const file = values['brief-file'] as string | undefined;
       const issue = values.issue === undefined ? undefined : Number(values.issue);
@@ -278,6 +295,11 @@ export async function main(argv: string[], rawEnv: NodeJS.ProcessEnv = process.e
           agent: values.agent as string | undefined,
           after: values.after === undefined ? undefined : resolveId(values.after as string, env),
           issue,
+          ...(values.survey ? { kind: 'survey' as const } : {}),
+          task: values.task as string | undefined,
+          model: values.model as string | undefined,
+          effort: values.effort as string | undefined,
+          bossMax: Boolean(values['boss-max']),
         },
         { dryRun: Boolean(values['dry-run']) },
         env,
@@ -337,6 +359,14 @@ export async function main(argv: string[], rawEnv: NodeJS.ProcessEnv = process.e
       for (const line of closeMember(resolveId(positionals[0], env), opts, env)) out(line);
       return 0;
     }
+
+    case 'backlog':
+    case 'hold':
+    case 'answer':
+    case 'complete':
+    case 'dispatch':
+    case 'capacity':
+      return await planCommand(cmd, rest, env, out);
 
     case 'policy':
       parse(rest, {});
