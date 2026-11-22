@@ -8,7 +8,7 @@ import { controlTask } from './control.ts';
 import { VALIDATE_MESSAGE } from './delivery.ts';
 import { landTask, mergeTask, prCheck } from './merge.ts';
 import { reportStatus } from './report.ts';
-import { sendMessage } from './steer.ts';
+import { ringWhenReady, sendMessage } from './steer.ts';
 import { localBriefing, runLiveChecks, startBriefing } from './briefing.ts';
 import { adoptLegacyEnv } from './legacy.ts';
 import { migrateHome } from './migrate.ts';
@@ -151,6 +151,11 @@ export async function main(argv: string[], rawEnv: NodeJS.ProcessEnv = process.e
       appendFileSync(join(stateDir(env), 'hook-errors.log'), `${new Date().toISOString()} amigo ${rest[0]}: ${(err as Error).message}\n`);
       return 0;
     }
+  }
+  if (cmd === '_ring') {
+    // amigo send's detached worker: rings a crew member that was still starting once its agent is up.
+    await ringWhenReady(rest[0] ?? '', env);
+    return 0;
   }
   if (cmd === '_netcheck') {
     // The session-start digest's detached network worker.

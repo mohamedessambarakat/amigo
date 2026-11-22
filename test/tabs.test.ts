@@ -2,7 +2,7 @@ import { amigoHooks } from '../src/supervise.ts';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import os from 'node:os';
-import { existsSync, mkdirSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, symlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { describe, it } from 'node:test';
 import { applyHook, memberPrompt, followUpPrompt, herdrPlacement, leadSessionEnv, startMember, tabEnvArgs } from '../src/squad.ts';
@@ -12,7 +12,8 @@ import { memberSettings, guessTranscriptPath, amigoSettings, claudeMemberNotes, 
 import { parseVmStat, ramAllows } from '../src/ram.ts';
 import { stateDir } from '../src/paths.ts';
 import { descendants, run as runCmd } from '../src/proc.ts';
-import { beat, saveTask, type Task } from '../src/tasks.ts';
+import { beat, getTask, mutateTask, saveTask, type Task } from '../src/tasks.ts';
+import { pendingMessages, ringWhenReady, sendMessage } from '../src/steer.ts';
 import { TESTED_VERSIONS, ancestry, backendVersionWarnings, herdrLabel, homeTag, installedVersions, insideAppTerminal, tabScript, tabShellLine, terminalBackend, versionWarnings, type Placement } from '../src/terminal.ts';
 import type { RunResult } from '../src/proc.ts';
 import { cleanup, cli, idFrom, makeHome, makeRepo, releaseHeld, tmpDir, waitFor } from './helpers.ts';
@@ -24,9 +25,16 @@ const scriptName = platform === 'win32' ? 'tab.cmd' : 'tab.sh';
  * A herdr-app (herdr-app and hc) that answers from a list of fake spaces, recording every call. amigo's terminal t1 is in space
  * sp1, and this process shares its console (or tty). Terminals the fake made carry the labels hc label gave them.
  */
-function fakeHerdrApp(spaces: string[], opts: { failCreate?: string; failSend?: boolean; failLabel?: boolean; wrongShape?: string[]; noLabel?: boolean; status?: string; closeLeavesLive?: boolean } = {}) {
+function fakeHerdrApp(spaces: string[], opts: { failCreate?: string; failSend?: boolean; failLabel?: boolean; wrongShape?: string[]; noLabel?: boolean; status?: string; closeLeavesLive?: boolean; startingGets?: number; freshGets?: number; statusMs?: number } = {}) {
   const calls: string[][] = [];
-  const terminals = new Map<string, { state: string; labels: Record<string, string> }>();
+  const terminals = new Map<string, { state: string; labels: Record<string, string>; gets?: number }>();
+  /**
+   * startingGets: the crew member's agent is still starting for that many `hc get`s of its terminal. Like the real hc measured on
+   * herdr-app 0.1.16: no agent status yet, and `hc send` waits for the starting screen to go quiet, past amigo's 3s timeout.
+   */
+  const starting = (t: { gets?: number }) => opts.startingGets !== undefined && (t.gets ?? 0) <= opts.startingGets;
+  // freshGets: after starting, the agent's idle is that many gets old only: it said idle just now (status_ms).
+  const fresh = (t: { gets?: number }) => opts.startingGets !== undefined && (t.gets ?? 0) <= opts.startingGets + (opts.freshGets ?? 0);
   const ok = (body: unknown): RunResult => ({ status: 0, stdout: JSON.stringify(body), stderr: '' });
   const notFound = (t: string): RunResult => ({ status: 3, stdout: JSON.stringify({ error: { kind: 'not_found', message: `no terminal "${t}"` } }), stderr: '' });
   const made = (space: string) => {
@@ -41,7 +49,11 @@ function fakeHerdrApp(spaces: string[], opts: { failCreate?: string; failSend?: 
         case 'get': {
           if (target === 't1') return ok({ address: 't1', state: 'live', pid: 4242, labels: opts.noLabel ? {} : { 'herdr.space': 'sp1', 'herdr.tab': 'tb1' } });
           const t = terminals.get(target);
-          return t ? ok({ address: target, state: t.state, pid: 5, labels: t.labels, status: opts.status ? { app: 'claude-code', state: opts.status } : null }) : notFound(target);
+          if (!t) return notFound(target);
+          t.gets = (t.gets ?? 0) + 1;
+          const status = starting(t) ? null : (opts.status ?? (opts.startingGets !== undefined ? 'idle' : undefined));
+          const statusMs = fresh(t) ? Date.now() : opts.statusMs;
+          return ok({ address: target, state: t.state, pid: 5, labels: t.labels, status: status ? { app: 'claude-code', state: status } : null, ...(statusMs !== undefined ? { status_ms: statusMs } : {}) });
         }
         case 'label': {
           if (opts.failLabel) return { status: 1, stdout: '', stderr: 'label refused' };
@@ -50,9 +62,14 @@ function fakeHerdrApp(spaces: string[], opts: { failCreate?: string; failSend?: 
           for (const kv of args.slice(args.indexOf(target) + 1)) t.labels[kv.slice(0, kv.indexOf('='))] = kv.slice(kv.indexOf('=') + 1);
           return ok({ ok: true });
         }
-        case 'send':
+        case 'send': {
           if (opts.failSend) return notFound(target);
-          return terminals.has(target) ? ok({ started: null, status: null, turn: 0 }) : notFound(target);
+          const t = terminals.get(target);
+          if (!t) return notFound(target);
+          // The tab's own shell line goes in before any get; a ring while the agent starts hangs.
+          if (t.gets && starting(t)) return { status: null, stdout: '', stderr: '', error: new Error('hc send timed out after 3s') };
+          return ok({ started: null, status: null, turn: 0 });
+        }
         case 'kill': {
           const t = terminals.get(target);
           if (t) t.state = 'finished';
@@ -394,14 +411,22 @@ describe('herdr-app backend', () => {
   it("reads a terminal's liveness and busy state, and never touches a terminal without this task's labels", () => {
     const r = open(['sp1'], { label, ownSpace: false, spaces: ['sp1'] }, { status: 'working' });
     const b = backendFor(r);
-    assert.deepEqual(b.state(r.ep), { liveness: 'live', busy: 'busy' });
+    assert.deepEqual(b.state(r.ep), { liveness: 'live', busy: 'busy', takesInput: true });
     for (const [status, busy] of [['idle', 'idle'], ['done', 'idle'], ['blocked', 'unknown']] as const) {
       const s = open(['sp1'], { label, ownSpace: false, spaces: ['sp1'] }, { status });
       assert.equal(backendFor(s).state(s.ep).busy, busy, status);
+      assert.equal(backendFor(s).state(s.ep).takesInput, busy !== 'unknown', `${status}: only an agent that says idle, working or done takes input`);
     }
-    assert.deepEqual(b.state({ ...r.ep, terminal: 't404' }), { liveness: 'absent', busy: 'unknown' });
+    const justIdle = open(['sp1'], { label, ownSpace: false, spaces: ['sp1'] }, { status: 'idle', statusMs: 50_000 });
+    const at = (ms: number) => terminalBackend({ AMIGO_HOME: testHome, AMIGO_TERMINAL: 'herdr-app' }, { runner: justIdle.runner, now: () => ms }).state(justIdle.ep).takesInput;
+    assert.deepEqual([at(51_000), at(53_000)], [false, true], 'an agent that said idle only a moment ago may still be starting');
+    const justWorking = open(['sp1'], { label, ownSpace: false, spaces: ['sp1'] }, { status: 'working', statusMs: 50_000 });
+    assert.equal(terminalBackend({ AMIGO_HOME: testHome, AMIGO_TERMINAL: 'herdr-app' }, { runner: justWorking.runner, now: () => 51_000 }).state(justWorking.ep).takesInput, false, 'nor does one that says working while it starts');
+    const starting = open(['sp1'], { label, ownSpace: false, spaces: ['sp1'] });
+    assert.deepEqual(backendFor(starting).state(starting.ep), { liveness: 'live', busy: 'unknown', takesInput: false }, 'no agent status yet: still starting');
+    assert.deepEqual(b.state({ ...r.ep, terminal: 't404' }), { liveness: 'absent', busy: 'unknown', takesInput: false });
     const other = { ...r.ep, task: '8-other' };
-    assert.deepEqual(b.state(other), { liveness: 'foreign', busy: 'unknown' });
+    assert.deepEqual(b.state(other), { liveness: 'foreign', busy: 'unknown', takesInput: false });
     assert.throws(() => b.send(other, 'hi'), /Cannot send to 8-other: its terminal sp1:t is foreign/);
     assert.throws(() => b.close(other), /does not carry 8-other's labels/);
     const otherHome = terminalBackend({ AMIGO_HOME: join(os.tmpdir(), 'another-home'), AMIGO_TERMINAL: 'herdr-app' }, { runner: r.runner });
@@ -464,6 +489,50 @@ describe('herdr-app backend', () => {
       const tab = start('9-t', null);
       assert.deepEqual(tab.calls, ['hc get', 'hc get', 'herdr-app do tab.new --space sp1', 'hc label', 'hc send']);
       assert.equal(tab.saved.endpoint?.space, 'sp1');
+    } finally {
+      cleanup(dir);
+    }
+  });
+
+  it('rings a crew member that is still starting only once its agent is up, from a queued ring that waits a bounded time', async () => {
+    const { dir, env } = makeHome();
+    try {
+      const home = env.AMIGO_HOME as string;
+      const now = new Date().toISOString();
+      const id = '4-new';
+      mkdirSync(join(home, 'state', 'tasks', id), { recursive: true });
+      mkdirSync(join(home, 'data', id), { recursive: true });
+      writeFileSync(join(home, 'data', id, 'brief.md'), 'Title: g\n');
+      saveTask({ id, title: 'g', project: 'p', agent: 'fake', cwd: dir, repo: null, worktree: null, branch: null, baseSha: null, status: 'queued', createdAt: now, updatedAt: now, runs: 0, followUps: [], seen: true }, env);
+      // Its agent is still starting for two looks at the terminal; until then hc send hangs past amigo's timeout.
+      // Then it says idle, but only just: one more look before it counts as settled.
+      const h = fakeHerdrApp(['sp1'], { startingGets: 2, freshGets: 1 });
+      assert.equal(startMember(getTask(id, env)!, loadConfig(appEnv(env)), appEnv(env), h.runner), true);
+      const crewEnv = { ...appEnv(env), AMIGO_TERMINAL: 'herdr-app' };
+      const queued: string[] = [];
+      const out = sendMessage(id, 'check the footer', { ringLater: (q) => (queued.push(q), true) }, crewEnv, h.runner);
+      assert.match(out.join('\n'), /Not rung yet: 4-new's terminal is still starting\. amigo rings it once its agent is up \(waiting up to 60s/);
+      assert.deepEqual(queued, [id]);
+      const sends = () => h.calls.filter((c) => c[0] === 'hc' && c[1] === 'send' && c.includes('--')).length;
+      assert.equal(sends(), 0, 'nothing is typed into a terminal whose agent is not up');
+
+      let clock = 0;
+      const line = await ringWhenReady(id, crewEnv, { runner: h.runner, now: () => clock, sleep: async (ms) => void (clock += ms) });
+      assert.equal(line, 'amigo: queued doorbell for the inbox: rang the terminal once its agent was up');
+      assert.equal(sends(), 1);
+      assert.equal(clock, 2000, 'it looked again each second until the agent was up and settled');
+      assert.match(readFileSync(join(home, 'state', 'tasks', id, 'output.log'), 'utf8'), /queued doorbell for the inbox: rang the terminal/);
+
+      // An agent that never comes up: the queued ring gives up after its wait, and the message stays in the inbox.
+      const never = fakeHerdrApp(['sp1'], { startingGets: 1000 });
+      mutateTask(id, () => ({ endpoint: { backend: 'herdr-app', task: id, space: 'sp1', tab: 'sp1:tb', terminal: 'sp1:t' } }), env);
+      never.terminals.set('sp1:t', { state: 'live', labels: { 'amigo.task': id, 'amigo.home': homeTag(env), 'herdr.space': 'sp1' } });
+      clock = 0;
+      assert.equal(await ringWhenReady(id, crewEnv, { runner: never.runner, waitMs: 5000, now: () => clock, sleep: async (ms) => void (clock += ms) }), 'amigo: queued doorbell for the inbox: did not ring: no agent was up in its terminal after 5s');
+      assert.equal(pendingMessages(id, env).length, 1);
+      // Acknowledged meanwhile: nothing left to ring for.
+      renameSync(join(home, 'state', 'tasks', id, 'inbox', '001.msg'), join(home, 'state', 'tasks', id, 'inbox', 'handled', '001.msg'));
+      assert.equal(await ringWhenReady(id, crewEnv, { runner: never.runner }), 'amigo: queued doorbell for the inbox: did not ring: nothing waits in the inbox now');
     } finally {
       cleanup(dir);
     }
@@ -554,7 +623,7 @@ describe('test backend', () => {
       const ep = b.open({ task: '1-a', cwd: dir, argv: [process.execPath, '-e', `require('fs').writeFileSync(${JSON.stringify(marker)}, 'x'); setTimeout(() => {}, 60000)`], dir, env: { ...process.env }, placement: { label: 'l', ownSpace: true, spaces: [] } });
       for (let i = 0; i < 100 && !existsSync(marker); i++) await new Promise((r) => setTimeout(r, 50));
       assert.ok(existsSync(marker), 'the command ran');
-      assert.deepEqual(b.state(ep), { liveness: 'live', busy: 'unknown' });
+      assert.deepEqual(b.state(ep), { liveness: 'live', busy: 'unknown', takesInput: true });
       assert.equal(b.state({ ...ep, task: '2-b' }).liveness, 'foreign');
       b.send(ep, 'hello');
       assert.equal(readFileSync(join(env.AMIGO_HOME as string, 'state', 'test-terminals', `${ep.terminal}.input`), 'utf8'), 'hello\n');

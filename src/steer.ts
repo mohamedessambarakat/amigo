@@ -1,10 +1,12 @@
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { spawn } from 'node:child_process';
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { withLock } from './fsx.ts';
-import { lockPath, taskDir } from './paths.ts';
+import { cliPath, home, lockPath, taskDir } from './paths.ts';
+import { run } from './proc.ts';
 import { appendStatus, formatStatusLine } from './status.ts';
-import { requireTask, type Task } from './tasks.ts';
-import { terminalBackend, type Runner } from './terminal.ts';
+import { logFile, requireTask, type Task } from './tasks.ts';
+import { HC_ROUTING_ENV, HERDR_TIMEOUT_MS, terminalBackend, type Runner } from './terminal.ts';
 
 /**
  * The steering inbox: the payload moves to the filesystem, which is reliable, and the
@@ -101,16 +103,30 @@ export function acknowledge(id: string, name: string, env: NodeJS.ProcessEnv = p
   renameSync(from, join(handledDir(id, env), name));
 }
 
+/** How long a queued ring waits for a starting crew member's agent to come up before it gives up (the message stays in the inbox). */
+export const RING_WAIT_MS = 60_000;
+const RING_POLL_MS = 1_000;
 /**
- * Ring the doorbell: type the constant line into the crew member's terminal when it is live. Best effort: the record is the
- * delivery. Returns what happened.
+ * The queued ring's own `hc send` may wait for a person's unsent draft in the crew member's tab (hc waits up to 60s since their
+ * last key): it runs in the background, so it gets that long. Every other hc call keeps the usual short timeout.
  */
-export function ring(t: Task, env: NodeJS.ProcessEnv, runner?: Runner): { rung: boolean; why?: string } {
+const RING_SEND_TIMEOUT_MS = 70_000;
+const patientRunner: Runner = (cmd, args) => run(cmd, args, { timeoutMs: cmd === 'hc' && args[0] === 'send' ? RING_SEND_TIMEOUT_MS : HERDR_TIMEOUT_MS, unset: HC_ROUTING_ENV });
+
+export type RingResult = { rung: true } | { rung: false; why: string; starting?: boolean };
+
+/**
+ * Ring the doorbell: type the constant line into the crew member's terminal when its agent is up. Best effort: the record is the
+ * delivery. A crew member that is still starting (relaunched a moment ago) is not typed into: the line could be lost or left
+ * unsent, and hc send hangs on the starting screen. Then `starting` is set, for a ring later.
+ */
+export function ring(t: Task, env: NodeJS.ProcessEnv, runner?: Runner): RingResult {
   if (!t.endpoint) return { rung: false, why: 'it has no terminal' };
   try {
     const backend = terminalBackend(env, runner ? { runner } : {});
     const state = backend.state(t.endpoint);
     if (state.liveness !== 'live') return { rung: false, why: `its terminal is ${state.liveness}` };
+    if (!state.takesInput) return { rung: false, why: 'its terminal is still starting: no agent is up in it yet', starting: true };
     backend.send(t.endpoint, doorbell(t.id, env));
     return { rung: true };
   } catch (err) {
@@ -118,11 +134,98 @@ export function ring(t: Task, env: NodeJS.ProcessEnv, runner?: Runner): { rung: 
   }
 }
 
+const ringMarker = (id: string, env: NodeJS.ProcessEnv): string => join(taskDir(id, env), 'ring.pending');
+
+/**
+ * Queue a ring for a crew member that is still starting: a detached `amigo _ring <id>` waits for its agent (ringWhenReady). One
+ * at a time per crew member: the doorbell is constant, so one ring covers every message waiting by then. False when one is
+ * already waiting.
+ */
+export function startRingWorker(id: string, env: NodeJS.ProcessEnv): boolean {
+  const marker = ringMarker(id, env);
+  try {
+    writeFileSync(marker, String(Date.now()), { flag: 'wx' });
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
+    // A worker that died without removing its marker leaves an old one: past the longest wait, it no longer counts.
+    if (Date.now() - statSync(marker).mtimeMs < RING_WAIT_MS + RING_SEND_TIMEOUT_MS) return false;
+    writeFileSync(marker, String(Date.now()));
+  }
+  const backend = terminalBackend(env).name;
+  const child = spawn(process.execPath, [cliPath, '_ring', id], { detached: true, stdio: 'ignore', windowsHide: true, env: { ...env, AMIGO_HOME: home(env), AMIGO_TERMINAL: backend } });
+  child.on('error', () => rmSync(marker, { force: true }));
+  child.unref();
+  return true;
+}
+
+/**
+ * `amigo _ring <id>`: wait (up to RING_WAIT_MS) until the crew member's agent takes input, then ring once. It stops early when
+ * the inbox has nothing waiting or the task closed. The outcome goes to the crew member's output.log and is returned.
+ */
+export async function ringWhenReady(
+  id: string,
+  env: NodeJS.ProcessEnv,
+  opts: { runner?: Runner; waitMs?: number; pollMs?: number; now?: () => number; sleep?: (ms: number) => Promise<void> } = {},
+): Promise<string> {
+  const now = opts.now ?? Date.now;
+  const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((done) => setTimeout(done, ms)));
+  const waitMs = opts.waitMs ?? RING_WAIT_MS;
+  const deadline = now() + waitMs;
+  const runner = opts.runner ?? (env.AMIGO_TERMINAL === 'test' ? undefined : patientRunner);
+  let outcome: string;
+  try {
+    for (;;) {
+      const t = requireTask(id, env);
+      if (t.status === 'closed' || t.status === 'closing') {
+        outcome = `did not ring: the task is ${t.status}`;
+        break;
+      }
+      if (!pendingMessages(id, env).length) {
+        outcome = 'did not ring: nothing waits in the inbox now';
+        break;
+      }
+      const r = ring(t, env, runner);
+      if (r.rung) {
+        outcome = 'rang the terminal once its agent was up';
+        break;
+      }
+      // Only a crew member still starting is waited for; every other answer is final.
+      if (!r.starting) {
+        outcome = `did not ring (${r.why})`;
+        break;
+      }
+      if (now() >= deadline) {
+        outcome = `did not ring: no agent was up in its terminal after ${Math.round(waitMs / 1000)}s`;
+        break;
+      }
+      await sleep(opts.pollMs ?? RING_POLL_MS);
+    }
+  } catch (err) {
+    outcome = `did not ring (${(err as Error).message})`;
+  } finally {
+    rmSync(ringMarker(id, env), { force: true });
+  }
+  const line = `amigo: queued doorbell for the inbox: ${outcome}`;
+  try {
+    appendFileSync(logFile(id, env), `${line}\n`);
+  } catch {
+    // the log is a convenience
+  }
+  return line;
+}
+
 /**
  * `amigo send`: write the message durably, close the named open decisions (a `resolved` status line per key, written at
- * answer time), then ring. The record decides success; a failed ring only says so.
+ * answer time), then ring. The record decides success; a failed ring only says so. A crew member that is still starting is
+ * rung by a background worker once its agent is up.
  */
-export function sendMessage(id: string, message: string, opts: { resolveKeys?: string[] } = {}, env: NodeJS.ProcessEnv = process.env, runner?: Runner): string[] {
+export function sendMessage(
+  id: string,
+  message: string,
+  opts: { resolveKeys?: string[]; ringLater?: (id: string, env: NodeJS.ProcessEnv) => boolean } = {},
+  env: NodeJS.ProcessEnv = process.env,
+  runner?: Runner,
+): string[] {
   const t = requireTask(id, env);
   if (t.status === 'closed' || t.status === 'closing') throw new Error(`Task ${id} is ${t.status}: there is nobody to steer`);
   const file = writeInbox(id, message, env);
@@ -133,6 +236,15 @@ export function sendMessage(id: string, message: string, opts: { resolveKeys?: s
   }
   const r = ring(t, env, runner);
   if (r.rung) out.push(`Rang ${id}'s terminal; it acknowledges by moving the message into handled/.`);
-  else out.push(`Did not ring (${r.why}). The message waits in the inbox; if the crew member is not running, relaunch it: amigo control ${id} relaunch --note "check your inbox"`);
+  else if (r.starting) {
+    let queued: boolean | Error;
+    try {
+      queued = (opts.ringLater ?? startRingWorker)(id, env);
+    } catch (err) {
+      queued = err as Error;
+    }
+    if (queued instanceof Error) out.push(`Did not ring (${r.why}), and could not queue a ring for later: ${queued.message}. The message waits in the inbox; send again once the crew member is up.`);
+    else out.push(`Not rung yet: ${id}'s terminal is still starting. ${queued ? 'amigo rings it' : 'A ring already queued rings it'} once its agent is up (waiting up to ${RING_WAIT_MS / 1000}s; the outcome goes to its output.log). The message waits in the inbox meanwhile.`);
+  } else out.push(`Did not ring (${r.why}). The message waits in the inbox; if the crew member is not running, relaunch it: amigo control ${id} relaunch --note "check your inbox"`);
   return out;
 }
