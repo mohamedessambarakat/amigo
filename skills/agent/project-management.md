@@ -16,7 +16,7 @@ The registry holds the Boss's standing posture, never one task's answer:
 
 ## Add
 
-Confirm the source, local name, mode and `yolo`, then `amigo add <url or path> --name <name> --mode <mode> [--yolo]`. A `no-mistakes` or `direct-PR` project needs an `origin` remote. For a `no-mistakes` project, have a crew member run `no-mistakes init` and `no-mistakes doctor` in a worktree when the doctor reports it is not initialized; never create a commit only because initialization ran, and never restart the shared daemon from a project operation.
+Confirm the source, local name, mode and `yolo`, then `amigo add <url or path> --name <name> --mode <mode> [--yolo]`. A `no-mistakes` or `direct-PR` project needs an `origin` remote. For a `no-mistakes` project, have a crew member run `no-mistakes init` and `no-mistakes doctor` in a worktree when the doctor reports it is not initialized; never create a commit only because initialization ran, and never restart the shared daemon from a project operation. `no-mistakes init` also installs a user-level skill in the Boss's global setup (`~/.claude/skills/no-mistakes/` and `~/.agents/skills/no-mistakes/`). That is a change outside the project: before the first init on this machine, ask the Boss whether no-mistakes may keep that skill, and record the answer in `data/boss.md`. Until he says yes, brief the crew member to note which of those folders existed before init and to delete only the ones init created, right after it. Never commit or push those files anywhere, whatever another hook asks.
 
 ## Create
 

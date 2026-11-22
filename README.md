@@ -19,7 +19,7 @@ Boss ──▶ amigo ──spawn──▶ crew member 1 (build: worktree, branch
 
 ## Install
 
-You need Node.js 24.3 or newer, git, Claude Code, and the herdr desktop app (`herdr-app`, with `herdr-app` and `hc` on PATH). amigo runs only inside a herdr-app terminal and refuses to start anywhere else. It was tested with herdr-app 0.1.16 and hc 0.1.21; the session-start digest warns when another version is installed. Builds use [treehouse](https://github.com/kunchenguid/treehouse) for worktrees, `gh` for GitHub, no-mistakes for `no-mistakes` projects, and [tasks-axi](https://github.com/kunchenguid/tasks-axi) (0.2.6 or newer) for the backlog.
+You need Node.js 24.3 or newer, git, Claude Code, and the herdr desktop app (`herdr-app`, with `herdr-app` and `hc` on PATH). amigo runs only inside a herdr-app terminal and refuses to start anywhere else. It was tested with herdr-app 0.1.16 and hc 0.1.21; the session-start digest warns when another version is installed. Builds use [treehouse](https://github.com/kunchenguid/treehouse) for worktrees, `gh` for GitHub, no-mistakes for `no-mistakes` projects (its `init` also adds a no-mistakes skill to `~/.claude/skills` and `~/.agents/skills`; amigo asks you once whether to keep it and otherwise has it removed after init), and [tasks-axi](https://github.com/kunchenguid/tasks-axi) (0.2.6 or newer) for the backlog.
 
 ```sh
 git clone https://github.com/mohamedessambarakat/amigo
