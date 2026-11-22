@@ -234,8 +234,8 @@ const SHARED_INFRA_RULE = `7. Never administer infrastructure that every lane sh
      Before you report blocked about the pipeline, run \`no-mistakes daemon status\` and
      \`no-mistakes axi status\`. If the daemon refuses connections or is missing, report
      blocked with the daemon error and stop even when the local run record still says running or
-     fixing, because that record can be stale after the daemon exits. A run record failed with a
-     daemon error is also a real block.
+     fixing, because that record can be stale after the daemon exits; amigo starts it again and
+     tells you to reattach. A run record failed with a daemon error is also a real block.
      Only after ruling out a refused daemon, if the run is still running or fixing, reattach and keep
      going. A drive-call error, timeout, slow read, or generic unreachability is NOT a daemon error:
      the daemon accepts \`respond\` immediately and runs the round in the background, so a killed or
