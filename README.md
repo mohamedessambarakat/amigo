@@ -213,4 +213,4 @@ Tests run the real CLI against a fake agent (`test/fake-agent.mjs`), a fake GitH
 
 ## License
 
-MIT. Workflow ported from firstmate by Kun Chen (MIT).
+MIT. Workflow ported from firstmate by Kun Chen (MIT); both notices are in [LICENSE](LICENSE).
