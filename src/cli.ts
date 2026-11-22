@@ -26,6 +26,7 @@ import { autoArm, turnEndGuard, type HookPayload } from './supervise.ts';
 import { ackWakes, describeDrain, drainWakes, readQueue } from './wakes.ts';
 import { listChecks, registerCheck, removeCheck, supervisionNeed, watchCycle, watcherHealthy } from './watch.ts';
 import { planCommand } from './plan-commands.ts';
+import { describeTend, ensureDaemon, openPipelineBuilds } from './nmdaemon.ts';
 import { AWAY_MODES, describeAway, enterAway, leaveAway, readAway, type AwayMode } from './away.ts';
 import { updateAmigo } from './update.ts';
 
@@ -68,6 +69,7 @@ export const HELP = `amigo: your right hand. Runs the crew.
   amigo wake (drain | ack --through <seq> --generation <n> | status)
                                                     the durable wake queue: show it, acknowledge what was handled, or count it
   amigo watch                                       run one watcher cycle here and print the wake it closes on (the Stop hook does this itself)
+  amigo daemon                                      read the shared no-mistakes daemon; on Windows start it only when it is positively down
   amigo check (add <name> [--every <s>] [--cwd <dir>] -- <command>... | rm <name> | list)
                                                     commands the watcher runs on an interval; anything they print wakes amigo
   amigo backlog [<tasks-axi command> [args...]]     the work queue (data/backlog.md) through tasks-axi: list, ready, add, show, update...
@@ -88,7 +90,7 @@ export const HELP = `amigo: your right hand. Runs the crew.
 Data lives in ${'$'}AMIGO_HOME (default ~/.amigo): config/, data/, state/ and projects/.`;
 
 /** Every command the help lists, for the tests that keep the help and the dispatch below in step. */
-export const COMMANDS: readonly string[] = ['install-skill', 'brief', 'add', 'projects', 'sync', 'migrate', 'note', 'spawn', 'status', 'inbox', 'wait', 'send', 'control', 'report', 'attach', 'pr-check', 'merge', 'land', 'close', 'digest', 'wake', 'watch', 'check', 'backlog', 'hold', 'answer', 'complete', 'dispatch', 'capacity', 'away', 'update', 'help'];
+export const COMMANDS: readonly string[] = ['install-skill', 'brief', 'add', 'projects', 'sync', 'migrate', 'note', 'spawn', 'status', 'inbox', 'wait', 'send', 'control', 'report', 'attach', 'pr-check', 'merge', 'land', 'close', 'digest', 'wake', 'watch', 'daemon', 'check', 'backlog', 'hold', 'answer', 'complete', 'dispatch', 'capacity', 'away', 'update', 'help'];
 
 function readStdin(what: string): string {
   if (process.stdin.isTTY) throw new Error(`Pass the ${what} on stdin or as a file (see amigo help)`);
@@ -101,7 +103,7 @@ function parse(argv: string[], options: ParseArgsOptionsConfig) {
 
 /** Commands that start, change or close crew members. A crew member must never run them on other crew members. */
 // Commands only amigo may run. inbox, wait and brief count too: a crew member running them marks results seen or starts the briefing's checks. So does the bare start.
-const MANAGING = new Set(['away', 'update', 'spawn', 'send', 'control', 'merge', 'land', 'pr-check', 'close', 'install-skill', 'add', 'sync', 'migrate', 'note', 'inbox', 'wait', 'brief', 'wake', 'watch', 'check', 'digest']);
+const MANAGING = new Set(['away', 'update', 'spawn', 'send', 'control', 'merge', 'land', 'pr-check', 'close', 'install-skill', 'add', 'sync', 'migrate', 'note', 'inbox', 'wait', 'brief', 'wake', 'watch', 'daemon', 'check', 'digest']);
 /** Managing commands a read-only session (another session holds the session lock) may still run; the digest says read-only itself. */
 const READ_ONLY_OK = new Set(['digest', 'install-skill', 'brief']);
 const readOnlyOk = (cmd: string, sub: string | undefined): boolean => READ_ONLY_OK.has(cmd) || (cmd === 'wake' && sub === 'status') || (cmd === 'check' && sub === 'list') || (cmd === 'away' && sub === 'status');
@@ -535,6 +537,13 @@ export async function main(argv: string[], rawEnv: NodeJS.ProcessEnv = process.e
       const r = await watchCycle(env);
       out(r.text);
       return r.kind === 'reason' ? 0 : 1;
+    }
+
+    case 'daemon': {
+      parse(rest, {});
+      const r = ensureDaemon(env);
+      out(describeTend(r, openPipelineBuilds(env)));
+      return r.kind === 'failed' || r.kind === 'keeps-dying' ? 1 : 0;
     }
 
     case 'check': {

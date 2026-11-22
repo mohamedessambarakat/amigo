@@ -71,7 +71,9 @@ export function makeHome(members = 0, member: string[] = [process.execPath, fake
   mkdirSync(join(home, 'config'), { recursive: true });
   // amigo leads only on Claude Code: the fake agent's lead template is a `claude` shim (never run by these tests), its crew members the fake agent.
   writeFileSync(join(home, 'config', 'config.json'), JSON.stringify({ agents: { fake: { amigo: [leadShim(dir), '{prompt}'], member } }, memberMb: members ? 100 : 0, reserveMb: 0 }));
-  const env: NodeJS.ProcessEnv = { ...cleanEnv(), AMIGO_LEAD_SESSION: '1', AMIGO_HOME: home, AMIGO_TERMINAL: 'test', AMIGO_CLAUDE_JSON: join(dir, 'claude.json'), AMIGO_FREE_MB: String(members ? members * 100 + 50 : 4096), ...fakeTreehouseEnv(dir), AMIGO_TASKS_AXI: fakeTasksAxi };
+  const env: NodeJS.ProcessEnv = { ...cleanEnv(), AMIGO_LEAD_SESSION: '1', AMIGO_HOME: home, AMIGO_TERMINAL: 'test', AMIGO_CLAUDE_JSON: join(dir, 'claude.json'), AMIGO_FREE_MB: String(members ? members * 100 + 50 : 4096), ...fakeTreehouseEnv(dir), AMIGO_TASKS_AXI: fakeTasksAxi,
+    // Never the Boss's no-mistakes or its daemon: no binary by default (test/fake-no-mistakes.mjs where a test needs one), and a temporary NM_HOME.
+    AMIGO_NO_MISTAKES: join(dir, 'no-mistakes-not-installed'), NM_HOME: join(dir, 'nm-home') };
   return { dir, env };
 }
 

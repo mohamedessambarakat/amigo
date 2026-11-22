@@ -7,6 +7,7 @@ import { run } from './proc.ts';
 import { processStarted } from './session.ts';
 import { drain, refresh } from './squad.ts';
 import { prWatch } from './merge.ts';
+import { describeTend, openPipelineBuilds, tendDaemon } from './nmdaemon.ts';
 import { declaredWait as statusWait, readStatus, statusFile } from './status.ts';
 import { FINISHED, listTasks, logFile, runnerAlive, type Task } from './tasks.ts';
 import { terminalBackend, type EndpointState } from './terminal.ts';
@@ -20,6 +21,8 @@ import { appendWake, findDelivery, markAnnounced, readQueue, recordDelivery, tak
  *   stale: <id> (...)                  a crew member stopped responding: its session died mid-turn, or it made no progress
  *                                      past the threshold with no declared wait
  *   check: <name>: <output>            a registered check printed something (always actionable)
+ *   check: no-mistakes daemon ...      the shared daemon was positively down while builds use it; the watcher started it
+ *                                      again (nmdaemon.ts), could not, or it keeps dying
  *   heartbeat ...                      backstop: results stay unread, with a backing-off cadence
  *   recovery: ...                      wakes were queued while nobody was watching
  *
@@ -54,6 +57,8 @@ export interface WatchTunables {
   checkTimeout: number;
   /** Seconds between live reads of a build's open PR (CI and merge state). */
   prPoll: number;
+  /** Seconds between reads of the no-mistakes daemon while open builds use it. */
+  nmDaemon: number;
   /** Seconds to linger after a signal, so crew members finishing together make one wake. */
   signalGrace: number;
   /** The longest one watcher cycle runs before it closes with a heartbeat (below the Stop hook's 8 h limit). */
@@ -74,6 +79,7 @@ export function tunables(env: NodeJS.ProcessEnv): WatchTunables {
     checkInterval: num(env.AMIGO_CHECK_INTERVAL_SECS, 300),
     checkTimeout: num(env.AMIGO_CHECK_TIMEOUT_SECS, 30, 1),
     prPoll: num(env.AMIGO_PR_POLL_SECS, 120),
+    nmDaemon: num(env.AMIGO_NM_DAEMON_SECS, 30),
     signalGrace: num(env.AMIGO_SIGNAL_GRACE_SECS, 5),
     maxCycle: num(env.AMIGO_WATCH_MAX_SECS, 6 * 3600, 1),
   };
@@ -109,11 +115,13 @@ interface Memory {
   prs: Record<string, { sig: string; at: number }>;
   /** task id -> the `<status>|<updatedAt>` of a finished turn whose session was already reported gone. */
   gone: Record<string, string>;
+  /** When the no-mistakes daemon was last read (its own state is in nmdaemon.ts). */
+  daemon: { at: number };
 }
 
 const loadMemory = (env: NodeJS.ProcessEnv): Memory => {
   const m = readJson<Partial<Memory>>(memoryPath(env), {});
-  return { surfaced: m.surfaced ?? {}, stale: m.stale ?? {}, heartbeat: m.heartbeat ?? { at: 0, interval: 0, unread: '' }, checks: m.checks ?? {}, prs: m.prs ?? {}, gone: m.gone ?? {} };
+  return { surfaced: m.surfaced ?? {}, stale: m.stale ?? {}, heartbeat: m.heartbeat ?? { at: 0, interval: 0, unread: '' }, checks: m.checks ?? {}, prs: m.prs ?? {}, gone: m.gone ?? {}, daemon: { at: m.daemon?.at ?? 0 } };
 };
 
 // ---------- registered checks ----------
@@ -379,6 +387,20 @@ export function scan(env: NodeJS.ProcessEnv, now = Date.now()): Wake[] {
     if (read.sig !== seen?.sig && !read.sig.startsWith('pending')) wakes.push({ kind: 'check', key: `pr:${t.id}`, reason: `check: ${t.id} PR ${read.line}` });
   }
   for (const id of Object.keys(mem.prs)) if (!tasks.some((t) => t.id === id)) delete mem.prs[id];
+
+  // The no-mistakes daemon: while open builds use it, one step per read moves a positively down daemon towards running (never a
+  // live, starting or unreadable one, see nmdaemon.ts). amigo wakes once it answers, to steer those builds to reattach, and once
+  // per episode when it cannot be started or keeps dying.
+  const builds = openPipelineBuilds(env);
+  if (builds.length && (now - mem.daemon.at) / 1000 >= tun.nmDaemon) {
+    mem.daemon.at = now;
+    try {
+      const r = tendDaemon(env, now, { waitMs: 500 });
+      if (r.kind === 'restarted' || r.kind === 'failed' || r.kind === 'keeps-dying') wakes.push({ kind: 'check', key: 'daemon:no-mistakes', reason: `check: ${describeTend(r, builds)}` });
+    } catch {
+      // a held lock (amigo daemon is tending it right now) or an unreadable state file: the next read tries again
+    }
+  }
 
   // Heartbeat: a backstop for results that were surfaced but stay unread, backing off while nothing changes.
   const unread = tasks.filter((t) => FINISHED.includes(t.status) && !t.seen).map((t) => t.id).sort().join(',');

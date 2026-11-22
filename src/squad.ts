@@ -55,6 +55,7 @@ import { leaseWorktree } from './worktree.ts';
 import { addItem, backlogActive, findItem, listItems, notDispatchable, removeItem, replayPendingCloses, startItem } from './backlog.ts';
 import { checkCapacityFiles, laneAdmission, projectCapacityProblem, readVitals, type Vitals } from './capacity.ts';
 import { checkDispatch, claudeProfileArgs } from './dispatch.ts';
+import { tendDaemon } from './nmdaemon.ts';
 import { kindOf, reportPath, surveyContract, surveyGitEnv, TASK_KINDS } from './survey.ts';
 import type { TaskKind } from './tasks.ts';
 
@@ -284,6 +285,15 @@ export function spawnMember(input: SpawnInput, opts: { dryRun?: boolean }, env: 
     `command: ${describeLaunch(launch)}`,
   ].join('\n');
   if (opts.dryRun) return { task, text: `DRY RUN, nothing was started.\n${text}` };
+  // A build's pipeline needs the shared daemon: take the first look now, so a down one is confirmed and started (detached, by
+  // the watcher's next reads) before the crew member's own no-mistakes call would start it inside its tab.
+  if (task.mode === 'no-mistakes') {
+    try {
+      tendDaemon(env, Date.now(), { waitMs: 500 });
+    } catch {
+      // the watcher keeps looking
+    }
+  }
 
   if (task.scratch && !task.reviewOf) mkdirSync(task.cwd, { recursive: true });
   mkdirSync(taskDataDir(id, env), { recursive: true });
