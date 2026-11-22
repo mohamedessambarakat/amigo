@@ -792,7 +792,7 @@ export function amigoPrompt(agent: string, env: NodeJS.ProcessEnv = process.env,
     readPrompt('amigo.md'),
     `## Your setup\n\n- You run as the "${agent}" agent. Pass \`--agent ${agent}\` to every spawn so squad members use the same agent${others.length ? `, unless a task is better suited to another configured agent: ${others.join(', ')}` : ''}.\n- Write briefs and messages to new files in ${drafts} (create the folder if needed) and pass them with \`--brief-file\` or \`--file\`.`,
     ...(claude ? [CLAUDE_AMIGO] : []),
-    `## Briefing\n\nOpen your first reply with a short report from this briefing: what finished, what is waiting on the user, anything you noticed, and what you would do next as options, your pick first. Then wait for the user.${opts.live ? ' Live checks are running in the background: run \`amigo wait\` in the background for their result, like any other, and mention it when it arrives.' : ''}\n\n${briefing.trim() || '(no briefing)'}`,
+    `## Briefing\n\nOpen your first reply with a short report from this briefing: what finished, what is waiting on the user, anything you noticed, and what you would do next as options, your pick first. Then wait for the user.${opts.live ? ' Live checks are running in the background: run `amigo wait` in the background only if their result has not already arrived in `amigo inbox` (or squad members are still running or queued), and mention it when it arrives.' : ''}\n\n${briefing.trim() || '(no briefing)'}`,
   ].join('\n\n') + '\n';
 }
 
