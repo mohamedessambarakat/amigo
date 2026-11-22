@@ -112,6 +112,26 @@ export function worktreeGit(repo: string, worktree: string, args: string[], opts
 }
 
 /** A build's branch: the project's registered prefix (amigo/ unless it names another) and the task id. */
+/**
+ * File names that usually hold secrets: .env files (not .env.example and the like), private keys, certificates and credential
+ * files. amigo never merges or lands work that adds or changes one (see secretRefusal).
+ */
+export function looksSecret(path: string): boolean {
+  const name = path.replace(/\\/g, '/').split('/').pop()!.toLowerCase();
+  if (/^\.env(\..+)?$/.test(name)) return !/\.(example|sample|template|dist)$/.test(name);
+  return /\.(pem|key|p12|pfx|keystore|jks)$/.test(name) || /^id_(rsa|dsa|ecdsa|ed25519)$/.test(name) || /^(credentials|secrets?)\.(json|ya?ml|toml)$/.test(name) || name === '.netrc';
+}
+
+/**
+ * The refusal for work that adds or changes secret-looking files, or null when none does. Not a waivable check: --boss does
+ * not bypass it.
+ */
+export function secretRefusal(what: string, paths: string[]): string | null {
+  const secrets = [...new Set(paths.filter(looksSecret))];
+  if (!secrets.length) return null;
+  return `refusing to land ${what}: it adds or changes files that may hold secrets: ${secrets.join(', ')}. Have the crew member remove them from the branch (and rotate the secret if it was real), then merge again. This check is not waivable, not even with --boss; the Boss can still merge by hand on GitHub. Nothing was merged.`;
+}
+
 export const branchName = (id: string, prefix = 'amigo/'): string => `${prefix}${id}`;
 
 export function isGitRepo(path: string): boolean {

@@ -9,6 +9,7 @@ import { HEARTBEAT_MS, memberNumber, beat, newId, nextMemberNumber, parseStatus,
 import { installSkills, removeSkills, USER_SKILLS } from '../src/skills.ts';
 import { TEMPLATES } from '../src/templates.ts';
 import { codeRoot } from '../src/paths.ts';
+import { looksSecret } from '../src/git.ts';
 import { cleanup, makeHome, tmpDir } from './helpers.ts';
 
 const tmp = tmpDir();
@@ -300,5 +301,12 @@ describe('amigo instructions', () => {
     for (const m of prompt.matchAll(/^- `([a-z-]+\.md)` - /gm)) named.add(m[1] as string);
     assert.ok(named.size >= 10, 'the trigger index lists the skills');
     for (const f of named) assert.ok(existsSync(join(codeRoot, 'skills', 'agent', f)), `skills/agent/${f} exists`);
+  });
+});
+
+describe('secret files', () => {
+  it('flags secret-looking names but not examples', () => {
+    for (const p of ['.env', 'app/.env.local', 'keys\\server.pem', 'id_ed25519', 'config/credentials.json', 'secrets.yaml', '.netrc']) assert.ok(looksSecret(p), p);
+    for (const p of ['.env.example', 'src/env.ts', 'README.md', 'keyboard.ts', 'docs/secrets.md']) assert.ok(!looksSecret(p), p);
   });
 });

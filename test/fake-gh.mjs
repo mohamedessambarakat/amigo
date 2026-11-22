@@ -65,6 +65,15 @@ if (args[0] === 'api' && args.some((a) => /\/check-runs$/.test(a))) {
   process.stdout.write(process.env.FAKE_GH_CHECK_RUNS ?? '');
   process.exit(0);
 }
+if (args[0] === 'api' && args.some((a) => /\/pulls\/\d+\/files(\?|$)/.test(a))) {
+  // FAKE_GH_PR_FILES: JSON lines {filename, status}, as amigo's --jq filter prints them; "fail" fails the read. Unset: no files.
+  if (process.env.FAKE_GH_PR_FILES === 'fail') {
+    console.error('gh: Server Error (HTTP 502)');
+    process.exit(1);
+  }
+  process.stdout.write(process.env.FAKE_GH_PR_FILES ?? '');
+  process.exit(0);
+}
 if (args[0] === 'api' && /\/rules\/branches\//.test(args.at(-1))) {
   // FAKE_GH_RULES_ERR: the rules read fails with this message (a 404, or GitHub's plan-gated 403).
   if (process.env.FAKE_GH_RULES_ERR) {

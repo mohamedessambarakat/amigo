@@ -3,7 +3,7 @@ import { existsSync } from 'node:fs';
 import type { Project } from './config.ts';
 import { classifyDone } from './delivery.ts';
 import { withLock } from './fsx.ts';
-import { assertWorktreeIntact, branchSha, worktreeRun } from './git.ts';
+import { assertWorktreeIntact, branchSha, secretRefusal, worktreeRun } from './git.ts';
 import { lockPath } from './paths.ts';
 import { run } from './proc.ts';
 import { defaultBranch } from './projects.ts';
@@ -162,6 +162,12 @@ export function mergeLocal(t: Task, env: NodeJS.ProcessEnv): string {
     if (git(clone, ['merge-base', '--is-ancestor', before, head]).status !== 0) {
       throw new Error(`REFUSED: ${branch} is not a fast-forward of ${def} (it has diverged). Have the crew member rebase ${branch} onto ${def} and report done again.`);
     }
+    // Not a waivable check: commits that add or change a secret-looking file never land, not even on the Boss's word. Every
+    // commit is read (merges against each parent), so a secret added and later deleted still refuses: the history lands too.
+    const diff = git(clone, ['log', '-m', '--no-renames', '--diff-filter=d', '--name-only', '--format=', '-z', `${before}..${head}`]);
+    if (diff.status !== 0) throw new Error(`Could not read the files ${branch} changes in ${clone}: ${firstLine(diff.stderr || diff.stdout)}. Nothing was merged.`);
+    const secrets = secretRefusal(branch, diff.stdout.split(/[\0\r\n]+/).filter(Boolean));
+    if (secrets) throw new Error(secrets);
     // The two-tree checkout stages the fast-forward and refuses obstructing files; the transaction moves the ref only if the branch still holds the head.
     const staged = git(clone, ['read-tree', '-m', '-u', before, head]);
     if (staged.status !== 0) throw new Error(`Could not stage the fast-forward in ${clone}: ${firstLine(staged.stderr || staged.stdout)}`);

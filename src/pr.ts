@@ -235,6 +235,34 @@ export function verifyMergeable(view: PrView, required: RequiredChecks, opts: { 
   return { refusals, unknownOnly, head: view.headRefOid, red, pending: pendingChecks(view.statusCheckRollup), unreported };
 }
 
+/** GitHub's cap on a pull request's file list: a list this long may be cut short, so it is not a complete read. */
+const PR_FILES_CAP = 3000;
+
+/**
+ * The paths a PR adds or changes (removed files left out; a rename counts by its new path), read live with pagination. Throws
+ * when the list cannot be read in full: a merge never proceeds on a guess.
+ */
+export function prChangedFiles(ref: PrRef, cwd: string, env: NodeJS.ProcessEnv): string[] {
+  const fail = (why: string) => new Error(`could not read the changed files of ${ref.url}: ${why}`);
+  const r = gh(['api', '--paginate', `repos/${ref.owner}/${ref.repo}/pulls/${ref.number}/files?per_page=100`, '--jq', '.[] | {filename, status}'], cwd, env);
+  if (!r.ok) throw fail(r.err || 'gh failed');
+  const paths: string[] = [];
+  let count = 0;
+  for (const line of r.out.split(/\r?\n/).filter((l) => l.trim())) {
+    let f: { filename?: unknown; status?: unknown };
+    try {
+      f = JSON.parse(line) as typeof f;
+    } catch {
+      throw fail('unexpected answer');
+    }
+    if (typeof f.filename !== 'string' || !f.filename || typeof f.status !== 'string') throw fail('unexpected answer');
+    count++;
+    if (f.status !== 'removed') paths.push(f.filename);
+  }
+  if (count >= PR_FILES_CAP) throw fail(`GitHub lists at most ${PR_FILES_CAP} files, so the list may be incomplete`);
+  return paths;
+}
+
 /** Merge with the verified head pinned: a push that lands between the read and the merge fails the merge. */
 export function mergePinned(url: string, head: string, method: 'squash' | 'merge' | 'rebase', cwd: string, env: NodeJS.ProcessEnv): { ok: boolean; said: string } {
   const r = gh(['pr', 'merge', url, `--${method}`, '--match-head-commit', head], cwd, env);
