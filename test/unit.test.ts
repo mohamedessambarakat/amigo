@@ -220,7 +220,7 @@ describe('secret files', () => {
       const repo = makeRepo(join(dir, 'r'));
       git(repo, 'checkout', '-q', '-b', 'amigo/t-1');
       writeFileSync(join(repo, '.env'), 'TOKEN=fake');
-      assert.throws(() => commitAll(repo, repo, 'amigo/t-1', 'm'), /may hold secrets: \.env/);
+      assert.throws(() => commitAll(repo, repo, 'amigo/t-1', 'chore: m'), /may hold secrets: \.env/);
       assert.equal(git(repo, 'status', '--porcelain').trim(), '?? .env');
     } finally {
       cleanup(dir);

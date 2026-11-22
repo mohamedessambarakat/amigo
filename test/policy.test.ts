@@ -356,7 +356,7 @@ describe('approval policy', () => {
       assert.equal(assessChanges(snap.changes).level, 'needs-you');
       assert.match(assessChanges(snap.changes).reasons.join(' '), /touches \.husky\/pre-commit \(git hooks or tooling\)/);
 
-      assert.ok(commitAll(repo, repo, 'amigo/t-1', 'x', snap.tree, env));
+      assert.ok(commitAll(repo, repo, 'amigo/t-1', 'chore: x', snap.tree, env));
       assert.equal(existsSync(join(dir, 'commit-hook-ran')), false, 'the pre-commit hook did not run');
       pushBranch(repo, 'amigo/t-1', env);
       assert.equal(existsSync(join(dir, 'push-hook-ran')), false, 'the pre-push hook did not run');
@@ -381,11 +381,11 @@ describe('approval policy', () => {
       const checked = snapshot(repo, repo, base);
       git(repo, 'add', '.');
       git(repo, 'commit', '-q', '-m', 'the checked work');
-      assert.equal(commitAll(repo, repo, 'main', 'x', checked.tree), null, 'HEAD is the checked work: nothing to commit, nothing wrong');
+      assert.equal(commitAll(repo, repo, 'main', 'chore: x', checked.tree), null, 'HEAD is the checked work: nothing to commit, nothing wrong');
 
       writeFileSync(join(repo, 'notes.md'), 'something else\n');
       git(repo, 'commit', '-q', '-a', '-m', 'unchecked work');
-      assert.throws(() => commitAll(repo, repo, 'main', 'x', checked.tree), /changed after it was checked \(the branch does not hold the checked work\)/);
+      assert.throws(() => commitAll(repo, repo, 'main', 'chore: x', checked.tree), /changed after it was checked \(the branch does not hold the checked work\)/);
     } finally {
       cleanup(dir);
     }
@@ -442,10 +442,10 @@ describe('approval policy', () => {
       writeFileSync(join(repo, 'notes.md'), 'checked\n');
       const checked = snapshot(repo, repo, base);
       writeFileSync(join(repo, 'notes.md'), 'changed after the check\n');
-      assert.throws(() => commitAll(repo, repo, 'main', 'x', checked.tree), /changed after it was checked \(before the commit\)/);
+      assert.throws(() => commitAll(repo, repo, 'main', 'chore: x', checked.tree), /changed after it was checked \(before the commit\)/);
       assert.equal(git(repo, 'rev-parse', 'HEAD').trim(), base, 'nothing was committed');
       writeFileSync(join(repo, 'notes.md'), 'checked\n');
-      assert.ok(commitAll(repo, repo, 'main', 'x', checked.tree), 'exactly the checked work is committed');
+      assert.ok(commitAll(repo, repo, 'main', 'chore: x', checked.tree), 'exactly the checked work is committed');
 
       const globs = ['*.md', 'docs', 'test'];
       const only = (...paths: string[]) => docsOrTestsOnly(paths.map((path) => ({ path, added: 1, removed: 0, deleted: false })), globs);

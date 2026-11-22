@@ -111,6 +111,8 @@ export interface Task {
   exitCode?: number | null;
   /** The agent's STATUS line (or its last output line) from the latest run. */
   summary?: string;
+  /** The commit subject the squad member proposed in its latest done report (a `COMMIT:` line for Claude Code, or `commit-subject.txt` for other agents; cleared by a later done report without one). `close --commit` checks and uses it. */
+  commitSubject?: string;
   /** False until amigo has seen this result in `inbox`. */
   seen: boolean;
 }
@@ -169,6 +171,8 @@ export const taskFile = (id: string, env: NodeJS.ProcessEnv = process.env): stri
 export const briefFile = (id: string, env: NodeJS.ProcessEnv = process.env): string => join(taskDir(id, env), 'brief.md');
 export const promptFile = (id: string, env: NodeJS.ProcessEnv = process.env): string => join(taskDir(id, env), 'prompt.md');
 export const logFile = (id: string, env: NodeJS.ProcessEnv = process.env): string => join(taskDir(id, env), 'output.log');
+/** Where a squad member without hooks writes its proposed commit subject; read and removed when its run ends. */
+export const commitSubjectFile = (id: string, env: NodeJS.ProcessEnv = process.env): string => join(taskDir(id, env), 'commit-subject.txt');
 const heartbeatFile = (id: string, env: NodeJS.ProcessEnv = process.env): string => join(taskDir(id, env), 'heartbeat');
 
 /** Create the task folder, failing if the id is already taken (mkdir is atomic). */

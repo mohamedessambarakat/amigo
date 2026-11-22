@@ -172,7 +172,7 @@ describe('issues and pull requests', () => {
       const a = create.args;
       assert.deepEqual(a.slice(0, 3), ['pr', 'create', '--draft']);
       assert.equal(a[a.indexOf('--head') + 1], `amigo/${id}`);
-      assert.equal(a[a.indexOf('--title') + 1], 'Fix the footer link');
+      assert.equal(a[a.indexOf('--title') + 1], 'feat: write member output', 'the PR is titled after the checked commit subject');
       assert.ok(!a.includes('--base'), 'gh uses the default branch of the repo');
       assert.match(create.body ?? '', /^wrote member-output\.txt\n\nCloses #12\n$/);
       assert.equal(getTask(id, env)?.pr, 'https://github.com/example/repo/pull/7');
@@ -351,9 +351,9 @@ describe('pull requests of dependent tasks and odd titles', () => {
       const bare = addOrigin(dir, repo);
       allowPrs(env);
       cli(env, ['add', repo]);
-      const id = idFrom(cli(env, ['spawn', '--project', 'repo'], 'Title: Fix the "quoted" link').out);
+      const id = idFrom(cli(env, ['spawn', '--project', 'repo'], 'Title: Fix the link').out);
       await waitFor(id, env, ['done']);
-      const r = cli(env, ['close', id, '--commit', '--pr']);
+      const r = cli(env, ['close', id, '--commit', '--pr', '-m', 'fix: the "quoted" link']);
       assert.equal(r.code, 1);
       assert.match(r.err, /cannot be passed to the gh \.cmd shim/);
       assert.equal(git(bare, 'branch', '--list').trim(), 'main', 'nothing was pushed');
