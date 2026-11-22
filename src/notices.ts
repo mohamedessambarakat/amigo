@@ -2,7 +2,7 @@ import { readJson, withLock, writeJsonAtomic } from './fsx.ts';
 import { lockPath, noticesPath } from './paths.ts';
 
 /**
- * A result that is not a squad member's task, such as the briefing's live checks. It waits in the inbox until it is seen once.
+ * A result that is not a crew member's task, such as the briefing's live checks. It waits in the inbox until it is seen once.
  * `running` ones are still being produced: the producer beats (touchNotice) while it works, and `wait` keeps waiting for a
  * notice that beat recently. A producer silent for STALE_MS is taken as dead and reported so; if it was only slow and
  * finishes later, its real result is delivered then (finishNotice).

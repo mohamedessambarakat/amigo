@@ -73,7 +73,7 @@ describe('dependent tasks', () => {
 });
 
 describe('project notes', () => {
-  it('note adds a line and the next squad member prompt includes it', async () => {
+  it('note adds a line and the next crew member prompt includes it', async () => {
     const { dir, env } = makeHome();
     try {
       cli(env, ['add', makeRepo(join(dir, 'p')), '--notes', 'Never touch .env.']);
@@ -97,7 +97,7 @@ describe('project notes', () => {
 describe('issues and pull requests', () => {
   const issue = { title: 'Fix the footer link', body: 'The footer link 404s on mobile.', url: 'https://github.com/example/repo/issues/12' };
 
-  it('spawn --issue puts the issue title, body and link in the squad member brief', async () => {
+  it('spawn --issue puts the issue title, body and link in the crew member brief', async () => {
     const { dir, env: base } = makeHome();
     const gh = fakeGhEnv(dir, issue);
     const env = { ...base, ...gh.env };
@@ -165,7 +165,7 @@ describe('status by station', () => {
       }
       const text = statusText(undefined, env);
       const section = (name: string, next: string) => new RegExp(`${name} \\((\\d+)\\)\\n([\\s\\S]*?)(?=\\n${next} \\(|$)`).exec(text);
-      assert.match(text, /^Squad members: 3 running, 1 queued\./);
+      assert.match(text, /^Crew members: 3 running, 1 queued\./);
       assert.equal(section('queued', 'building')?.[1], '1');
       assert.match(section('queued', 'building')?.[2] ?? '', /4-wait .*waits for 2-build/);
       assert.equal(section('building', 'verifying')?.[1], '1');

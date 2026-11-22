@@ -20,9 +20,9 @@ export const samePath = (a: string, b: string): boolean => {
 };
 
 /**
- * A squad member controls its worktree, including the `.git` file in it. Pointing that file at a git dir the squad member made lets that
+ * A crew member controls its worktree, including the `.git` file in it. Pointing that file at a git dir the crew member made lets that
  * dir's config (core.fsmonitor, filter.*.clean, diff.external ...) run a program the moment amigo runs git there,
- * outside the squad member's sandbox. So before amigo runs git in a worktree, `.git` must be a regular file naming a git dir
+ * outside the crew member's sandbox. So before amigo runs git in a worktree, `.git` must be a regular file naming a git dir
  * that `git worktree add` made under the repo's own .git/worktrees, whose commondir leads back to the repo and which points
  * back at this worktree. Throws otherwise. A "worktree" that is the repo itself (a project without worktrees) is trusted.
  */
@@ -56,12 +56,12 @@ export function assertWorktreeIntact(repo: string, worktree: string, adminDir?: 
   if (back === null || !samePath(back, dotGit)) throw bad('its git dir belongs to another worktree');
 }
 
-/** Options for every git call amigo makes inside a squad member's worktree: the file system monitor (a program named in config) stays off. */
+/** Options for every git call amigo makes inside a crew member's worktree: the file system monitor (a program named in config) stays off. */
 const WORKTREE_GIT = ['-c', 'core.fsmonitor=false'];
 
 /**
  * The git dir `git worktree add` made for a worktree, found from the repo's own records (each <common>/worktrees/<name>/gitdir
- * names the .git of its worktree). Never reads <worktree>/.git, which the squad member controls.
+ * names the .git of its worktree). Never reads <worktree>/.git, which the crew member controls.
  */
 export function findAdminDir(repo: string, worktree: string): string {
   const common = resolve(repo, runOrThrow('git', ['-C', repo, 'rev-parse', '--git-common-dir']).trim());
@@ -83,7 +83,7 @@ export function findAdminDir(repo: string, worktree: string): string {
 }
 
 /**
- * The arguments for one git call in a squad member's worktree. The git dir is named outright (amigo's own record, else the
+ * The arguments for one git call in a crew member's worktree. The git dir is named outright (amigo's own record, else the
  * repo's), so git never reads <worktree>/.git: swapping that file between the guard and git cannot plant a config or filter.
  * A "worktree" that is the repo itself is trusted and found the usual way.
  */
@@ -97,7 +97,7 @@ export interface WorktreeOptions extends RunOptions {
   gitDir?: string;
 }
 
-/** Run git in a squad member's worktree, after assertWorktreeIntact (a tamper alarm). The one door for every git call there. */
+/** Run git in a crew member's worktree, after assertWorktreeIntact (a tamper alarm). The one door for every git call there. */
 export function worktreeRun(repo: string, worktree: string, args: string[], opts: WorktreeOptions = {}): RunResult {
   const { gitDir, ...runOpts } = opts;
   assertWorktreeIntact(repo, worktree, gitDir);

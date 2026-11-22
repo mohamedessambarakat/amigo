@@ -82,7 +82,7 @@ describe('end to end with a fake agent', () => {
     }
   });
 
-  it('queues while memory is short and starts the next squad member when one finishes', async () => {
+  it('queues while memory is short and starts the next crew member when one finishes', async () => {
     const { dir, env } = makeHome(1);
     try {
       for (const name of ['one', 'two']) cli(env, ['add', makeRepo(join(dir, name))]);
@@ -143,7 +143,7 @@ describe('end to end with a fake agent', () => {
     }
   });
 
-  it('squad members cannot manage tasks; amigo brief carries the agent and the briefing', async () => {
+  it('crew members cannot manage tasks; amigo brief carries the agent and the briefing', async () => {
     const { dir, env } = makeHome();
     try {
       cli(env, ['add', makeRepo(join(dir, 'p'))]);
@@ -175,7 +175,7 @@ describe('end to end with a fake agent', () => {
     }
   });
 
-  it('runs from inside a squad member: AMIGO_* in the parent environment do not leak into a test', async () => {
+  it('runs from inside a crew member: AMIGO_* in the parent environment do not leak into a test', async () => {
     const outside = tmpDir();
     const member = { AMIGO_TASK: 'x-1', AMIGO_HOME: join(outside, 'member-home'), AMIGO_TERMINAL: 'herdr-app', AMIGO_FREE_MB: '1' };
     const saved = Object.fromEntries(Object.keys(member).map((k) => [k, process.env[k]]));
@@ -192,7 +192,7 @@ describe('end to end with a fake agent', () => {
       const r = cli(env, ['spawn', '--project', 'p'], 'Title: inside');
       assert.equal(r.code, 0, r.err);
       await waitFor(idFrom(r.out), env, ['done']);
-      assert.ok(!existsSync(member.AMIGO_HOME), "the squad member's home is never touched");
+      assert.ok(!existsSync(member.AMIGO_HOME), "the crew member's home is never touched");
     } finally {
       cleanup(dir);
       cleanup(outside);
@@ -247,7 +247,7 @@ describe('end to end with a fake agent', () => {
     }
   });
 
-  it("starts a Claude squad member as its own session and keeps a failed launch's stderr in output.log", async () => {
+  it("starts a Claude crew member as its own session and keeps a failed launch's stderr in output.log", async () => {
     const { dir, env } = makeHome();
     const fakeClaude = join(codeRoot, 'test', 'fake-claude.mjs');
     const win = process.platform === 'win32';
@@ -263,7 +263,7 @@ describe('end to end with a fake agent', () => {
       assert.match(t.summary ?? '', /^The session ended in the middle of a turn \(exit 1\): No conversation found with session ID: [0-9a-f-]{36}$/);
       const log = readFileSync(join(home(env), 'state', 'tasks', id, 'output.log'), 'utf8');
       assert.match(log, /No conversation found with session ID/);
-      assert.doesNotMatch(log, /inherited/, 'the squad member does not inherit amigo session');
+      assert.doesNotMatch(log, /inherited/, 'the crew member does not inherit amigo session');
     } finally {
       cleanup(dir);
     }

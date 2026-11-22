@@ -6,7 +6,7 @@ const LEGACY_HOME = `${LEGACY_NAME.toUpperCase()}_HOME`;
 
 /**
  * A session started by the former name (still open while amigo is already installed) carries its OCTOMAXXING_TASK and
- * OCTOMAXXING_HOME. It is a squad member all the same: amigo's member guard and Stop hook must see it as one, working in the
+ * OCTOMAXXING_HOME. It is a crew member all the same: amigo's member guard and Stop hook must see it as one, working in the
  * home it was started with.
  */
 export function adoptLegacyEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {

@@ -5,9 +5,9 @@ import { clonePath, configDir, configPath, dataDir, home, OLD_LAYOUT_FILES, proj
 
 /** How to start one agent CLI. Each is an argv array; `{prompt}` is replaced by the prompt text. */
 export interface AgentTemplate {
-  /** Interactive session that stays open for the user (amigo). Optional: some agents can only be squad members. */
+  /** Interactive session that stays open for the user (amigo). Optional: some agents can only be crew members. */
   amigo?: string[];
-  /** A squad member. Claude Code runs it as an interactive session (any -p is dropped); other agents run one task and exit. */
+  /** A crew member. Claude Code runs it as an interactive session (any -p is dropped); other agents run one task and exit. */
   member: string[];
 }
 
@@ -15,9 +15,9 @@ export interface Config {
   agents: Record<string, AgentTemplate>;
   /** Agent used when --agent is not given. Defaults to the first one in `agents`. */
   defaultAgent?: string;
-  /** Memory one squad member needs, in MB. A squad member starts only while free memory minus this stays at or above reserveMb. */
+  /** Memory one crew member needs, in MB. A crew member starts only while free memory minus this stays at or above reserveMb. */
   memberMb: number;
-  /** Free memory, in MB, that must remain after a squad member starts. */
+  /** Free memory, in MB, that must remain after a crew member starts. */
   reserveMb: number;
 }
 

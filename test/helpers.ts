@@ -12,7 +12,7 @@ export function tmpDir(prefix = 'amigo-test-'): string {
   return realpathSync.native(mkdtempSync(join(os.tmpdir(), prefix)));
 }
 
-/** Runs fn until the folder it touches is free: a squad member's tab process can still be finishing (and holding the folder on Windows) just after its task reports. */
+/** Runs fn until the folder it touches is free: a crew member's tab process can still be finishing (and holding the folder on Windows) just after its task reports. */
 function whenReleased(fn: () => void): void {
   for (let waited = 0; ; waited += 250) {
     try {
@@ -35,8 +35,8 @@ export function moveFolder(from: string, to: string): void {
 }
 
 /**
- * The environment a test starts from: this process's, without any AMIGO_* or GIT_* variable (a git hook sets GIT_DIR and friends, which would point every test git call at the hooked repo). Squad member tabs set
- * AMIGO_TASK and AMIGO_HOME, so `npm test` run inside a squad member would otherwise act as that squad member, on its home.
+ * The environment a test starts from: this process's, without any AMIGO_* or GIT_* variable (a git hook sets GIT_DIR and friends, which would point every test git call at the hooked repo). Crew member tabs set
+ * AMIGO_TASK and AMIGO_HOME, so `npm test` run inside a crew member would otherwise act as that crew member, on its home.
  * Tests set only what they need on top.
  */
 export function cleanEnv(from: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
@@ -53,8 +53,8 @@ process.env.AMIGO_CLAUDE_JSON = join(strayHome, 'claude.json');
 process.on('exit', () => rmSync(strayHome, { recursive: true, force: true }));
 
 /**
- * A home with the fake agent configured. Never the user's real ~/.amigo or ~/.claude.json. Squad member tabs open as
- * detached processes (AMIGO_TERMINAL=test). With members > 0, free memory is faked so exactly that many squad members fit.
+ * A home with the fake agent configured. Never the user's real ~/.amigo or ~/.claude.json. Crew member tabs open as
+ * detached processes (AMIGO_TERMINAL=test). With members > 0, free memory is faked so exactly that many crew members fit.
  */
 export function makeHome(members = 0, member: string[] = [process.execPath, fakeAgent, '{prompt}']): { dir: string; env: NodeJS.ProcessEnv } {
   const dir = tmpDir();
@@ -135,7 +135,7 @@ export async function waitFor(id: string, env: NodeJS.ProcessEnv, statuses: Stat
   }
 }
 
-/** Lets every MODE:hold squad member of this home finish, now and on every later start. */
+/** Lets every MODE:hold crew member of this home finish, now and on every later start. */
 export function releaseHeld(env: NodeJS.ProcessEnv): void {
   writeFileSync(`${env.AMIGO_HOME}.release-held`, '');
 }

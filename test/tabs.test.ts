@@ -482,12 +482,12 @@ describe('test backend', () => {
 });
 
 
-describe('Claude Code squad members', () => {
-  it('recognises Claude and builds the interactive squad member and amigo commands', () => {
+describe('Claude Code crew members', () => {
+  it('recognises Claude and builds the interactive crew member and amigo commands', () => {
     assert.deepEqual(
       ownSessionEnv({ CLAUDECODE: '1', CLAUDE_CODE_SESSION_ID: 'head', claude_code_child_session: '1', CLAUDE_CODE_MESSAGING_SOCKET: 's', CLAUDE_CONFIG_DIR: '/c', CLAUDE_CODE_USE_BEDROCK: '1', PATH: '/bin' }),
       { CLAUDE_CONFIG_DIR: '/c', CLAUDE_CODE_USE_BEDROCK: '1', PATH: '/bin' },
-      "a squad member drops amigo session's variables and keeps the user's settings",
+      "a crew member drops amigo session's variables and keeps the user's settings",
     );
     assert.ok(isClaude(['claude', '{prompt}']) && isClaude(['C:\\bin\\claude.exe']) && !isClaude(['codex', 'exec']));
     const t = claudeMemberTemplate(['claude', '-p', '--permission-mode', 'auto', '{prompt}'], { id: 'x-1', sessionId: 'S', resume: false, settingsFile: '/s.json' });
@@ -545,7 +545,7 @@ describe('Claude Code squad members', () => {
     }
   });
 
-  it('tells the squad member to message the session that spawned it, whatever its name', () => {
+  it('tells the crew member to message the session that spawned it, whatever its name', () => {
     const head = 'uds:/tmp/head.sock';
     assert.equal(sessionAddress({ CLAUDE_CODE_MESSAGING_SOCKET: '\\\\.\\pipe\\LOCAL\\cc-msg-ab' }), 'uds:\\\\.\\pipe\\LOCAL\\cc-msg-ab');
     assert.equal(sessionAddress({}), undefined, 'not inside a Claude session: no messaging');
@@ -579,13 +579,13 @@ describe('Claude Code squad members', () => {
   });
 
   it('marks folders trusted without touching anything else, and removes the entry again', () => {
-    const config = { theme: 'dark', projects: { 'C:/Other': { x: 1 }, 'c:/work/squad member': { allowedTools: ['a'] } } };
-    const next = mergeTrust(config, 'C:\\work\\squad member') as typeof config & { projects: Record<string, Record<string, unknown>> };
-    assert.deepEqual(next.projects['c:/work/squad member'], { allowedTools: ['a'], hasTrustDialogAccepted: true });
+    const config = { theme: 'dark', projects: { 'C:/Other': { x: 1 }, 'c:/work/crew member': { allowedTools: ['a'] } } };
+    const next = mergeTrust(config, 'C:\\work\\crew member') as typeof config & { projects: Record<string, Record<string, unknown>> };
+    assert.deepEqual(next.projects['c:/work/crew member'], { allowedTools: ['a'], hasTrustDialogAccepted: true });
     assert.equal(next.theme, 'dark');
-    assert.equal(mergeTrust(next, 'C:/work/squad member'), null, 'already trusted');
+    assert.equal(mergeTrust(next, 'C:/work/crew member'), null, 'already trusted');
     assert.deepEqual(mergeTrust({}, '/home/u/w/')?.projects, { '/home/u/w': { allowedTools: [], hasTrustDialogAccepted: true } });
-    assert.deepEqual(Object.keys((dropTrust(next, 'C:/work/squad member') as typeof config).projects), ['C:/Other']);
+    assert.deepEqual(Object.keys((dropTrust(next, 'C:/work/crew member') as typeof config).projects), ['C:/Other']);
     assert.equal(dropTrust(next, '/nope'), null);
   });
 
@@ -756,13 +756,13 @@ describe('Claude Code squad members', () => {
 });
 
 describe('memory gate and wait', () => {
-  it('starts a squad member only while the reserve stays free', () => {
+  it('starts a crew member only while the reserve stays free', () => {
     assert.equal(ramAllows(3000, 600, 2048, 0), true);
-    assert.equal(ramAllows(3000, 600, 2048, 1), false, 'a squad member still starting counts');
+    assert.equal(ramAllows(3000, 600, 2048, 1), false, 'a crew member still starting counts');
     assert.equal(parseVmStat('Mach Virtual Memory Statistics: (page size of 16384 bytes)\nPages free: 1000.\nPages inactive: 2000.\nPages speculative: 100.\n'), 48);
   });
 
-  it('always lets one squad member run, even when memory is below the reserve', async () => {
+  it('always lets one crew member run, even when memory is below the reserve', async () => {
     const { dir, env } = makeHome();
     try {
       const low = { ...env, AMIGO_FREE_MB: '10' };
@@ -801,7 +801,7 @@ describe('memory gate and wait', () => {
     assert.deepEqual(descendants(10, '  10  1\n 11 10\n 12 11\n 13 1\n 14 10\n'), [11, 14, 12]);
   });
 
-  it('wait returns when a squad member finishes and says so when nothing is open', async () => {
+  it('wait returns when a crew member finishes and says so when nothing is open', async () => {
     const { dir, env } = makeHome();
     try {
       cli(env, ['add', makeRepo(join(dir, 'p'))]);

@@ -166,7 +166,7 @@ describe('help and the bare command', () => {
 });
 
 describe('scratch workspace', () => {
-  it('two scratch squad members run in parallel, each in its own folder; close keeps the folder', async () => {
+  it('two scratch crew members run in parallel, each in its own folder; close keeps the folder', async () => {
     const { dir, env } = makeHome(2);
     try {
       const a = cli(env, ['spawn', '--scratch'], 'Title: First\nMODE:hold\nDone when: a file exists');
@@ -256,7 +256,7 @@ describe('startup briefing', () => {
       const calls = ghCalls(gh.log);
       assert.deepEqual(calls.map((c) => c.args.slice(0, 2).join(' ')).sort(), ['pr list', 'run list'], 'the defaults ran');
       for (const c of calls) assert.equal(c.cwd.toLowerCase(), cloneOf(env, 'repo').toLowerCase(), 'gh ran in the clone, not in a worktree');
-      assert.equal(listTasks(env).length, 0, 'live checks are not squad members');
+      assert.equal(listTasks(env).length, 0, 'live checks are not crew members');
       assert.equal(cli(env, ['inbox']).out.trim(), 'Inbox empty.', 'the entry is shown once');
     } finally {
       cleanup(dir);
@@ -305,7 +305,7 @@ describe('startup briefing', () => {
     }
   });
 
-  it('watch items spawn exactly one scratch squad member, and no watch items spawn none', async () => {
+  it('watch items spawn exactly one scratch crew member, and no watch items spawn none', async () => {
     const { dir, env } = makeHome(2);
     try {
       const one = makeRepo(join(dir, 'one'));
@@ -313,15 +313,15 @@ describe('startup briefing', () => {
       cli(env, ['add', one, '--live-command', '']);
       cli(env, ['add', two, '--live-command', '']);
       assert.equal(cli(env, ['brief', '--agent', 'fake']).code, 0);
-      assert.equal(listTasks(env).length, 0, 'no watch items: no squad member');
+      assert.equal(listTasks(env).length, 0, 'no watch items: no crew member');
 
       cli(env, ['add', one, '--live-command', '', '--watch', 'Is the staging site up?', '--watch', 'Any failing deploy?']);
       cli(env, ['add', two, '--live-command', '', '--watch', 'Anything odd in the logs?']);
       const brief = cli(env, ['brief', '--agent', 'fake']);
       assert.equal(brief.code, 0, brief.err);
-      assert.match(brief.out, /Squad member \S+ \("Briefing checks"\) is checking the watch items of: one, two/);
+      assert.match(brief.out, /Crew member \S+ \("Briefing checks"\) is checking the watch items of: one, two/);
       const tasks = listTasks(env);
-      assert.equal(tasks.length, 1, 'exactly one squad member for all projects');
+      assert.equal(tasks.length, 1, 'exactly one crew member for all projects');
       const t = tasks[0]!;
       assert.equal(t.title, 'Briefing checks');
       assert.equal(t.scratch, true);
@@ -337,7 +337,7 @@ describe('startup briefing', () => {
 
       // One at a time: an open briefing member is not joined by a second one.
       const again = cli(env, ['brief', '--agent', 'fake']);
-      assert.match(again.out, /"Briefing checks" squad member \S+ is still open \(done\); not starting another/);
+      assert.match(again.out, /"Briefing checks" crew member \S+ is still open \(done\); not starting another/);
       assert.equal(listTasks(env).length, 1);
 
       // Closing it removes its scratch folder; any other scratch member keeps its own.
@@ -349,7 +349,7 @@ describe('startup briefing', () => {
       assert.ok(!existsSync(t.cwd), 'the briefing scratch folder is gone');
       assert.equal(cli(env, ['close', other]).code, 0);
       assert.ok(existsSync(getTask(other, env)!.cwd), 'another scratch member keeps its folder');
-      assert.match(cli(env, ['brief', '--agent', 'fake']).out, /Squad member \S+ \("Briefing checks"\) is checking/, 'a new one starts once the old one is closed');
+      assert.match(cli(env, ['brief', '--agent', 'fake']).out, /Crew member \S+ \("Briefing checks"\) is checking/, 'a new one starts once the old one is closed');
     } finally {
       cleanup(dir);
     }
@@ -448,14 +448,14 @@ describe('the briefing text in the instructions', () => {
       const some = cli(env, ['brief', '--agent', 'fake']);
       assert.match(
         some.out,
-        /Live checks are running in the background: run `amigo wait` in the background only if their result has not already arrived in `amigo inbox` \(or squad members are still running or queued\), and mention it when it arrives\./,
+        /Live checks are running in the background: run `amigo wait` in the background only if their result has not already arrived in `amigo inbox` \(or crew members are still running or queued\), and mention it when it arrives\./,
       );
       assert.doesNotMatch(some.out, /run `amigo wait` in the background for their result, like any other/);
 
       // Direct amigoPrompt check for opts.live true vs false.
       const promptWithLive = amigoPrompt('fake', env, '1 project registered.', { live: true });
       const promptWithoutLive = amigoPrompt('fake', env, '1 project registered.', { live: false });
-      assert.match(promptWithLive, /only if their result has not already arrived in `amigo inbox` \(or squad members are still running or queued\)/);
+      assert.match(promptWithLive, /only if their result has not already arrived in `amigo inbox` \(or crew members are still running or queued\)/);
       assert.doesNotMatch(promptWithoutLive, /live checks/i);
     } finally {
       cleanup(dir);

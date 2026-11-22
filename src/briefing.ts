@@ -65,7 +65,7 @@ export function localBriefing(env: NodeJS.ProcessEnv, consume = true): string {
   return [`${projects} project${projects === 1 ? '' : 's'} registered.`, ...(sections.length ? sections : ['Nothing finished, nothing waiting on you, nothing open.'])].join('\n');
 }
 
-/** The brief of the one squad member that looks at the projects' `watch` items. */
+/** The brief of the one crew member that looks at the projects' `watch` items. */
 export function watchBrief(projects: Project[]): string {
   const items = projects.filter((p) => p.watch?.length).map((p) => `Project ${p.name} (${p.path}):\n${p.watch!.map((w) => `- ${w}`).join('\n')}`);
   return [
@@ -89,7 +89,7 @@ function shellEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
 
 /**
  * `amigo _live <notice id>`: the detached process the briefing starts. Runs every project's live commands in the project's
- * own folder (never in a squad member's worktree), each with a time limit, then fills in the notice the inbox will show.
+ * own folder (never in a crew member's worktree), each with a time limit, then fills in the notice the inbox will show.
  * It beats while it works, so a slow run is never taken for a dead one.
  */
 export async function runLiveChecks(noticeId: string, env: NodeJS.ProcessEnv): Promise<void> {
@@ -136,8 +136,8 @@ export interface Briefing {
 
 /**
  * What the start of amigo does: begin the live checks in the background (one notice in the inbox when they finish), spawn one
- * scratch squad member for the projects' `watch` items, and return the briefing text. With dryRun nothing is started.
- * The live commands and watch items of a project run only once the user confirmed them. The squad member is told to change
+ * scratch crew member for the projects' `watch` items, and return the briefing text. With dryRun nothing is started.
+ * The live commands and watch items of a project run only once the user confirmed them. The crew member is told to change
  * nothing; that is a rule given to it, not something enforced here.
  */
 export function startBriefing(agent: string | undefined, env: NodeJS.ProcessEnv, opts: { dryRun?: boolean } = {}): Briefing {
@@ -152,7 +152,7 @@ export function startBriefing(agent: string | undefined, env: NodeJS.ProcessEnv,
   let live = false;
   if (opts.dryRun) {
     if (hasLive) notes.push('Live checks would run in the background (dry run: not started).');
-    if (watched.length) notes.push(`A squad member "${WATCH_TITLE}" would check: ${watched.map((p) => p.name).join(', ')} (dry run: not started).`);
+    if (watched.length) notes.push(`A crew member "${WATCH_TITLE}" would check: ${watched.map((p) => p.name).join(', ')} (dry run: not started).`);
   } else {
     if (hasLive) {
       startLiveProcess(beginNotice(LIVE_TITLE, env), env);
@@ -162,13 +162,13 @@ export function startBriefing(agent: string | undefined, env: NodeJS.ProcessEnv,
     if (watched.length) {
       const open = listTasks(env).find((t) => t.briefing && t.status !== 'closed');
       if (open) {
-        notes.push(`The "${WATCH_TITLE}" squad member ${open.id} is still open (${open.status}); not starting another. Close it to run the watch items again.`);
+        notes.push(`The "${WATCH_TITLE}" crew member ${open.id} is still open (${open.status}); not starting another. Close it to run the watch items again.`);
       } else {
         try {
           const { task } = spawnMember({ scratch: true, briefing: true, brief: watchBrief(watched), title: WATCH_TITLE, agent }, {}, env);
-          notes.push(`Squad member ${task.id} ("${WATCH_TITLE}") is checking the watch items of: ${watched.map((p) => p.name).join(', ')}.`);
+          notes.push(`Crew member ${task.id} ("${WATCH_TITLE}") is checking the watch items of: ${watched.map((p) => p.name).join(', ')}.`);
         } catch (err) {
-          notes.push(`Could not start the "${WATCH_TITLE}" squad member: ${(err as Error).message}`);
+          notes.push(`Could not start the "${WATCH_TITLE}" crew member: ${(err as Error).message}`);
         }
       }
     }

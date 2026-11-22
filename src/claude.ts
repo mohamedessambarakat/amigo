@@ -6,9 +6,9 @@ import { cliPath, lockPath } from './paths.ts';
 import { amigoHooks } from './supervise.ts';
 
 /**
- * Claude Code squad members run as interactive sessions in their tab: named amigo-<id>, with hooks that record each turn's
+ * Claude Code crew members run as interactive sessions in their tab: named amigo-<id>, with hooks that record each turn's
  * STATUS line, and able to message amigo and be messaged by it. Amigo is reached by the messaging address of the
- * session that spawned the squad member, so it can be named anything; AMIGO_NAME is only the label `amigo` gives it.
+ * session that spawned the crew member, so it can be named anything; AMIGO_NAME is only the label `amigo` gives it.
  */
 export const AMIGO_NAME = 'amigo';
 
@@ -21,7 +21,7 @@ export const memberName = (id: string): string => `amigo-${id}`;
 
 /**
  * Variables a running Claude session sets for the commands it runs. `amigo spawn` and `send` run in amigo's
- * shell, so without this every squad member inherits them and starts as a child of amigo's session: it then never writes its
+ * shell, so without this every crew member inherits them and starts as a child of amigo's session: it then never writes its
  * own transcript (~/.claude/projects/<cwd>/<session id>.jsonl), and `--resume` of it fails with "No conversation found
  * with session ID". User settings such as CLAUDE_CONFIG_DIR or CLAUDE_CODE_USE_BEDROCK are kept.
  */
@@ -61,7 +61,7 @@ export function isClaude(template: string[]): boolean {
 }
 
 /**
- * The interactive squad member command: the configured template without -p/--print (so its permission flags stay the user's
+ * The interactive crew member command: the configured template without -p/--print (so its permission flags stay the user's
  * choice), plus the session name, a fixed session id (resumed for follow-ups) and the hook settings.
  */
 export function claudeMemberTemplate(template: string[], o: { id: string; sessionId: string; resume: boolean; settingsFile: string }): string[] {
@@ -84,7 +84,7 @@ export function claudeAmigoTemplate(template: string[], settingsFile: string, pr
   return [cmd, '--name', AMIGO_NAME, '--settings', settingsFile, '--append-system-prompt-file', promptFile, ...args];
 }
 
-/** Amigo's settings: accept messages from squad members, and the supervision hooks (supervise.ts). */
+/** Amigo's settings: accept messages from crew members, and the supervision hooks (supervise.ts). */
 export function amigoSettings(): Record<string, unknown> {
   return { crossSessionInbound: 'accept', hooks: amigoHooks() };
 }
@@ -98,7 +98,7 @@ export function memberSettings(stopTimeoutSeconds = 15): Record<string, unknown>
   return { crossSessionInbound: 'accept', hooks: { UserPromptSubmit: hook('prompt'), Stop: hook('stop', Math.max(15, stopTimeoutSeconds)), StopFailure: hook('stop-failure') } };
 }
 
-/** The squad member part only Claude squad members get. */
+/** The crew member part only Claude crew members get. */
 export function claudeMemberNotes(id: string, amigoAddress: string | undefined): string {
   const lines = [
     `## Your session\n\nYou are the Claude Code session \`${memberName(id)}\`, open in a terminal tab the user can see and type in. Your session stays open after each turn: amigo or the user may send you more.`,
@@ -109,7 +109,7 @@ export function claudeMemberNotes(id: string, amigoAddress: string | undefined):
   return lines.join('\n\n');
 }
 
-// ---------- the Stop hook's check that the squad member reported to amigo ----------
+// ---------- the Stop hook's check that the crew member reported to amigo ----------
 
 interface TranscriptEntry {
   type?: string;
@@ -144,7 +144,7 @@ export function transcriptMessagedAmigo(path: string | undefined, amigoAddress: 
   try {
     return turnMessagedAmigo(readFileSync(path, 'utf8'), amigoAddress);
   } catch {
-    return true; // an unreadable transcript must not trap the squad member
+    return true; // an unreadable transcript must not trap the crew member
   }
 }
 
@@ -152,7 +152,7 @@ const send = (to: string): string =>
   `use the SendMessage tool (load it with ToolSearch "select:SendMessage" if needed) to send your result with \`to\` set to exactly \`${to}\`. Try it once: if that session is gone or the message was not sent`;
 const STATUS_LINE = 'end your final message with one line: STATUS: done|blocked|question - <one-line summary>';
 
-/** Why the Stop hook sends the squad member back: only what its turn was missing. */
+/** Why the Stop hook sends the crew member back: only what its turn was missing. */
 export function reportReason(messaged: boolean, hasStatus: boolean, amigoAddress = ''): string {
   if (!messaged && !hasStatus) return `Before stopping: (1) ${send(amigoAddress)}, just stop. (2) Then ${STATUS_LINE}.`;
   if (!messaged) return `Before stopping, ${send(amigoAddress)}, just stop. Then end with your STATUS line again.`;
@@ -248,12 +248,12 @@ function editClaudeJson(change: (c: Record<string, unknown>) => Record<string, u
       writeJsonAtomic(file, next);
       sleepSync(200);
     }
-    if (change(readClaudeJson(file)) !== null) process.stderr.write(`amigo: warning: another Claude session keeps rewriting ${file}; a squad member may show the trust dialog\n`);
+    if (change(readClaudeJson(file)) !== null) process.stderr.write(`amigo: warning: another Claude session keeps rewriting ${file}; a crew member may show the trust dialog\n`);
   });
   return true;
 }
 
-/** Mark a squad member's folder trusted so its session opens without the workspace trust dialog. True when amigo added the trust. */
+/** Mark a crew member's folder trusted so its session opens without the workspace trust dialog. True when amigo added the trust. */
 export function trustFolder(dir: string, env: NodeJS.ProcessEnv = process.env): boolean {
   return editClaudeJson((c) => mergeTrust(c, dir), env);
 }
@@ -278,7 +278,7 @@ export function moveFolderTrust(from: string, to: string, env: NodeJS.ProcessEnv
   editClaudeJson((c) => moveTrust(c, from, to), env);
 }
 
-/** Remove a closed squad member's worktree entry (Claude Code also adds one for every folder it runs in). */
+/** Remove a closed crew member's worktree entry (Claude Code also adds one for every folder it runs in). */
 export function forgetFolder(dir: string, env: NodeJS.ProcessEnv = process.env): void {
   editClaudeJson((c) => dropTrust(c, dir), env);
 }

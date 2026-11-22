@@ -6,7 +6,7 @@ import type { DeliveryMode } from './config.ts';
 import type { Endpoint } from './terminal.ts';
 
 /**
- * queued   waiting for a free squad member
+ * queued   waiting for a free crew member
  * running  the agent is working
  * verifying  (no longer set: amigo ran per-project checks here before the delivery modes replaced them)
  * done / blocked / question   the agent finished its turn (Claude) or run and said so (see parseStatus)
@@ -16,7 +16,7 @@ import type { Endpoint } from './terminal.ts';
  */
 export type Status = 'queued' | 'running' | 'verifying' | 'done' | 'blocked' | 'question' | 'failed' | 'closing' | 'closed';
 
-/** Statuses where the squad member is waiting for amigo. */
+/** Statuses where the crew member is waiting for amigo. */
 export const FINISHED: readonly Status[] = ['done', 'blocked', 'question', 'failed'];
 
 /** A confirmed merge of a build's work: amigo's merge, or one GitHub reported (authority "forge"). */
@@ -49,11 +49,11 @@ export interface Task {
   leased?: boolean;
   /** The worktree's git dir under the repo (recorded when the worktree is made): git runs against it, never against <worktree>/.git. Missing on older tasks. */
   gitDir?: string;
-  /** The messaging address (`uds:<socket>`) of the Claude session that spawned this squad member; it gets the squad member's results. */
+  /** The messaging address (`uds:<socket>`) of the Claude session that spawned this crew member; it gets the crew member's results. */
   amigoAddress?: string;
   /** A scratch task (spawn --scratch): works in its own folder under the home, not a project and not git. */
   scratch?: boolean;
-  /** The startup briefing's own squad member (see briefing.ts): one open at a time, and its scratch folder goes when it is closed. */
+  /** The startup briefing's own crew member (see briefing.ts): one open at a time, and its scratch folder goes when it is closed. */
   briefing?: boolean;
   /** Set for a reviewer: the task whose folder it reads. */
   reviewOf?: string;
@@ -84,16 +84,16 @@ export interface Task {
   runs: number;
   /** Follow-up messages from amigo, oldest first. */
   followUps: string[];
-  /** How many follow-ups the squad member has been given (a resumed Claude session gets only the rest). */
+  /** How many follow-ups the crew member has been given (a resumed Claude session gets only the rest). */
   followUpsSent?: number;
-  /** The agent process in the squad member's tab. */
+  /** The agent process in the crew member's tab. */
   pid?: number | null;
-  /** When the squad member's tab was last opened. */
+  /** When the crew member's tab was last opened. */
   startedAt?: string | null;
-  /** Claude Code squad members: the session id, resumed when a follow-up reopens the tab once the session has started. */
+  /** Claude Code crew members: the session id, resumed when a follow-up reopens the tab once the session has started. */
   sessionId?: string | null;
   sessionStarted?: boolean;
-  /** Claude Code squad members: the session's transcript, as its hooks report it; a --resume needs it to exist. */
+  /** Claude Code crew members: the session's transcript, as its hooks report it; a --resume needs it to exist. */
   transcriptPath?: string | null;
   /** amigo added the ~/.claude.json trust entry for cwd (removed again on close). */
   trustAdded?: boolean;
@@ -125,7 +125,7 @@ export function assertValidId(id: string): void {
   if (!ID_RE.test(id)) throw new Error(`Invalid task id "${id}"`);
 }
 
-/** A new id: the squad member's number, then a few words of its title (`7-fix-footer`). The number alone is enough in every command. */
+/** A new id: the crew member's number, then a few words of its title (`7-fix-footer`). The number alone is enough in every command. */
 export function newId(title: string, n: number): string {
   const words = title.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
   let slug = (words[0] ?? '').slice(0, 16);
@@ -143,7 +143,7 @@ export function memberNumber(id: string): string | null {
   return NUMBER_RE.exec(id)?.[1] ?? null;
 }
 
-/** One more than the highest squad member number used so far, closed squad members included: a number is never reused. */
+/** One more than the highest crew member number used so far, closed crew members included: a number is never reused. */
 export function nextMemberNumber(env: NodeJS.ProcessEnv = process.env): number {
   const dir = tasksDir(env);
   const used = existsSync(dir) ? readdirSync(dir).map((d) => Number(memberNumber(d) ?? 0)) : [];
@@ -151,7 +151,7 @@ export function nextMemberNumber(env: NodeJS.ProcessEnv = process.env): number {
 }
 
 /**
- * The task a person means: its exact id, its number (`7`), or the start of its id. When several match, the one squad member that
+ * The task a person means: its exact id, its number (`7`), or the start of its id. When several match, the one crew member that
  * is still open wins.
  */
 export function resolveId(ref: string, env: NodeJS.ProcessEnv = process.env): string {
@@ -165,8 +165,8 @@ export function resolveId(ref: string, env: NodeJS.ProcessEnv = process.env): st
   const open = matches.filter((t) => t.status !== 'closed');
   const pick = matches.length === 1 ? matches : open;
   if (pick.length === 1) return pick[0]!.id;
-  if (!matches.length) throw new Error(`No squad member matches "${ref}" (see amigo status)`);
-  throw new Error(`"${ref}" matches several squad members: ${(open.length ? open : matches).map((t) => t.id).join(', ')}`);
+  if (!matches.length) throw new Error(`No crew member matches "${ref}" (see amigo status)`);
+  throw new Error(`"${ref}" matches several crew members: ${(open.length ? open : matches).map((t) => t.id).join(', ')}`);
 }
 
 export const taskFile = (id: string, env: NodeJS.ProcessEnv = process.env): string => join(taskDir(id, env), 'task.json');
@@ -190,7 +190,7 @@ export function claimTaskDir(id: string, env: NodeJS.ProcessEnv = process.env): 
 
 export const HEARTBEAT_MS = 5_000;
 
-/** The squad member's tab touches this file while it is open; pids alone are not trusted (they get reused after a reboot). */
+/** The crew member's tab touches this file while it is open; pids alone are not trusted (they get reused after a reboot). */
 export function beat(id: string, env: NodeJS.ProcessEnv = process.env): void {
   writeFileSync(heartbeatFile(id, env), String(Date.now()));
 }
