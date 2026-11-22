@@ -9,6 +9,7 @@ import { BEAT_MS, beginNotice, finishNotice, touchNotice } from './notices.ts';
 import { cliPath, home } from './paths.ts';
 import { run } from './proc.ts';
 import { FINISHED, listTasks, type Task } from './tasks.ts';
+import { backendVersionWarnings } from './terminal.ts';
 import { describeResults, isActive, refresh, spawnMember, stationText, stations, takeFresh, type Stations } from './squad.ts';
 import { runCheck, runProgram } from './verify.ts';
 
@@ -143,7 +144,8 @@ export interface Briefing {
  */
 export function startBriefing(agent: string | undefined, env: NodeJS.ProcessEnv, opts: { dryRun?: boolean } = {}): Briefing {
   const projects = loadProjects(env);
-  const notes: string[] = [];
+  // A herdr-app or hc other than the tested one may have changed the commands amigo relies on.
+  const notes: string[] = backendVersionWarnings(env);
   const plans = projects.map((p) => livePlan(p, env));
   for (const plan of plans) if (plan.skipped) notes.push(plan.skipped);
   const hasLive = plans.some((plan) => plan.commands.length > 0);

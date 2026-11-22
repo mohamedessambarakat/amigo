@@ -29,7 +29,7 @@ import { noticesPending, takeNotices, type Notice } from './notices.ts';
 import { killTree } from './proc.ts';
 import { freeMemMb, ramAllows } from './ram.ts';
 import { assessChanges, describeRisk, snapshot } from './risk.ts';
-import { amigoHerdrAppSpace, amigoHerdrWorkspace, herdrLabel, insideHcTerminal, openTab, removeTabConfig, selectTerminal, type HerdrPlacement } from './terminal.ts';
+import { herdrLabel, terminalBackend, type Placement, type Runner } from './terminal.ts';
 import {
   FINISHED,
   HEARTBEAT_MS,
@@ -184,8 +184,8 @@ export function spawnMember(input: SpawnInput, opts: { dryRun?: boolean }, env: 
   if (!input.scratch && !input.project === !input.review) throw new Error('Give either --project <name>, --review <task-id> or --scratch');
   const config = loadConfig(env);
   const agent = pickAgent(config, input.agent, env);
-  // Fails early, before any folder is made, when no tab can be opened from this terminal.
-  selectTerminal({ env, platform: process.platform });
+  // Fails early, before any folder is made, outside herdr-app.
+  terminalBackend(env);
   const title = input.title?.trim() || titleOf(input.brief);
   let id = newId(title, nextMemberNumber(env));
   if (!opts.dryRun) {
@@ -332,15 +332,15 @@ export function tabEnvArgs(env: NodeJS.ProcessEnv): string[] {
     .flatMap(([k, v]) => ['--env', `${k}=${v}`]);
 }
 
-/** A squad member with a worktree gets a herdr workspace of its own; any other squad member a tab beside its reviewed squad member's, else amigo's. */
-export function herdrPlacement(t: Task, env: NodeJS.ProcessEnv, amigoWorkspace: string | null = amigoHerdrWorkspace(env)): HerdrPlacement {
-  const reviewed = t.reviewOf ? listTasks(env).find((x) => x.id === t.reviewOf)?.herdrWorkspace : null;
-  const workspaces = [reviewed, amigoWorkspace].filter((w, i, all): w is string => Boolean(w) && all.indexOf(w) === i);
-  return { label: herdrLabel(t.id, t.title), ownWorkspace: Boolean(t.worktree), workspaces };
+/** A crew member with a worktree gets a herdr-app space of its own; any other crew member a tab beside its reviewed crew member's, else amigo's. */
+export function herdrPlacement(t: Task, env: NodeJS.ProcessEnv, amigoSpace: string | null): Placement {
+  const reviewed = t.reviewOf ? listTasks(env).find((x) => x.id === t.reviewOf)?.endpoint?.space : null;
+  const spaces = [reviewed, amigoSpace].filter((w, i, all): w is string => Boolean(w) && all.indexOf(w) === i);
+  return { label: herdrLabel(t.id, t.title), ownSpace: Boolean(t.worktree), spaces };
 }
 
 /** Start one queued squad member: write its prompt, mark it running, open its tab. Exported with a runner so tests need no real terminal. */
-export function startMember(t: Task, config: Config, env: NodeJS.ProcessEnv, runner?: Parameters<typeof openTab>[2]): boolean {
+export function startMember(t: Task, config: Config, env: NodeJS.ProcessEnv, runner?: Runner): boolean {
   try {
     if (t.after && t.worktree && t.repo && t.branch && !t.baseSha) {
       // The task follows another one: its worktree starts from the commit that one was closed with.
@@ -351,7 +351,7 @@ export function startMember(t: Task, config: Config, env: NodeJS.ProcessEnv, run
       t = mutateTask(t.id, () => made, env);
     }
     const claude = isClaude(memberTemplate(t, config));
-    const terminal = selectTerminal({ env, platform: process.platform, ...(runner ? { insideHc: (id: string) => insideHcTerminal(id, runner) } : {}) });
+    const backend = terminalBackend(env, runner ? { runner } : {});
     const resume = claude && t.sessionStarted === true;
     if (resume) {
       writeFileSync(promptFile(t.id, env), followUpPrompt(t));
@@ -378,20 +378,17 @@ export function startMember(t: Task, config: Config, env: NodeJS.ProcessEnv, run
       }),
       env,
     );
-    const inHerdr = terminal === 'herdr' || terminal === 'herdr-app';
-    const amigoWorkspace = terminal === 'herdr' ? amigoHerdrWorkspace(env) : terminal === 'herdr-app' ? amigoHerdrAppSpace(env, runner) : null;
-    const { tabConfig, herdrWorkspace } = openTab(terminal, {
-      name: memberName(t.id),
-      title: `amigo: ${t.title}`,
+    const amigoSpace = backend.amigoSpace();
+    const endpoint = backend.open({
+      task: t.id,
       // The tab's shell sits in the task folder, never in the worktree, so it cannot block removing the worktree on close.
       cwd: taskDir(t.id, env),
-      argv: [process.execPath, cliPath, '_tab', t.id, '--run', String(now.runs), '--home', home(env), ...tabEnvArgs({ ...env, AMIGO_TERMINAL: terminal, ...(amigoWorkspace ? { AMIGO_HERDR_WORKSPACE: amigoWorkspace } : {}) })],
+      argv: [process.execPath, cliPath, '_tab', t.id, '--run', String(now.runs), '--home', home(env), ...tabEnvArgs({ ...env, AMIGO_TERMINAL: backend.name, ...(amigoSpace ? { AMIGO_HERDR_SPACE: amigoSpace } : {}) })],
       dir: taskDir(t.id, env),
-      platform: process.platform,
       env: { ...env, AMIGO_HOME: home(env) },
-      ...(inHerdr ? { herdr: herdrPlacement(t, env, amigoWorkspace) } : {}),
-    }, runner);
-    if (tabConfig || herdrWorkspace) mutateTask(t.id, () => ({ tabConfig, herdrWorkspace }), env);
+      placement: herdrPlacement(t, env, amigoSpace),
+    });
+    mutateTask(t.id, () => ({ endpoint }), env);
     return true;
   } catch (err) {
     mutateTask(t.id, (cur) => (cur.status === 'running' || cur.status === 'queued' ? { status: 'failed', seen: false, summary: `Could not start: ${(err as Error).message}` } : null), env);
@@ -446,8 +443,6 @@ export async function runTab(id: string, env: NodeJS.ProcessEnv = process.env, r
     mutateTask(id, (cur) => (cur.status === 'running' ? { status: 'failed', pid: null, seen: false, summary: (err as Error).message } : null), env);
   } finally {
     clearInterval(heartbeat);
-    // The tab config goes first: once the beat is gone, a new tab for this task may be written at the same path.
-    removeTabConfig(requireTask(id, env).tabConfig);
     clearBeat(id, env);
   }
   drain(env);

@@ -262,11 +262,11 @@ describe('squad member numbers', () => {
 });
 
 describe('amigo instructions', () => {
-  it('say squad members open in tabs, with no show or hide commands', () => {
+  it('say crew members open in herdr-app tabs, with no show or hide commands', () => {
     const { dir, env } = makeHome();
     try {
       const prompt = amigoPrompt('fake', env);
-      assert.match(prompt, /Each squad member opens in its own tab of the terminal you run in/);
+      assert.match(prompt, /Each crew member opens in its own herdr-app tab/);
       assert.doesNotMatch(prompt, /amigo (show|hide|board)|background, with no window/);
     } finally {
       cleanup(dir);

@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readdirSync, rmSync, statSync, writeFileSync } f
 import { join } from 'node:path';
 import { readJson, withLock, writeJsonAtomic } from './fsx.ts';
 import { lockPath, taskDir, tasksDir } from './paths.ts';
+import type { Endpoint } from './terminal.ts';
 
 /**
  * queued   waiting for a free squad member
@@ -104,10 +105,8 @@ export interface Task {
   transcriptPath?: string | null;
   /** amigo added the ~/.claude.json trust entry for cwd (removed again on close). */
   trustAdded?: boolean;
-  /** Warp only: the tab config file, deleted when the squad member ends. */
-  tabConfig?: string | null;
-  /** herdr only: the workspace holding the squad member's tab, where a reviewer's tab goes. */
-  herdrWorkspace?: string | null;
+  /** The terminal of the crew member's latest tab (see terminal.ts); its space is where a reviewer's tab goes. */
+  endpoint?: Endpoint | null;
   exitCode?: number | null;
   /** The agent's STATUS line (or its last output line) from the latest run. */
   summary?: string;

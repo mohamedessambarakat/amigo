@@ -172,7 +172,7 @@ describe('end to end with a fake agent', () => {
 
   it('runs from inside a squad member: AMIGO_* in the parent environment do not leak into a test', async () => {
     const outside = tmpDir();
-    const member = { AMIGO_TASK: 'x-1', AMIGO_HOME: join(outside, 'member-home'), AMIGO_TERMINAL: 'wt', AMIGO_FREE_MB: '1' };
+    const member = { AMIGO_TASK: 'x-1', AMIGO_HOME: join(outside, 'member-home'), AMIGO_TERMINAL: 'herdr-app', AMIGO_FREE_MB: '1' };
     const saved = Object.fromEntries(Object.keys(member).map((k) => [k, process.env[k]]));
     Object.assign(process.env, member);
     const { dir, env } = makeHome();
