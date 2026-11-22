@@ -142,15 +142,16 @@ describe('worktrees from the pool', () => {
       assert.equal(t.status, 'done', t.summary);
       assert.equal(t.branch, `feat/${id}`);
       assert.equal(t.baseSha, tip, "origin's tip, fetched at spawn");
-      assert.equal(git(t.worktree as string, 'rev-parse', 'HEAD~0').trim(), tip, 'nothing committed yet, so HEAD is the base');
+      assert.equal(git(t.worktree as string, 'rev-parse', 'HEAD~1').trim(), tip, 'its one commit sits on the base');
       assert.ok(existsSync(join(t.worktree as string, 'fresh.txt')));
       assert.equal(git(clone, 'rev-parse', '--abbrev-ref', 'HEAD').trim(), 'stray', 'the clone was not touched');
       assert.ok(t.worktree?.startsWith(join(home(env), 'state', 'worktrees')), 'the pool lives in the home');
       const log = readFileSync(join(dir, 'treehouse.log'), 'utf8');
       assert.match(log, new RegExp(`"args":\\["get","--lease","--lease-holder","${id}","--json"\\]`));
 
-      assert.equal(cli(env, ['close', id, '--commit', '-m', 'feat: fresh base']).code, 0);
-      assert.equal(git(clone, 'log', '-1', '--format=%s', `feat/${id}`).trim(), 'feat: fresh base');
+      assert.match(cli(env, ['close', id]).err, /has not landed/, 'committed work nobody pushed is not discarded');
+      assert.equal(cli(env, ['close', id, '--force']).code, 0);
+      assert.equal(git(clone, 'log', '-1', '--format=%s', `feat/${id}`).trim(), 'feat: write member output', 'a discarded build keeps its branch');
       assert.equal(git(t.worktree as string, 'rev-parse', '--abbrev-ref', 'HEAD').trim(), 'HEAD', 'returned detached');
       assert.match(readFileSync(join(dir, 'treehouse.log'), 'utf8'), /"args":\["return","--force",/);
 
@@ -339,12 +340,12 @@ describe('migration to the clone layout', () => {
         branchPrefix: 'amigo/',
         live: s.withOrigin,
         notes: 'be kind',
-        risky: ['src/**'],
         liveCommands: ['echo hi'],
         watch: ['site up?'],
         addedAt: undefined,
       });
-      assert.equal(web.checks, undefined, 'checks are dropped');
+      assert.equal((web as unknown as Record<string, unknown>).checks, undefined, 'checks are dropped');
+      assert.equal((web as unknown as Record<string, unknown>).risky, undefined, 'risky paths are dropped');
       const tool = projects.find((p) => p.name === 'tool')!;
       assert.deepEqual([tool.source, tool.mode, tool.yolo, tool.live], [s.local, 'local-only', true, undefined]);
       assert.equal(projects.length, 2);

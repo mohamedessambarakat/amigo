@@ -13,8 +13,6 @@ export interface ProjectFields {
   live?: string;
   notes?: string;
   /** A list replaces the project's list; an empty list clears it. Left out, the old list stays. */
-  checks?: string[];
-  risky?: string[];
   liveCommands?: string[];
   watch?: string[];
 }
@@ -84,8 +82,6 @@ export function addProject(source: string, opts: ProjectFields, env: NodeJS.Proc
     addedAt: old?.addedAt ?? new Date().toISOString().slice(0, 10),
     ...(live === '' ? {} : (live ?? old?.live) ? { live: live ?? old?.live } : {}),
     ...((opts.notes ?? old?.notes) ? { notes: opts.notes ?? old?.notes } : {}),
-    ...((opts.checks ?? old?.checks) ? { checks: opts.checks ?? old?.checks } : {}),
-    ...((opts.risky ?? old?.risky) ? { risky: opts.risky ?? old?.risky } : {}),
     ...((opts.liveCommands ?? old?.liveCommands) ? { liveCommands: opts.liveCommands ?? old?.liveCommands } : {}),
     ...((opts.watch ?? old?.watch) ? { watch: opts.watch ?? old?.watch } : {}),
   };

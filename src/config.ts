@@ -2,7 +2,6 @@ import { existsSync, mkdirSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
 import { readJson, writeJsonAtomic } from './fsx.ts';
 import { clonePath, configDir, configPath, dataDir, home, OLD_LAYOUT_FILES, projectsDir, projectsPath, stateDir } from './paths.ts';
-import { ensurePolicy } from './policy.ts';
 
 /** How to start one agent CLI. Each is an argv array; `{prompt}` is replaced by the prompt text. */
 export interface AgentTemplate {
@@ -20,8 +19,6 @@ export interface Config {
   memberMb: number;
   /** Free memory, in MB, that must remain after a squad member starts. */
   reserveMb: number;
-  /** How long one project check may run, in minutes, before it counts as failed. */
-  checkTimeoutMin: number;
 }
 
 /** How a project's work is delivered. */
@@ -51,17 +48,13 @@ export interface Project {
   addedAt?: string;
   /** Rules every crew member working on this project must follow. */
   notes?: string;
-  /** Shell commands run in a crew member's folder when it says done; all must pass (see verify.ts). Removed with the old gates in step 3. */
-  checks?: string[];
-  /** Globs for paths that make a change need the user's attention, on top of the built-in ones (see risk.ts). Removed with the old gates in step 3. */
-  risky?: string[];
   /** Shell commands the startup briefing runs in the clone (see briefing.ts). Not gates. Left out: the defaults for a GitHub repo; an empty list: none. */
   liveCommands?: string[];
   /** Plain-words things a crew member looks at for the startup briefing. Not gates. */
   watch?: string[];
 }
 
-const STARTER_CONFIG: Config = { agents: {}, memberMb: 600, reserveMb: 2048, checkTimeoutMin: 10 };
+const STARTER_CONFIG: Config = { agents: {}, memberMb: 600, reserveMb: 2048 };
 
 /** True when the home still has the layout from before projects became clones (config.json and projects.json at its top). */
 export function oldLayout(env: NodeJS.ProcessEnv = process.env): boolean {
@@ -83,7 +76,6 @@ export function ensureHome(env: NodeJS.ProcessEnv = process.env): boolean {
     created = true;
   }
   if (!existsSync(projectsPath(env))) writeJsonAtomic(projectsPath(env), { projects: [] });
-  ensurePolicy(env);
   return created;
 }
 
@@ -111,10 +103,8 @@ export function validateConfig(raw: unknown, where = 'config.json'): Config {
   };
   const memberMb = mb('memberMb');
   const reserveMb = mb('reserveMb');
-  const checkTimeoutMin = o.checkTimeoutMin ?? STARTER_CONFIG.checkTimeoutMin;
-  if (typeof checkTimeoutMin !== 'number' || !(checkTimeoutMin > 0)) throw new Error(`${where}: "checkTimeoutMin" must be a number of minutes above 0`);
   if (o.defaultAgent !== undefined && !(o.defaultAgent in agents)) throw new Error(`${where}: defaultAgent "${o.defaultAgent}" is not in "agents"`);
-  return { agents, memberMb, reserveMb, checkTimeoutMin, ...(o.defaultAgent ? { defaultAgent: o.defaultAgent } : {}) };
+  return { agents, memberMb, reserveMb, ...(o.defaultAgent ? { defaultAgent: o.defaultAgent } : {}) };
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
@@ -159,7 +149,8 @@ export function validateProjects(raw: unknown, where = 'projects.json', env: Nod
     if (p.live !== undefined && (typeof p.live !== 'string' || !isAbsolute(p.live))) throw bad('"live" must be an absolute folder path');
     if (p.notes !== undefined && typeof p.notes !== 'string') throw bad('"notes" must be text');
     if (p.addedAt !== undefined && typeof p.addedAt !== 'string') throw bad('"addedAt" must be text');
-    for (const key of ['checks', 'risky', 'liveCommands', 'watch'] as const) {
+    // checks and risky (the per-project gates before the delivery modes) are no longer read: an old entry keeps working without them.
+    for (const key of ['liveCommands', 'watch'] as const) {
       if (p[key] !== undefined && !isTextList(p[key])) throw bad(`"${key}" must be a list of non-empty strings`);
     }
     return {
@@ -172,8 +163,6 @@ export function validateProjects(raw: unknown, where = 'projects.json', env: Nod
       ...(p.live ? { live: p.live } : {}),
       ...(p.addedAt ? { addedAt: p.addedAt } : {}),
       ...(p.notes ? { notes: p.notes } : {}),
-      ...(p.checks?.length ? { checks: p.checks } : {}),
-      ...(p.risky?.length ? { risky: p.risky } : {}),
       ...(p.liveCommands ? { liveCommands: p.liveCommands } : {}),
       ...(p.watch?.length ? { watch: p.watch } : {}),
     };

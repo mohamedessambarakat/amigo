@@ -3,16 +3,13 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 
 import { delimiter, isAbsolute, join } from 'node:path';
 import { describe, it } from 'node:test';
 import { COMMANDS, HELP } from '../src/cli.ts';
-import { confirmGates, gatesConfirmed } from '../src/gates.ts';
-import { pushBranch } from '../src/git.ts';
-import { legacyBranchName } from '../src/legacy.ts';
 import { codeRoot, home, scratchDir } from '../src/paths.ts';
 import { listTasks, getTask } from '../src/tasks.ts';
 import { beginNotice, finishNotice, noticesPending, takeNotices, touchNotice } from '../src/notices.ts';
 import { amigoPrompt, inbox, waitForMembers } from '../src/squad.ts';
 import { pointerLine, resolveExecutable } from '../src/command.ts';
 import { noticesPath } from '../src/paths.ts';
-import { addOrigin, cleanup, cli, cloneOf, fakeAgent, fakeGhEnv, ghCalls, git, idFrom, makeHome, makeRepo, releaseHeld, tmpDir, waitFor } from './helpers.ts';
+import { cleanup, cli, cloneOf, fakeAgent, fakeGhEnv, ghCalls, git, idFrom, makeHome, makeRepo, releaseHeld, tmpDir, waitFor } from './helpers.ts';
 
 /** Poll the inbox until its text contains `needle` (the live checks run in a detached process). */
 async function inboxHas(env: NodeJS.ProcessEnv, needle: RegExp, timeoutMs = 30_000): Promise<string> {
@@ -168,7 +165,7 @@ describe('help and the bare command', () => {
 });
 
 describe('scratch workspace', () => {
-  it('two scratch squad members run in parallel, each in its own folder, unverified; close keeps the folder', async () => {
+  it('two scratch squad members run in parallel, each in its own folder; close keeps the folder', async () => {
     const { dir, env } = makeHome(2);
     try {
       const a = cli(env, ['spawn', '--scratch'], 'Title: First\nMODE:hold\nDone when: a file exists');
@@ -191,10 +188,8 @@ describe('scratch workspace', () => {
       const [da, db] = [await waitFor(ida, env, ['done', 'failed']), await waitFor(idb, env, ['done', 'failed'])];
       assert.equal(da.status, 'done');
       assert.equal(db.status, 'done');
-      assert.equal(da.verification?.state, 'unverified');
       assert.ok(existsSync(join(ta.cwd, 'member-output.txt')), 'the first one worked in its own folder');
       assert.ok(existsSync(join(tb.cwd, 'member-output.txt')), 'the second one worked in its own folder');
-      assert.match(cli(env, ['status', ida]).out, /unverified \(scratch folder/);
 
       const closed = cli(env, ['close', ida]);
       assert.equal(closed.code, 0, closed.err);
@@ -245,11 +240,7 @@ describe('startup briefing', () => {
       assert.equal(cli(env, ['add', repo]).code, 0);
       git(cloneOf(env, 'repo'), 'remote', 'set-url', 'origin', 'https://github.com/example/repo.git');
       assert.equal(cli(env, ['add', plain, '--live-command', 'node -e "console.log(\'LIVE-MARK\')"']).code, 0);
-      // Their own commands wait for the user's confirmation; the defaults of a GitHub project do not.
-      const before = cli(env, ['brief', '--agent', 'fake']);
-      assert.match(before.out, /Live commands of plain skipped: you have not confirmed them \(in a terminal: amigo confirm-gates plain\)/);
-      assert.doesNotMatch(await inboxHas(env, /FAKE-RUN-LIST/), /LIVE-MARK/, 'an unconfirmed live command did not run');
-      confirmGates('plain', env);
+      // A project's own live commands run with no confirmation step (the old gates are gone); a GitHub project gets the defaults.
       const brief = cli(env, ['brief', '--agent', 'fake']);
       assert.equal(brief.code, 0, brief.err);
       assert.match(brief.out, /Live checks are running in the background/);
@@ -262,7 +253,7 @@ describe('startup briefing', () => {
       assert.match(text, /\[plain\] \$ node -e .*\n\s+LIVE-MARK/, 'a project with its own live commands runs those');
       assert.doesNotMatch(text, /\[plain\] \$ gh/, 'and not the defaults');
       const calls = ghCalls(gh.log);
-      assert.deepEqual(calls.map((c) => c.args.slice(0, 2).join(' ')).sort(), ['pr list', 'pr list', 'run list', 'run list'], 'the defaults ran at both starts');
+      assert.deepEqual(calls.map((c) => c.args.slice(0, 2).join(' ')).sort(), ['pr list', 'run list'], 'the defaults ran');
       for (const c of calls) assert.equal(c.cwd.toLowerCase(), cloneOf(env, 'repo').toLowerCase(), 'gh ran in the clone, not in a worktree');
       assert.equal(listTasks(env).length, 0, 'live checks are not squad members');
       assert.equal(cli(env, ['inbox']).out.trim(), 'Inbox empty.', 'the entry is shown once');
@@ -279,38 +270,12 @@ describe('startup briefing', () => {
       const repo = makeRepo(join(dir, 'repo'));
       cli(env, ['add', repo, '--live-command', 'node -e "setTimeout(() => {}, 30000)"']);
       git(cloneOf(env, 'repo'), 'remote', 'set-url', 'origin', 'https://github.com/example/repo.git');
-      confirmGates('repo', env);
       cli(env, ['brief', '--agent', 'fake']);
       assert.match(await inboxHas(env, /timed out/), /\[repo\] \$ node -e .* \(timed out\)/);
       cli(env, ['add', repo, '--live-command', '']);
       const off = cli(env, ['brief', '--agent', 'fake']);
       assert.doesNotMatch(off.out, /Live checks are running/, 'an empty list means no live checks');
       assert.equal(ghCalls(gh.log).length, 0);
-    } finally {
-      cleanup(dir);
-    }
-  });
-
-  it('live commands and watch items are gates: setting or changing them needs confirming again, and a project without them keeps its hash', () => {
-    const { dir, env } = makeHome();
-    try {
-      const repo = makeRepo(join(dir, 'repo'));
-      cli(env, ['add', repo, '--check', 'node -e "1"']);
-      const project = () => JSON.parse(readFileSync(join(home(env), 'data', 'projects.json'), 'utf8')).projects[0];
-      confirmGates('repo', env);
-      assert.ok(gatesConfirmed(project(), env));
-      const out = cli(env, ['add', repo, '--live-command', 'echo hi', '--watch', 'is the site up?']).out;
-      assert.deepEqual(project().liveCommands, ['echo hi']);
-      assert.deepEqual(project().watch, ['is the site up?']);
-      assert.deepEqual(project().checks, ['node -e "1"'], 'the checks stay');
-      assert.ok(!gatesConfirmed(project(), env), 'new live commands and watch items are unconfirmed');
-      assert.match(out, /not confirmed by you yet[\s\S]*the briefing skips its live commands and watch items/);
-      confirmGates('repo', env);
-      assert.ok(gatesConfirmed(project(), env));
-      cli(env, ['add', repo, '--live-command', 'echo changed']);
-      assert.ok(!gatesConfirmed(project(), env), 'changing them needs confirming again');
-      cli(env, ['add', repo, '--live-command', '', '--watch', '']);
-      assert.match(cli(env, ['projects']).out, /live commands: \(none\)/);
     } finally {
       cleanup(dir);
     }
@@ -351,11 +316,6 @@ describe('startup briefing', () => {
 
       cli(env, ['add', one, '--live-command', '', '--watch', 'Is the staging site up?', '--watch', 'Any failing deploy?']);
       cli(env, ['add', two, '--live-command', '', '--watch', 'Anything odd in the logs?']);
-      const unconfirmed = cli(env, ['brief', '--agent', 'fake']);
-      assert.match(unconfirmed.out, /Watch items of one skipped: you have not confirmed them \(in a terminal: amigo confirm-gates one\)/);
-      assert.equal(listTasks(env).length, 0, 'unconfirmed watch items spawn nothing');
-      confirmGates('one', env);
-      confirmGates('two', env);
       const brief = cli(env, ['brief', '--agent', 'fake']);
       assert.equal(brief.code, 0, brief.err);
       assert.match(brief.out, /Squad member \S+ \("Briefing checks"\) is checking the watch items of: one, two/);
@@ -384,33 +344,11 @@ describe('startup briefing', () => {
       await waitFor(other, env, ['done']);
       const closed = cli(env, ['close', t.id]);
       assert.equal(closed.code, 0, closed.err);
-      assert.match(closed.out, /Removed the briefing squad member's scratch folder/);
+      assert.match(closed.out, /Removed the briefing crew member's scratch folder/);
       assert.ok(!existsSync(t.cwd), 'the briefing scratch folder is gone');
       assert.equal(cli(env, ['close', other]).code, 0);
       assert.ok(existsSync(getTask(other, env)!.cwd), 'another scratch member keeps its folder');
       assert.match(cli(env, ['brief', '--agent', 'fake']).out, /Squad member \S+ \("Briefing checks"\) is checking/, 'a new one starts once the old one is closed');
-    } finally {
-      cleanup(dir);
-    }
-  });
-});
-
-describe('branches of migrated tasks', () => {
-  it('push accepts the task own amigo/ or former branch and nothing else', () => {
-    const { dir, env } = makeHome();
-    try {
-      const repo = makeRepo(join(dir, 'repo'));
-      addOrigin(dir, repo);
-      git(repo, 'branch', legacyBranchName('7-old'));
-      git(repo, 'branch', 'amigo/8-new');
-      git(repo, 'branch', 'feature');
-      pushBranch(repo, legacyBranchName('7-old'), env, '7-old');
-      pushBranch(repo, 'amigo/8-new', env, '8-new');
-      assert.match(git(repo, 'ls-remote', 'origin', 'refs/heads/*'), /7-old[\s\S]*8-new|8-new[\s\S]*7-old/);
-      assert.throws(() => pushBranch(repo, 'amigo/8-new', env, '7-old'), /Refusing to push/);
-      assert.throws(() => pushBranch(repo, legacyBranchName('7-old'), env, '8-new'), /Refusing to push/);
-      assert.throws(() => pushBranch(repo, 'feature', env, '7-old'), /Refusing to push/);
-      assert.throws(() => pushBranch(repo, 'feature', env), /Refusing to push/);
     } finally {
       cleanup(dir);
     }

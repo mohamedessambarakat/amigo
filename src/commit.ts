@@ -1,5 +1,3 @@
-import { parseStatus } from './tasks.ts';
-
 /** The commit types amigo accepts, as in `type: imperative summary`. */
 export const COMMIT_TYPES = ['feat', 'fix', 'refactor', 'docs', 'style', 'test', 'chore', 'perf', 'build', 'ci'] as const;
 export const MAX_SUBJECT = 50;
@@ -23,45 +21,4 @@ export function checkCommitMessage(message: string): string | null {
   if (body.length > 1) return 'the body may be one line only (and only when the why is not obvious)';
   if (body.length && rest[0]?.trim()) return 'a blank line must separate the subject from the body';
   return null;
-}
-
-const COMMIT_RE = /^COMMIT: (\S.*?)\s*$/;
-
-/**
- * The subject a Claude squad member proposed in its own final message (the stop hook's last_assistant_message, never a run log,
- * which can hold echoed input): only a line that is exactly `COMMIT: <subject>` (case-sensitive, no prefix) and the last
- * non-empty line before the final status line, which must say done. Anything else gives null, and close --commit then refuses
- * without -m. Squad members without hooks use commitSubjectFile instead.
- */
-export function parseCommitSubject(output: string): string | null {
-  const lines = output.split(/\r?\n/);
-  let status = -1;
-  for (let i = lines.length - 1; i >= 0; i--) {
-    const report = parseStatus(lines[i] as string);
-    if (report) {
-      if (report.status !== 'done') return null;
-      status = i;
-      break;
-    }
-  }
-  if (status < 0) return null;
-  let prev = status - 1;
-  while (prev >= 0 && !(lines[prev] as string).trim()) prev--;
-  const m = prev >= 0 ? COMMIT_RE.exec(lines[prev] as string) : null;
-  const subject = m?.[1];
-  return subject && !/^<.*>$/.test(subject) ? subject : null;
-}
-
-/**
- * The subject in the bytes of a commit-subject file: its first line, trimmed. UTF-8 (with or without a BOM) and UTF-16 with a BOM
- * (what PowerShell 5.1's `>` writes) are decoded; any other text with NUL bytes is refused with a reason to show.
- */
-export function decodeSubjectFile(bytes: Buffer, file: string): { subject?: string; problem?: string } {
-  let text: string;
-  if (bytes[0] === 0xff && bytes[1] === 0xfe) text = bytes.subarray(2, bytes.length - (bytes.length % 2)).toString('utf16le');
-  else if (bytes[0] === 0xfe && bytes[1] === 0xff) text = Buffer.from(bytes.subarray(2, bytes.length - (bytes.length % 2))).swap16().toString('utf16le');
-  else text = bytes.toString('utf8').replace(/^\ufeff/, '');
-  if (text.includes('\0')) return { problem: `${file} is not UTF-8 text (it has NUL bytes): save it as UTF-8` };
-  const subject = (text.split(/\r?\n/)[0] ?? '').trim();
-  return subject ? { subject } : { problem: `${file} has no subject on its first line` };
 }

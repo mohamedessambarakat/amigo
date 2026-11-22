@@ -101,7 +101,6 @@ function plan(env: NodeJS.ProcessEnv, opts: MigrateOptions): PlannedProject[] {
         addedAt: today,
         ...(opts.live?.includes(p.name) ? { live: p.path } : {}),
         ...(p.notes ? { notes: p.notes } : {}),
-        ...(p.risky?.length ? { risky: p.risky } : {}),
         ...(p.live ? { liveCommands: p.live } : {}),
         ...(p.watch?.length ? { watch: p.watch } : {}),
       },
@@ -112,7 +111,7 @@ function plan(env: NodeJS.ProcessEnv, opts: MigrateOptions): PlannedProject[] {
 }
 
 const describe = (p: PlannedProject): string =>
-  `  ${p.entry.name}: clone ${p.entry.source} into ${p.entry.path} [${p.entry.mode}${p.entry.yolo ? ' +yolo' : ''}]${p.entry.live ? `, live: ${p.entry.live}` : ''}${p.old.checks?.length ? `; its checks are dropped (${p.old.checks.join(' | ')})` : ''}`;
+  `  ${p.entry.name}: clone ${p.entry.source} into ${p.entry.path} [${p.entry.mode}${p.entry.yolo ? ' +yolo' : ''}]${p.entry.live ? `, live: ${p.entry.live}` : ''}${p.old.checks?.length ? `; its checks are dropped (${p.old.checks.join(' | ')})` : ''}${p.old.risky?.length ? `; its risky paths are dropped (${p.old.risky.join(', ')})` : ''}`;
 
 /** Move `from` to `to` unless `to` is already there (an earlier run moved it): then the leftover is removed. */
 function move(from: string, to: string): boolean {

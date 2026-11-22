@@ -5,11 +5,10 @@ import { after, describe, it } from 'node:test';
 import { age, memberPrompt, amigoPrompt, titleOf } from '../src/squad.ts';
 import { INLINE_LIMIT, buildLaunch, pointerLine, quoteForCmd, resolveExecutable } from '../src/command.ts';
 import { nameFromSource, pickAgent, validateConfig, validateProjects } from '../src/config.ts';
-import { commitAll, looksSecret, porcelainPath } from '../src/git.ts';
 import { HEARTBEAT_MS, memberNumber, beat, newId, nextMemberNumber, parseStatus, resolveId, runnerAlive, saveTask, type Task } from '../src/tasks.ts';
 import { installSkills, removeSkills } from '../src/skills.ts';
 import { TEMPLATES } from '../src/templates.ts';
-import { cleanup, git, makeHome, makeRepo, tmpDir } from './helpers.ts';
+import { cleanup, makeHome, tmpDir } from './helpers.ts';
 
 const tmp = tmpDir();
 after(() => cleanup(tmp));
@@ -212,32 +211,6 @@ describe('runner heartbeat', () => {
   });
 });
 
-describe('secret files', () => {
-  it('flags secret-looking names but not examples', () => {
-    for (const p of ['.env', 'app/.env.local', 'keys\\server.pem', 'id_ed25519', 'config/credentials.json', 'secrets.yaml']) assert.ok(looksSecret(p), p);
-    for (const p of ['.env.example', 'src/env.ts', 'README.md', 'keyboard.ts', 'docs/secrets.md']) assert.ok(!looksSecret(p), p);
-  });
-
-  it('reads porcelain paths, renames and quotes included', () => {
-    assert.equal(porcelainPath('?? .env'), '.env');
-    assert.equal(porcelainPath('R  old.txt -> new.pem'), 'new.pem');
-    assert.equal(porcelainPath(' M "a b/.env"'), 'a b/.env');
-  });
-
-  it('commitAll refuses a worktree with a .env file', () => {
-    const dir = tmpDir();
-    try {
-      const repo = makeRepo(join(dir, 'r'));
-      git(repo, 'checkout', '-q', '-b', 'amigo/t-1');
-      writeFileSync(join(repo, '.env'), 'TOKEN=fake');
-      assert.throws(() => commitAll(repo, repo, 'amigo/t-1', 'chore: m'), /may hold secrets: \.env/);
-      assert.equal(git(repo, 'status', '--porcelain').trim(), '?? .env');
-    } finally {
-      cleanup(dir);
-    }
-  });
-});
-
 describe('squad member numbers', () => {
   it('counts up, never reuses a number, and resolves what a person types', () => {
     const { dir, env } = makeHome();
@@ -283,7 +256,7 @@ describe('amigo instructions', () => {
     }
   });
 
-  it('rule 5 allows pushing, opening a PR and merging to main after reviewer PASS and green CI while gating risky or outward actions on the user', () => {
+  it('rule 5 lets amigo merge green work under yolo or the Boss word, while gating risky or outward actions on the Boss', () => {
     const { dir, env } = makeHome();
     try {
       const prompt = amigoPrompt('fake', env);
@@ -291,11 +264,11 @@ describe('amigo instructions', () => {
       assert.ok(rule5, 'expected rule 5 in amigo instructions');
       assert.doesNotMatch(rule5, /[\u2013\u2014]/, 'rule 5 must not use em or en dashes');
       assert.doesNotMatch(rule5, /Only the user approves anything outward|approves `close --commit` and nothing more/i);
-      assert.match(rule5, /reviewer PASS/i);
+      assert.doesNotMatch(rule5, /reviewer PASS/i);
       assert.match(rule5, /green CI/i);
-      assert.match(rule5, /push.*PR.*merge.*`?main`?/i);
+      assert.match(rule5, /merge.*`?main`?.*yolo.*merge it/i);
       assert.match(rule5, /risky work.*dependencies.*hooks.*auth.*CI\/prod config/i);
-      assert.match(rule5, /deploys.*live migrations.*spending money.*messaging people.*user/i);
+      assert.match(rule5, /deploys.*live migrations.*spending money.*messaging people.*Boss/i);
     } finally {
       cleanup(dir);
     }

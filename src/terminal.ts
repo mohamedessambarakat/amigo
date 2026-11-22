@@ -82,6 +82,8 @@ export interface TerminalBackend {
   open(req: OpenRequest): Endpoint;
   /** Type one line into the endpoint and submit it. Throws unless the endpoint is this task's and live. */
   send(ep: Endpoint, text: string): void;
+  /** Press the agent's stop key (its turn ends, the session stays). Throws unless the endpoint is this task's and live. */
+  interrupt(ep: Endpoint): void;
   /** Whether the endpoint's terminal still runs, and whether its agent is busy. Never throws. */
   state(ep: Endpoint): EndpointState;
   /** End the endpoint's program and remove its terminal. Gone already is success; throws unless it is proven gone. */
@@ -388,6 +390,12 @@ function herdrAppBackend(env: NodeJS.ProcessEnv, runner: Runner, warn: (line: st
       const r = hcCli(runner, ['send', '--json', ep.terminal, '--', text]);
       if ('error' in r) throw new Error(`Could not send to ${ep.task} (terminal ${ep.terminal}): ${r.error}`);
     },
+    interrupt(ep) {
+      const s = read(ep);
+      if (s.liveness !== 'live') throw new Error(`Cannot interrupt ${ep.task}: its terminal ${ep.terminal} is ${s.liveness}`);
+      const r = hcCli(runner, ['interrupt', '--json', ep.terminal]);
+      if ('error' in r) throw new Error(`Could not interrupt ${ep.task} (terminal ${ep.terminal}): ${r.error}`);
+    },
     state(ep) {
       const s = read(ep);
       const status = obj(s.terminal.status).state;
@@ -479,6 +487,11 @@ function testBackend(env: NodeJS.ProcessEnv): TerminalBackend {
       const l = liveness(ep);
       if (l !== 'live') throw new Error(`Cannot send to ${ep.task}: its terminal ${ep.terminal} is ${l}`);
       appendFileSync(join(dir, `${ep.terminal}.input`), `${text}\n`);
+    },
+    interrupt(ep) {
+      const l = liveness(ep);
+      if (l !== 'live') throw new Error(`Cannot interrupt ${ep.task}: its terminal ${ep.terminal} is ${l}`);
+      appendFileSync(join(dir, `${ep.terminal}.input`), '<interrupt>\n');
     },
     state: (ep) => ({ liveness: liveness(ep), busy: 'unknown' }),
     close(ep) {

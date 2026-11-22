@@ -7,16 +7,20 @@ import { getTask } from '../src/tasks.ts';
 import { cleanup, cli, cloneOf, fakeAgent, git, idFrom, makeHome, makeRepo, releaseHeld, tmpDir, waitFor } from './helpers.ts';
 
 describe('end to end with a fake agent', () => {
-  it('code project: spawn, inbox, follow-up, review, close --commit', async () => {
+  it('local-only build: spawn, question, inbox message, relaunch, review, merge on the Boss word, landed cleanup', async () => {
     const { dir, env } = makeHome();
     try {
       const repo = makeRepo(join(dir, 'my app'));
-      assert.equal(cli(env, ['add', repo]).code, 0);
-      assert.match(cli(env, ['projects']).out, /my-app  \[no-mistakes\]  .*projects[\\/]my-app  \(clone, from /);
+      assert.equal(cli(env, ['add', repo, '--mode', 'local-only']).code, 0);
+      assert.match(cli(env, ['projects']).out, /my-app  \[local-only\]  .*projects[\\/]my-app  \(clone, from /);
 
       const spawned = cli(env, ['spawn', '--project', 'my-app'], 'Title: Write the file\nMODE:question\nDone when: member-output.txt exists');
       assert.equal(spawned.code, 0, spawned.err);
+      assert.match(spawned.out, /deliver: local-only/);
       const id = idFrom(spawned.out);
+      const brief = readFileSync(join(home(env), 'data', id, 'brief.md'), 'utf8');
+      assert.match(brief, /^Delivery contract: mode=local-only$/m);
+      assert.match(brief, new RegExp(`^Build branch: amigo/${id}$`, 'm'));
       const asked = await waitFor(id, env, ['question', 'done', 'failed']);
       assert.equal(asked.status, 'question');
       assert.equal(asked.summary, 'which color?');
@@ -24,34 +28,54 @@ describe('end to end with a fake agent', () => {
       assert.match(cli(env, ['inbox']).out, new RegExp(`${id}  question`));
       assert.equal(cli(env, ['inbox']).out.trim(), 'Inbox empty.', 'inbox shows each result once');
 
+      // send is the data plane: a durable inbox record. The run-once agent has exited, so nothing is rung.
       const answer = join(dir, 'answer.md');
       writeFileSync(answer, 'use blue');
-      assert.equal(cli(env, ['send', id, '--file', answer]).code, 0);
-      const done = await waitFor(id, env, ['done', 'failed']);
-      assert.equal(done.status, 'done');
+      const sent = cli(env, ['send', id, '--file', answer]);
+      assert.equal(sent.code, 0, sent.err);
+      assert.match(sent.out, /Recorded for/);
+      assert.match(sent.out, /Did not ring/);
+      const inboxDir = join(home(env), 'state', 'tasks', id, 'inbox');
+      assert.match(readFileSync(join(inboxDir, '001.msg'), 'utf8'), /^schema=amigo-task-inbox\.v1\n[\s\S]*\n--\nuse blue\n$/);
+      assert.match(cli(env, ['status', id]).out, /inbox:\s+1 message not acknowledged \(oldest 001\.msg\)/);
+      assert.equal(getTask(id, env)?.status, 'question', 'send does not restart anything');
+
+      // control is the lifecycle plane: relaunch runs the agent again with the note.
+      assert.equal(cli(env, ['control', id, 'relaunch']).code, 1, 'relaunch needs a note');
+      const relaunched = cli(env, ['control', id, 'relaunch', '--note', 'use blue, then read your inbox']);
+      assert.equal(relaunched.code, 0, relaunched.err);
+      const done = await waitFor(id, env, ['done', 'failed', 'blocked']);
+      assert.equal(done.status, 'done', done.summary);
       assert.equal(done.runs, 2);
+      assert.equal(done.summary, `ready in branch amigo/${id}`);
       const wt = done.worktree as string;
+      const clone = cloneOf(env, 'my-app');
       assert.equal(readFileSync(join(wt, 'member-output.txt'), 'utf8'), 'follow-up handled\n');
-      assert.ok(!existsSync(join(repo, 'member-output.txt')), 'the source is untouched');
-      assert.ok(!existsSync(join(cloneOf(env, 'my-app'), 'member-output.txt')), 'the clone is untouched');
-      assert.match(cli(env, ['status', id]).out, /member-output\.txt/);
+      assert.equal(done.localDoneHead, git(clone, 'rev-parse', `amigo/${id}`).trim(), 'the ready head is latched');
+      assert.ok(!existsSync(join(clone, 'member-output.txt')), 'the clone is untouched until the merge');
+      assert.match(readFileSync(join(home(env), 'state', 'tasks', id, 'status'), 'utf8'), /^done \[at=\d+\]: ready in branch /m);
 
       const review = idFrom(cli(env, ['spawn', '--review', id], 'Title: Review it\ncheck the file').out);
       assert.equal((await waitFor(review, env, ['done', 'failed'])).summary, 'PASS - looks good');
-      const blocked = cli(env, ['close', id, '--commit']);
+      const blocked = cli(env, ['close', id]);
       assert.equal(blocked.code, 1);
       assert.match(blocked.err, /Close the review first/);
       assert.equal(cli(env, ['close', review]).code, 0);
 
-      const closed = cli(env, ['close', id, '--commit', '-m', 'feat: add squad member output']);
-      assert.equal(closed.code, 0, closed.err);
-      assert.match(closed.out, /Committed \w+ to branch amigo\//);
+      const notYolo = cli(env, ['merge', id]);
+      assert.equal(notYolo.code, 1);
+      assert.match(notYolo.err, /merges only when the Boss says "merge it"/);
+      const merged = cli(env, ['merge', id, '--boss']);
+      assert.equal(merged.code, 0, merged.err);
+      assert.match(merged.out, new RegExp(`merged amigo/${id} into local main`));
+      assert.match(merged.out, /Landed: .* is in the local main/);
+      assert.match(merged.out, new RegExp(`Closed ${id}\\.`));
+      assert.equal(git(clone, 'rev-parse', 'main').trim(), done.localDoneHead);
+      assert.equal(readFileSync(join(clone, 'member-output.txt'), 'utf8').replace(/\r\n/g, '\n'), 'follow-up handled\n', 'the clone checkout followed the fast-forward');
       assert.equal(git(wt, 'rev-parse', '--abbrev-ref', 'HEAD').trim(), 'HEAD', 'the worktree went back to the pool, off the branch');
-      assert.equal(git(wt, 'status', '--porcelain').trim(), '');
-      const clone = cloneOf(env, 'my-app');
-      assert.equal(git(clone, 'log', '-1', '--format=%s', `amigo/${id}`).trim(), 'feat: add squad member output');
-      assert.equal(git(clone, 'show', '--name-only', '--format=', `amigo/${id}`).trim(), 'member-output.txt');
-      assert.equal(git(clone, 'rev-parse', '--abbrev-ref', 'HEAD').trim(), 'main', 'nothing merged');
+      const after = getTask(id, env)!;
+      assert.equal(after.status, 'closed');
+      assert.equal(after.merge?.authority, 'boss');
       assert.equal(git(repo, 'branch', '--list', `amigo/${id}`).trim(), '', 'nothing was pushed to the source');
     } finally {
       cleanup(dir);
@@ -93,7 +117,7 @@ describe('end to end with a fake agent', () => {
       await waitFor(good, env, ['done']);
       const refused = cli(env, ['close', good]);
       assert.equal(refused.code, 1);
-      assert.match(refused.err, /1 changed files/);
+      assert.match(refused.err, /its work has not landed \(\w+ is on no remote branch/);
       assert.equal(getTask(good, env)?.status, 'done', 'a refused close puts the task back');
       assert.equal(cli(env, ['close', good, '--force']).code, 0);
     } finally {
@@ -101,18 +125,19 @@ describe('end to end with a fake agent', () => {
     }
   });
 
-  it('refuses to commit when the squad member left its branch, and keeps the work', async () => {
+  it('refuses a ready report when the crew member left its branch, and keeps the work', async () => {
     const { dir, env } = makeHome();
     try {
       const repo = makeRepo(join(dir, 'repo'));
-      cli(env, ['add', repo]);
+      cli(env, ['add', repo, '--mode', 'local-only']);
       const id = idFrom(cli(env, ['spawn', '--project', 'repo'], 'Title: wander\nMODE:switch').out);
-      const t = await waitFor(id, env, ['done', 'failed']);
-      const r = cli(env, ['close', id, '--commit']);
-      assert.equal(r.code, 1);
-      assert.match(r.err, /refs\/heads\/elsewhere, not amigo\//);
-      assert.equal(getTask(id, env)?.status, 'done');
+      const t = await waitFor(id, env, ['done', 'failed', 'blocked']);
+      assert.equal(t.status, 'blocked');
+      assert.match(t.summary ?? '', new RegExp(`done refused: your HEAD \\w+ is not your branch amigo/${id}`));
+      assert.equal(t.localDoneHead, undefined, 'no ready head was latched');
+      assert.match(cli(env, ['merge', id, '--boss']).err, /has no accepted done head/);
       assert.ok(existsSync(join(t.worktree as string, 'member-output.txt')), 'the work is still there');
+      assert.match(cli(env, ['close', id]).err, /has not landed/);
     } finally {
       cleanup(dir);
     }
