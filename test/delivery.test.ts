@@ -3,7 +3,7 @@ import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 import { classifyDone, dodBlock, parseBriefInput, renderBrief } from '../src/delivery.ts';
-import { checksNotGreen, verifyMergeable, type PrView } from '../src/pr.ts';
+import { checksNotGreen, readProducers, requiredChecks, verifyMergeable, type PrView } from '../src/pr.ts';
 import { declaredWait, describeStatus, formatStatusLine, openItems, parseStatusLine, readStatus, statusFile } from '../src/status.ts';
 import { inboxBody, pendingMessages } from '../src/steer.ts';
 import { getTask } from '../src/tasks.ts';
@@ -147,6 +147,42 @@ describe('merge checks', () => {
     assert.equal(all.refusals.length, 5, all.refusals.join('\n'));
     assert.ok(verifyMergeable(prState(head, { mergeable: 'UNKNOWN' }), { names: [], errors: [] }).unknownOnly);
     assert.deepEqual(verifyMergeable(prState(head), { names: ['test'], errors: [] }).refusals, []);
+  });
+});
+
+describe('required checks', () => {
+  const ref = { url: 'https://github.com/example/repo/pull/7', owner: 'example', repo: 'repo', number: 7 };
+  const head = 'a'.repeat(40);
+  it('only GitHub plan-gated 403 means there are no branch rules; a 404 is unreadable and refuses the merge', () => {
+    const { dir, env: base } = makeHome();
+    try {
+      const env = { ...base, ...fakeGhEnv(dir).env };
+      const notFound = requiredChecks(ref, 'main', dir, { ...env, FAKE_GH_RULES_ERR: 'gh: Not Found (HTTP 404)' });
+      assert.deepEqual(notFound.errors, ['the branch rules for base branch main could not be read']);
+      assert.ok(verifyMergeable(prState(head, { statusCheckRollup: [] }), notFound).refusals.some((r) => /branch rules/.test(r)));
+      const gated = requiredChecks(ref, 'main', dir, { ...env, FAKE_GH_RULES_ERR: 'gh: Upgrade to GitHub Pro or make this repository public to enable this feature. (HTTP 403)' });
+      assert.deepEqual(gated.errors, []);
+    } finally {
+      cleanup(dir);
+    }
+  });
+
+  it('a required check bound to an app is satisfied only by a check run from that app', () => {
+    const { dir, env: base } = makeHome();
+    try {
+      const rules = JSON.stringify([{ type: 'required_status_checks', parameters: { required_status_checks: [{ context: 'test', integration_id: 15368 }] } }]);
+      const env = { ...base, ...fakeGhEnv(dir).env, FAKE_GH_RULES: rules };
+      const req = requiredChecks(ref, 'main', dir, env);
+      assert.deepEqual(req.bound, [{ context: 'test', appId: 15368 }]);
+      const other = readProducers(ref, head, req, dir, { ...env, FAKE_GH_CHECK_RUNS: JSON.stringify({ name: 'test', app: 99, head_sha: head }) });
+      assert.deepEqual(verifyMergeable(prState(head), other).unreported, ['test'], 'a same-named run from another app does not count');
+      const right = readProducers(ref, head, req, dir, { ...env, FAKE_GH_CHECK_RUNS: JSON.stringify({ name: 'test', app: 15368, head_sha: head }) });
+      assert.deepEqual(verifyMergeable(prState(head), right).refusals, []);
+      const failed = readProducers(ref, head, req, dir, { ...env, FAKE_GH_CHECK_RUNS: 'fail' });
+      assert.ok(verifyMergeable(prState(head), failed).refusals.some((r) => /check runs at head/.test(r)));
+    } finally {
+      cleanup(dir);
+    }
   });
 });
 

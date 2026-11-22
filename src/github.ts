@@ -13,14 +13,14 @@ export function requireGh(env: NodeJS.ProcessEnv): string {
   return file;
 }
 
-/** Run gh in `cwd`. A Windows .cmd shim only starts through cmd.exe. */
+/** Run gh in `cwd` with `env`. A Windows .cmd shim only starts through cmd.exe. */
 export function runGh(args: string[], cwd: string, env: NodeJS.ProcessEnv): RunResult {
   const file = requireGh(env);
   if (process.platform === 'win32' && /\.(cmd|bat)$/i.test(file)) {
-    const r = spawnSync([file, ...args].map(quoteForCmd).join(' '), { cwd, encoding: 'utf8', shell: true, windowsHide: true });
+    const r = spawnSync([file, ...args].map(quoteForCmd).join(' '), { cwd, env, encoding: 'utf8', shell: true, windowsHide: true });
     return { status: r.status, stdout: r.stdout ?? '', stderr: r.stderr ?? '', error: r.error };
   }
-  return run(file, args, { cwd });
+  return run(file, args, { cwd, env });
 }
 
 function ghOrThrow(args: string[], cwd: string, env: NodeJS.ProcessEnv): string {

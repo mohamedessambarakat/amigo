@@ -2,7 +2,7 @@ import { awayMergeRefusal } from './away.ts';
 import { closeMember } from './close.ts';
 import { loadProjects, type Project } from './config.ts';
 import { fastForwardLive, mergeLocal } from './landing.ts';
-import { describePr, mergePinned, parsePrUrl, requiredChecks, verifyMergeable, viewPr, type PrView } from './pr.ts';
+import { describePr, mergePinned, parsePrUrl, readProducers, requiredChecks, verifyMergeable, viewPr, type PrView } from './pr.ts';
 import { appendStatus, formatStatusLine } from './status.ts';
 import { syncProject } from './sync.ts';
 import { isActive } from './squad.ts';
@@ -82,7 +82,7 @@ export function mergeTask(id: string, opts: MergeOptions, env: NodeJS.ProcessEnv
   let checks: ReturnType<typeof verifyMergeable>;
   for (const end = Date.now() + UNKNOWN_BUDGET_MS; ; ) {
     view = viewPr(url, cwd, env);
-    checks = verifyMergeable(view, requiredChecks(ref, view.baseRefName, cwd, env), { allowRed: opts.allowRed, allowMissing: opts.allowMissing, expectedHead: opts.expectedHead });
+    checks = verifyMergeable(view, readProducers(ref, view.headRefOid, requiredChecks(ref, view.baseRefName, cwd, env), cwd, env), { allowRed: opts.allowRed, allowMissing: opts.allowMissing, expectedHead: opts.expectedHead });
     if (!checks.unknownOnly || Date.now() >= end) break;
     sleep(retryMs);
   }

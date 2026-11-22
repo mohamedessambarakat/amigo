@@ -56,7 +56,21 @@ if (args[0] === 'pr' && args[1] === 'merge' && prFile) {
   writeFileSync(prFile, JSON.stringify({ ...pr, state: 'MERGED', mergeCommit: { oid: pr.headRefOid } }));
   process.exit(0);
 }
+if (args[0] === 'api' && args.some((a) => /\/check-runs$/.test(a))) {
+  // FAKE_GH_CHECK_RUNS: JSON lines {name, app, head_sha}, as amigo's --jq filter prints them; "fail" fails the read.
+  if (process.env.FAKE_GH_CHECK_RUNS === 'fail') {
+    console.error('gh: Server Error (HTTP 502)');
+    process.exit(1);
+  }
+  process.stdout.write(process.env.FAKE_GH_CHECK_RUNS ?? '');
+  process.exit(0);
+}
 if (args[0] === 'api' && /\/rules\/branches\//.test(args.at(-1))) {
+  // FAKE_GH_RULES_ERR: the rules read fails with this message (a 404, or GitHub's plan-gated 403).
+  if (process.env.FAKE_GH_RULES_ERR) {
+    console.error(process.env.FAKE_GH_RULES_ERR);
+    process.exit(1);
+  }
   console.log(process.env.FAKE_GH_RULES ?? '[]');
   process.exit(0);
 }
