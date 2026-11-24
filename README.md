@@ -156,7 +156,8 @@ Data lives in $AMIGO_HOME (default ~/.amigo): config/, data/, state/ and project
     }
   },
   "memberMb": 600,
-  "reserveMb": 2048
+  "reserveMb": 2048,
+  "rotateAtTokens": 500000
 }
 ```
 
@@ -173,6 +174,7 @@ Flags come from each tool's documentation; check them against your installed ver
 - **Permissions are yours to choose.** Crew members work without anyone approving each step, so a crew member can only do what its flags allow, and whatever you allow applies to every crew member. Claude Code's `auto` mode lets a classifier approve safe actions and blocks risky ones; Codex works in a sandbox limited to the crew member's folder; Gemini CLI approves edits only; Grok's `--always-approve` approves everything your Grok deny rules allow; Antigravity documents no headless approval flag, so its crew members may stop and ask. Flags that skip all checks belong only inside a container or VM.
 - Crew members use the same agent as amigo unless a dispatch profile or amigo picks another (`--agent`).
 - A crew member starts only while free memory, minus `memberMb`, stays at or above `reserveMb`; other tasks wait in a queue. Only one crew member runs in a folder at a time.
+- amigo's own session rotates once its context passes `rotateAtTokens` (default 500000; `0` turns it off): amigo saves what only that session knows with `/remember`, and the `amigo` command restarts it fresh in the same tab with the full digest.
 - **Claude Code crew members** are interactive sessions named `amigo-<id>` that you can type into in their tab. Hooks record each turn's report, and a turn that ends without one is sent back once. Before one starts, amigo marks its folder trusted in `~/.claude.json` and removes that entry when the worktree is closed.
 - On Windows, agents installed by npm are `.cmd` files that cannot carry a multi-line prompt, so they get one line: "Read the file <path> and follow the instructions in it exactly." The same happens for any prompt longer than 24,000 characters.
 
