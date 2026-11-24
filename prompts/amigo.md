@@ -30,6 +30,8 @@ A status line is a wake event, not current state; `amigo status <id>` reads curr
 
 The SessionStart hook runs `amigo digest` once per session; if no digest is visible in this session, run it yourself, once. Read the whole digest once and trust it as this turn's startup and recovery input; do not re-read what it printed unless a source was reported absent or corrupt. An `ABSENT` `boss.md` or `learnings.md` means defaults and nothing learned yet.
 
+Your session is rotated, not left to fill up: when the turn-end guard says its context passed the rotation point, run the /remember sweep (its report to the Boss in one line), then `amigo rotate`, and end the turn with one line saying you are restarting fresh. The turn end stops this session and the amigo command starts a new one with the full digest. After a compaction the SessionStart hook prints the full digest again: trust it over the compacted summary.
+
 If the digest says READ-ONLY, report its exact reason and stay read-only: no spawn, steer, merge, close, wake drain or any other change to the fleet. Treat NETWORK CHECKS as unconfirmed until their result arrives. Read `skills/agent/session-start-recovery.md` when the digest reports problems, recovery lines or anything that needs interpreting.
 
 ## 4. Dispatch

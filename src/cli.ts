@@ -21,7 +21,8 @@ import { codeRoot, configPath, home, stateDir } from './paths.ts';
 import { installSkills, removeSkills } from './skills.ts';
 import { terminalBackend } from './terminal.ts';
 import { runNetworkChecks, sessionDigest } from './digest.ts';
-import { controlRefusal } from './session.ts';
+import { controlRefusal, identity } from './session.ts';
+import { newLauncher, requestRotation, ROTATED_NOTE, takeRotation } from './rotate.ts';
 import { autoArm, turnEndGuard, type HookPayload } from './supervise.ts';
 import { ackWakes, describeDrain, drainWakes, readQueue } from './wakes.ts';
 import { listChecks, registerCheck, removeCheck, supervisionNeed, watchCycle, watcherHealthy } from './watch.ts';
@@ -68,6 +69,7 @@ export const HELP = `amigo: your right hand. Runs the crew.
   amigo land <id>                                   finish after a merge: refresh the clone, fast-forward the live folder, clean up once landed
   amigo close <id> [--force]                        tear a crew member down; a build only once its work has landed (--force: the Boss said discard it)
   amigo digest [--again]                            the session-start digest: take the session lock, drain wakes, show the fleet (once per session)
+  amigo rotate                                      (amigo itself) restart amigo's session fresh at this turn end, to free context
   amigo wake (drain | ack --through <seq> --generation <n> | status)
                                                     the durable wake queue: show it, acknowledge what was handled, or count it
   amigo watch                                       run one watcher cycle here and print the wake it closes on (the Stop hook does this itself)
@@ -92,7 +94,7 @@ export const HELP = `amigo: your right hand. Runs the crew.
 Data lives in ${'$'}AMIGO_HOME (default ~/.amigo): config/, data/, state/ and projects/.`;
 
 /** Every command the help lists, for the tests that keep the help and the dispatch below in step. */
-export const COMMANDS: readonly string[] = ['install-skill', 'brief', 'add', 'projects', 'sync', 'migrate', 'note', 'spawn', 'status', 'inbox', 'wait', 'send', 'control', 'report', 'attach', 'pr-check', 'merge', 'land', 'close', 'digest', 'wake', 'watch', 'daemon', 'check', 'backlog', 'hold', 'answer', 'complete', 'dispatch', 'capacity', 'away', 'update', 'help'];
+export const COMMANDS: readonly string[] = ['install-skill', 'brief', 'add', 'projects', 'sync', 'migrate', 'note', 'spawn', 'status', 'inbox', 'wait', 'send', 'control', 'report', 'attach', 'pr-check', 'merge', 'land', 'close', 'digest', 'rotate', 'wake', 'watch', 'daemon', 'check', 'backlog', 'hold', 'answer', 'complete', 'dispatch', 'capacity', 'away', 'update', 'help'];
 
 function readStdin(what: string): string {
   if (process.stdin.isTTY) throw new Error(`Pass the ${what} on stdin or as a file (see amigo help)`);
@@ -143,7 +145,8 @@ export async function main(argv: string[], rawEnv: NodeJS.ProcessEnv = process.e
       const payload = (raw.trim() ? JSON.parse(raw) : {}) as HookPayload;
       const name = rest[0] ?? '';
       if (name === 'session-start') {
-        if (!env.AMIGO_TASK) out(sessionDigest(env, { payloadSession: payload.session_id, once: true }));
+        // Once per session, except after a compaction: the compacted summary is no substitute for the fleet's current state.
+        if (!env.AMIGO_TASK) out(sessionDigest(env, { payloadSession: payload.session_id, once: payload.source !== 'compact' }));
         return 0;
       }
       const r = name === 'guard' ? await turnEndGuard(payload, env) : name === 'stop' || name === 'stop-failure' ? await autoArm(payload, env, name) : null;
@@ -210,7 +213,19 @@ export async function main(argv: string[], rawEnv: NodeJS.ProcessEnv = process.e
       const backend = terminalBackend(env).name;
       const agent = leadAgent(loadConfig(env), values.agent as string | undefined, env);
       const briefing = startBriefing(agent, env, { dryRun });
-      return await runAmigo(agent, { dryRun, briefing: briefing.text, live: briefing.live, backend }, env);
+      const launcher = newLauncher();
+      let code = await runAmigo(agent, { dryRun, briefing: briefing.text, live: briefing.live, backend, launcher }, env);
+      // A session stopped for a context rotation (rotate.ts) is followed by a fresh one in this terminal.
+      while (!dryRun && takeRotation(env, launcher)) {
+        process.stderr.write('\namigo: starting a fresh session (context rotation)...\n');
+        code = await runAmigo(agent, { briefing: `${ROTATED_NOTE}\n\n${localBriefing(env)}`, backend, launcher }, env);
+      }
+      return code;
+    }
+
+    case 'rotate': {
+      out(requestRotation(identity(env), env));
+      return 0;
     }
 
     case 'brief': {
