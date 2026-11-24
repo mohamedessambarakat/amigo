@@ -4,7 +4,7 @@ import { join, resolve } from 'node:path';
 import { describe, it } from 'node:test';
 import { issueBlock, stations, statusText } from '../src/squad.ts';
 import { getTask, saveTask, type Task } from '../src/tasks.ts';
-import { cleanup, cli, cloneOf, fakeGhEnv, ghCalls, git, idFrom, makeHome, makeRepo, releaseHeld, waitFor } from './helpers.ts';
+import { branchOf, cleanup, cli, cloneOf, fakeGhEnv, ghCalls, git, idFrom, makeHome, makeRepo, releaseHeld, waitFor } from './helpers.ts';
 
 const folderOf = (env: NodeJS.ProcessEnv, id: string, file: string): string => readFileSync(join(env.AMIGO_HOME as string, 'state', 'tasks', id, file), 'utf8');
 
@@ -30,7 +30,7 @@ describe('dependent tasks', () => {
       assert.equal(getTask(second, env)?.status, 'queued');
       assert.match(cli(env, ['status', second]).out, /after:\s+\S+ \(waits until it is closed with a commit\)/);
 
-      const committed = git(clone, 'rev-parse', `amigo/${first}`).trim();
+      const committed = git(clone, 'rev-parse', branchOf(env, first)).trim();
       assert.equal(getTask(first, env)?.localDoneHead, committed);
       const merged = cli(env, ['merge', first, '--boss']);
       assert.equal(merged.code, 0, merged.err);

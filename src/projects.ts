@@ -1,6 +1,6 @@
 import { existsSync, rmSync, statSync } from 'node:fs';
 import { isAbsolute, resolve } from 'node:path';
-import { DELIVERY_MODES, DEFAULT_BRANCH_PREFIX, DEFAULT_MODE, findProject, loadProjects, nameFromSource, saveProjects, validProjectName, type DeliveryMode, type Project } from './config.ts';
+import { DELIVERY_MODES, DEFAULT_MODE, findProject, loadProjects, nameFromSource, saveProjects, validProjectName, type DeliveryMode, type Project } from './config.ts';
 import { clonePath } from './paths.ts';
 import { run } from './proc.ts';
 
@@ -8,7 +8,6 @@ export interface ProjectFields {
   name?: string;
   mode?: string;
   yolo?: boolean;
-  branchPrefix?: string;
   /** A folder path; "" clears it. */
   live?: string;
   notes?: string;
@@ -48,7 +47,7 @@ const sameSource = (a: string, b: string): boolean => {
 
 /**
  * Register a project: clone `source` into projects/<name> and record it with its delivery posture (default no-mistakes, yolo
- * off, branch prefix amigo/). The same name and source again updates the fields given and keeps the rest, without cloning.
+ * off). The same name and source again updates the fields given and keeps the rest, without cloning.
  * Never overwrites or repurposes an existing path; a registry write that fails after the clone removes the clone it just made.
  */
 export function addProject(source: string, opts: ProjectFields, env: NodeJS.ProcessEnv = process.env): { project: Project; updated: boolean; cloned: boolean } {
@@ -57,7 +56,6 @@ export function addProject(source: string, opts: ProjectFields, env: NodeJS.Proc
   if (!validProjectName(name)) throw new Error(`"${name}" is not a valid project name (letters, digits, . _ -); pick one with --name`);
   const mode = checkMode(opts.mode);
   const live = checkLive(opts.live);
-  if (opts.branchPrefix !== undefined && /\s/.test(opts.branchPrefix)) throw new Error('--branch-prefix cannot contain spaces');
   const projects = loadProjects(env);
   const old = projects.find((p) => p.name === name);
   if (old && !sameSource(old.source, src)) throw new Error(`A project named "${name}" already exists, cloned from ${old.source}; pick another name with --name`);
@@ -78,7 +76,6 @@ export function addProject(source: string, opts: ProjectFields, env: NodeJS.Proc
     path: dest,
     mode: mode ?? old?.mode ?? DEFAULT_MODE,
     yolo: opts.yolo ?? old?.yolo ?? false,
-    branchPrefix: opts.branchPrefix ?? old?.branchPrefix ?? DEFAULT_BRANCH_PREFIX,
     addedAt: old?.addedAt ?? new Date().toISOString().slice(0, 10),
     ...(live === '' ? {} : (live ?? old?.live) ? { live: live ?? old?.live } : {}),
     ...((opts.notes ?? old?.notes) ? { notes: opts.notes ?? old?.notes } : {}),

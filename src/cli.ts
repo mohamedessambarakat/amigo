@@ -35,7 +35,7 @@ export const HELP = `amigo: your right hand. Runs the crew.
   amigo [--agent <name>] [--dry-run]                start amigo in this terminal: a briefing first, then you just talk to it
   amigo install-skill [<agent>] [--remove]          set up your agent CLIs: /amigo for Claude Code, crew templates for the rest
   amigo brief --agent <name>                        print amigo's instructions and the briefing (what /amigo runs; only inside a session amigo started)
-  amigo add <git url or path> [--name <name>] [--mode no-mistakes|direct-PR|local-only] [--yolo | --no-yolo] [--branch-prefix <p>]
+  amigo add <git url or path> [--name <name>] [--mode no-mistakes|direct-PR|local-only] [--yolo | --no-yolo]
             [--live <folder>] [--notes <text>] [--live-command <cmd>]... [--watch <text>]...
                                                     clone a project into projects/<name> and register it; the same name and source again updates it
   amigo projects                                    list registered projects
@@ -43,9 +43,11 @@ export const HELP = `amigo: your right hand. Runs the crew.
   amigo migrate [--live <project>]... [--drop <project>]... [--dry-run]
                                                     convert a home from before this version: projects become clones, the old gate files go
   amigo note <project> <text>                       add a line to a project's notes (every later crew member gets it)
-  amigo spawn (--project <name> | --review <id> | --scratch) [--title <t>] [--agent <name>] [--after <id>] [--issue <n>] [--brief-file <file>] [--dry-run]
+  amigo spawn (--project <name> | --review <id> | --scratch) [--type <t>] [--title <t>] [--agent <name>] [--after <id>] [--issue <n>] [--brief-file <file>] [--dry-run]
                                                     start a crew member; the brief comes from stdin unless --brief-file is given. A build's
-                                                    brief is "## Boss's intent" and "## amigo spec"; amigo adds the rules and the definition of done
+                                                    brief is "## Boss's intent" and "## amigo spec"; amigo adds the rules and the definition of done.
+                                                    A build needs --type feat|fix|refactor|docs|style|test|chore|perf|build|ci: its
+                                                    branch is <type>/<title words>, as fix/sidebar-alignment
             [--survey] [--task <backlog id>] [--model <m>] [--effort low|medium|high|xhigh|max] [--boss-max]
                                                     a survey writes data/<id>/report.md and never pushes; --task dispatches a backlog item
   amigo status [<id>]                               tasks by station, or one in detail (status, inbox, PR, uncommitted files)
@@ -241,7 +243,6 @@ export async function main(argv: string[], rawEnv: NodeJS.ProcessEnv = process.e
         mode: { type: 'string' },
         yolo: { type: 'boolean' },
         'no-yolo': { type: 'boolean' },
-        'branch-prefix': { type: 'string' },
         live: { type: 'string' },
         notes: { type: 'string' },
         'live-command': { type: 'string', multiple: true },
@@ -257,7 +258,6 @@ export async function main(argv: string[], rawEnv: NodeJS.ProcessEnv = process.e
           name: values.name as string | undefined,
           mode: values.mode as string | undefined,
           yolo: values.yolo ? true : values['no-yolo'] ? false : undefined,
-          branchPrefix: values['branch-prefix'] as string | undefined,
           live: values.live as string | undefined,
           notes: values.notes as string | undefined,
           liveCommands: list(values['live-command']),
@@ -266,7 +266,7 @@ export async function main(argv: string[], rawEnv: NodeJS.ProcessEnv = process.e
         env,
       );
       out(`${updated ? 'Updated' : 'Added'} ${p.name}: ${cloned ? 'cloned' : 'clone of'} ${p.source} ${cloned ? 'into' : 'at'} ${p.path}`);
-      out(`delivery: ${p.mode}${p.yolo ? ' +yolo (amigo may merge green work itself)' : ', yolo off (the Boss says "merge it")'}; branches ${p.branchPrefix}<task id>`);
+      out(`delivery: ${p.mode}${p.yolo ? ' +yolo (amigo may merge green work itself)' : ', yolo off (the Boss says "merge it")'}; branches <type>/<task title>`);
       if (p.live) out(`live install: ${p.live} (fast-forwarded after a confirmed merge)`);
       if (p.liveCommands) out(p.liveCommands.length ? `live commands (briefing): ${p.liveCommands.join(' | ')}` : 'live commands (briefing): none');
       if (p.watch?.length) out(`watch (briefing): ${p.watch.join(' | ')}`);
@@ -294,7 +294,6 @@ export async function main(argv: string[], rawEnv: NodeJS.ProcessEnv = process.e
         const tangled = existsSync(p.path) ? tangleBranch(p.path) : null;
         const state = !existsSync(p.path) ? 'CLONE MISSING' : tangled ? `CLONE ON BRANCH ${tangled}, not its default` : 'clone';
         const extra = [
-          p.branchPrefix !== 'amigo/' ? `branches: ${p.branchPrefix}<task id>` : '',
           p.live ? `live install: ${p.live}` : '',
           p.notes ? `notes: ${p.notes.replace(/\n/g, '\n           ')}` : '',
           p.liveCommands ? `live commands: ${p.liveCommands.length ? p.liveCommands.join(' | ') : '(none)'}` : '',
@@ -316,6 +315,7 @@ export async function main(argv: string[], rawEnv: NodeJS.ProcessEnv = process.e
         project: { type: 'string' },
         review: { type: 'string' },
         scratch: { type: 'boolean' },
+        type: { type: 'string' },
         title: { type: 'string' },
         agent: { type: 'string' },
         after: { type: 'string' },
@@ -339,6 +339,7 @@ export async function main(argv: string[], rawEnv: NodeJS.ProcessEnv = process.e
           project: values.project as string | undefined,
           review: values.review === undefined ? undefined : resolveId(values.review as string, env),
           scratch: Boolean(values.scratch),
+          type: values.type as string | undefined,
           title: values.title as string | undefined,
           agent: values.agent as string | undefined,
           after: values.after === undefined ? undefined : resolveId(values.after as string, env),

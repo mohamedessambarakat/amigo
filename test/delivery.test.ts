@@ -9,7 +9,7 @@ import { mergeLocal } from '../src/landing.ts';
 import { inboxBody, pendingMessages, writeInbox } from '../src/steer.ts';
 import { getTask, type Task } from '../src/tasks.ts';
 import { scan } from '../src/watch.ts';
-import { addOrigin, cleanup, cli, cloneOf, fakeGhEnv, ghCalls, git, idFrom, makeHome, makeRepo, releaseHeld, waitFor } from './helpers.ts';
+import { addOrigin, branchOf, cleanup, cli, cloneOf, fakeGhEnv, ghCalls, git, idFrom, makeHome, makeRepo, releaseHeld, waitFor } from './helpers.ts';
 
 const BRIEF = "Title: Write the file\n## Boss's intent\nwrite the member output file\n## amigo spec\nKeep it to one file.\n";
 
@@ -25,9 +25,9 @@ describe('brief scaffold', () => {
 
   it('renders each mode with its contract line, branch, isolation check, inbox and status rules', () => {
     for (const mode of ['no-mistakes', 'direct-PR', 'local-only'] as const) {
-      const text = renderBrief({ id: '3-x', project: 'web', mode, branch: 'amigo/3-x', clone: '/home/projects/web', intent: 'the ask', spec: 'the spec', dataDir: '/d/3-x', statusFile: '/s/3-x/status', inboxDir: '/s/3-x/inbox' });
+      const text = renderBrief({ id: '3-x', project: 'web', mode, branch: 'fix/x', clone: '/home/projects/web', intent: 'the ask', spec: 'the spec', dataDir: '/d/3-x', statusFile: '/s/3-x/status', inboxDir: '/s/3-x/inbox' });
       assert.match(text, new RegExp(`^Delivery contract: mode=${mode}$`, 'm'));
-      assert.match(text, /^Build branch: amigo\/3-x$/m);
+      assert.match(text, /^Build branch: fix\/x$/m);
       assert.match(text, /## Boss's intent\nthe ask\n## amigo spec\nthe spec\n# Setup/);
       assert.match(text, /Verify isolation before anything else/);
       assert.match(text, /\/s\/3-x\/inbox/);
@@ -36,10 +36,10 @@ describe('brief scaffold', () => {
       assert.doesNotMatch(text, /[–—]/, 'no em or en dashes');
       assert.doesNotMatch(text, /captain|firstmate|first mate|crewmate|ahoy|shipshape|\baye\b/i, 'brand words only');
     }
-    assert.match(dodBlock('no-mistakes', 'amigo/1'), /NEVER pass `--yes`/);
-    assert.match(dodBlock('no-mistakes', 'amigo/1'), /done "PR <url> checks green"/);
-    assert.match(dodBlock('direct-PR', 'amigo/1'), /Do NOT run \/no-mistakes/);
-    assert.match(dodBlock('local-only', 'amigo/1'), /done "ready in branch amigo\/1"/);
+    assert.match(dodBlock('no-mistakes', 'fix/one'), /NEVER pass `--yes`/);
+    assert.match(dodBlock('no-mistakes', 'fix/one'), /done "PR <url> checks green"/);
+    assert.match(dodBlock('direct-PR', 'fix/one'), /Do NOT run \/no-mistakes/);
+    assert.match(dodBlock('local-only', 'fix/one'), /done "ready in branch fix\/one"/);
   });
 
   it('reads what a done line claims, per mode', () => {
@@ -240,8 +240,8 @@ describe('direct-PR delivery, merge and cleanup', () => {
       const done = await waitFor(id, env, ['done', 'blocked', 'failed']);
       assert.equal(done.status, 'done', done.summary);
       assert.equal(done.pr, 'https://github.com/example/repo/pull/7');
-      const head = git(clone, 'rev-parse', `amigo/${id}`).trim();
-      assert.equal(git(bare, 'rev-parse', `amigo/${id}`).trim(), head, 'the crew member pushed its branch');
+      const head = git(clone, 'rev-parse', branchOf(env, id)).trim();
+      assert.equal(git(bare, 'rev-parse', branchOf(env, id)).trim(), head, 'the crew member pushed its branch');
 
       // Red, then green: no merge without yolo or the Boss, red refused, a waiver only on the Boss's word.
       writeFileSync(prFile, JSON.stringify(prState(head, { statusCheckRollup: [{ __typename: 'CheckRun', name: 'test', status: 'COMPLETED', conclusion: 'FAILURE', startedAt: '2026-11-22T10:00:00Z' }] })));
@@ -324,13 +324,13 @@ describe('direct-PR delivery, merge and cleanup', () => {
       cli(env, ['add', bare, '--name', 'repo', '--mode', 'direct-PR', '--live', live]);
       const id = idFrom(cli(env, ['spawn', '--project', 'repo'], BRIEF).out);
       assert.equal((await waitFor(id, env, ['done', 'blocked', 'failed'])).status, 'done');
-      const head = git(cloneOf(env, 'repo'), 'rev-parse', `amigo/${id}`).trim();
+      const head = git(cloneOf(env, 'repo'), 'rev-parse', branchOf(env, id)).trim();
       // Someone squash-merges it on GitHub: main gets the same content in a new commit, and the branch is deleted.
       const other = join(dir, 'other');
       git(dir, 'clone', '-q', bare, other);
-      git(other, 'merge', '-q', '--squash', `origin/amigo/${id}`);
+      git(other, 'merge', '-q', '--squash', `origin/${branchOf(env, id)}`);
       git(other, 'commit', '-q', '-m', 'feat: squashed');
-      git(other, 'push', '-q', 'origin', 'main', `:amigo/${id}`);
+      git(other, 'push', '-q', 'origin', 'main', `:${branchOf(env, id)}`);
       writeFileSync(prFile, JSON.stringify(prState(head, { state: 'MERGED' })));
       const r = cli(env, ['pr-check', id]);
       assert.equal(r.code, 0, r.err);
@@ -355,7 +355,7 @@ describe('direct-PR delivery, merge and cleanup', () => {
       cli(env, ['add', bare, '--name', 'repo', '--mode', 'direct-PR']);
       const id = idFrom(cli(env, ['spawn', '--project', 'repo'], BRIEF).out);
       assert.equal((await waitFor(id, env, ['done', 'blocked', 'failed'])).status, 'done');
-      const head = git(cloneOf(env, 'repo'), 'rev-parse', `amigo/${id}`).trim();
+      const head = git(cloneOf(env, 'repo'), 'rev-parse', branchOf(env, id)).trim();
       // scan runs in this process, so the fake gh it starts inherits this process's environment.
       process.env.FAKE_GH_PR = prFile;
       const prWakes = () => scan(env).filter((w) => w.key === `pr:${id}`).map((w) => w.reason);
@@ -369,7 +369,7 @@ describe('direct-PR delivery, merge and cleanup', () => {
       assert.match(prWakes()[0] ?? '', /CI green, mergeable MERGEABLE, .* - ready for the Boss's "merge it"/);
       assert.deepEqual(prWakes(), []);
       // Merged on GitHub: the watcher records it, runs the after-merge steps and the task is closed once landed.
-      git(cloneOf(env, 'repo'), 'push', '-q', 'origin', `amigo/${id}:main`);
+      git(cloneOf(env, 'repo'), 'push', '-q', 'origin', `${branchOf(env, id)}:main`);
       writeFileSync(prFile, JSON.stringify(prState(head, { state: 'MERGED' })));
       assert.match(prWakes()[0] ?? '', new RegExp(`merged on GitHub\\. .*Closed ${id}\\.`));
       assert.equal(getTask(id, env)?.merge?.authority, 'forge');
@@ -389,7 +389,7 @@ describe('local-only landing', () => {
       const repo = makeRepo(join(dir, 'repo'));
       const main = git(repo, 'rev-parse', 'main').trim();
       const build = (id: string, files: string[], deleteAgain = false): Task => {
-        git(repo, 'checkout', '-q', '-b', `amigo/${id}`, 'main');
+        git(repo, 'checkout', '-q', '-b', `fix/${id}`, 'main');
         for (const f of files) {
           mkdirSync(dirname(join(repo, f)), { recursive: true });
           writeFileSync(join(repo, f), 'x\n');
@@ -402,9 +402,9 @@ describe('local-only landing', () => {
         }
         const head = git(repo, 'rev-parse', 'HEAD').trim();
         git(repo, 'checkout', '-q', 'main');
-        return { id, project: 'repo', mode: 'local-only', repo, branch: `amigo/${id}`, localDoneHead: head } as Task;
+        return { id, project: 'repo', mode: 'local-only', repo, branch: `fix/${id}`, localDoneHead: head } as Task;
       };
-      assert.throws(() => mergeLocal(build('1-key', ['notes.txt', 'keys/id_rsa']), env), /refusing to land amigo\/1-key: .*may hold secrets: keys\/id_rsa\. .*not waivable, not even with --boss/);
+      assert.throws(() => mergeLocal(build('1-key', ['notes.txt', 'keys/id_rsa']), env), /refusing to land fix\/1-key: .*may hold secrets: keys\/id_rsa\. .*not waivable, not even with --boss/);
       assert.throws(() => mergeLocal(build('2-env', ['app/.env.local'], true), env), /its history contains files that may hold secrets, even where a later commit deletes them: app\/\.env\.local\./);
       // A replace ref that shows an innocent commit in place of the real one hides nothing: the real objects are read.
       const hidden = build('4-hidden', ['keys/id_rsa']);
@@ -418,7 +418,7 @@ describe('local-only landing', () => {
       assert.throws(() => mergeLocal(build('6-graft', ['notes.txt']), env), /has a grafts file/);
       rmSync(join(repo, '.git', 'info', 'grafts'));
       assert.equal(git(repo, 'rev-parse', 'main').trim(), main, 'main did not move');
-      assert.match(mergeLocal(build('3-clean', ['.env.example', 'src/env.ts']), env), /merged amigo\/3-clean into local main/);
+      assert.match(mergeLocal(build('3-clean', ['.env.example', 'src/env.ts']), env), /merged fix\/3-clean into local main/);
     } finally {
       cleanup(dir);
     }

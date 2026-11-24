@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { describe, it } from 'node:test';
 import { cliPath, codeRoot, home } from '../src/paths.ts';
 import { getTask } from '../src/tasks.ts';
-import { cleanup, cli, cloneOf, fakeAgent, git, idFrom, makeHome, makeRepo, releaseHeld, tmpDir, waitFor, waitForTabExit } from './helpers.ts';
+import { branchOf, cleanup, cli, cloneOf, fakeAgent, git, idFrom, makeHome, makeRepo, releaseHeld, tmpDir, waitFor, waitForTabExit } from './helpers.ts';
 
 describe('end to end with a fake agent', () => {
   it('local-only build: spawn, question, inbox message, relaunch, review, merge on the Boss word, landed cleanup', async () => {
@@ -20,7 +20,7 @@ describe('end to end with a fake agent', () => {
       const id = idFrom(spawned.out);
       const brief = readFileSync(join(home(env), 'data', id, 'brief.md'), 'utf8');
       assert.match(brief, /^Delivery contract: mode=local-only$/m);
-      assert.match(brief, new RegExp(`^Build branch: amigo/${id}$`, 'm'));
+      assert.match(brief, /^Build branch: feat\/write-the-file$/m);
       const asked = await waitFor(id, env, ['question', 'done', 'failed']);
       assert.equal(asked.status, 'question');
       assert.equal(asked.summary, 'which color?');
@@ -48,11 +48,11 @@ describe('end to end with a fake agent', () => {
       const done = await waitFor(id, env, ['done', 'failed', 'blocked']);
       assert.equal(done.status, 'done', done.summary);
       assert.equal(done.runs, 2);
-      assert.equal(done.summary, `ready in branch amigo/${id}`);
+      assert.equal(done.summary, 'ready in branch feat/write-the-file');
       const wt = done.worktree as string;
       const clone = cloneOf(env, 'my-app');
       assert.equal(readFileSync(join(wt, 'member-output.txt'), 'utf8'), 'follow-up handled\n');
-      assert.equal(done.localDoneHead, git(clone, 'rev-parse', `amigo/${id}`).trim(), 'the ready head is latched');
+      assert.equal(done.localDoneHead, git(clone, 'rev-parse', branchOf(env, id)).trim(), 'the ready head is latched');
       assert.ok(!existsSync(join(clone, 'member-output.txt')), 'the clone is untouched until the merge');
       assert.match(readFileSync(join(home(env), 'state', 'tasks', id, 'status'), 'utf8'), /^done \[at=\d+\]: ready in branch /m);
 
@@ -68,7 +68,7 @@ describe('end to end with a fake agent', () => {
       assert.match(notYolo.err, /merges only when the Boss says "merge it"/);
       const merged = cli(env, ['merge', id, '--boss']);
       assert.equal(merged.code, 0, merged.err);
-      assert.match(merged.out, new RegExp(`merged amigo/${id} into local main`));
+      assert.match(merged.out, /merged feat\/write-the-file into local main/);
       assert.match(merged.out, /Landed: .* is in the local main/);
       assert.match(merged.out, new RegExp(`Closed ${id}\\.`));
       assert.equal(git(clone, 'rev-parse', 'main').trim(), done.localDoneHead);
@@ -77,7 +77,7 @@ describe('end to end with a fake agent', () => {
       const after = getTask(id, env)!;
       assert.equal(after.status, 'closed');
       assert.equal(after.merge?.authority, 'boss');
-      assert.equal(git(repo, 'branch', '--list', `amigo/${id}`).trim(), '', 'nothing was pushed to the source');
+      assert.equal(git(repo, 'branch', '--list', branchOf(env, id)).trim(), '', 'nothing was pushed to the source');
     } finally {
       cleanup(dir);
     }
@@ -112,7 +112,7 @@ describe('end to end with a fake agent', () => {
       assert.equal(failed.status, 'failed');
       assert.equal(failed.exitCode, 3);
       assert.equal(cli(env, ['close', bad]).code, 0);
-      assert.equal(git(cloneOf(env, 'repo'), 'branch', '--list', `amigo/${bad}`).trim(), '', 'a branch with no commits is removed');
+      assert.equal(git(cloneOf(env, 'repo'), 'branch', '--list', branchOf(env, bad)).trim(), '', 'a branch with no commits is removed');
 
       const good = idFrom(cli(env, ['spawn', '--project', 'repo'], 'Title: write').out);
       await waitFor(good, env, ['done']);
@@ -134,7 +134,7 @@ describe('end to end with a fake agent', () => {
       const id = idFrom(cli(env, ['spawn', '--project', 'repo'], 'Title: wander\nMODE:switch').out);
       const t = await waitFor(id, env, ['done', 'failed', 'blocked']);
       assert.equal(t.status, 'blocked');
-      assert.match(t.summary ?? '', new RegExp(`done refused: your HEAD \\w+ is not your branch amigo/${id}`));
+      assert.match(t.summary ?? '', /done refused: your HEAD \w+ is not your branch feat\/wander/);
       assert.equal(t.localDoneHead, undefined, 'no ready head was latched');
       assert.match(cli(env, ['merge', id, '--boss']).err, /has no accepted done head/);
       assert.ok(existsSync(join(t.worktree as string, 'member-output.txt')), 'the work is still there');
@@ -168,9 +168,25 @@ describe('end to end with a fake agent', () => {
       cli(env, ['add', repo]);
       const r = cli(env, ['spawn', '--project', 'repo', '--dry-run'], 'Title: try');
       assert.equal(r.code, 0, r.err);
-      assert.match(r.out, /DRY RUN[\s\S]*leased from treehouse, on new branch amigo\/1-try \(from origin's tip\)[\s\S]*fake-agent\.mjs/);
+      assert.match(r.out, /DRY RUN[\s\S]*leased from treehouse, on new branch feat\/try \(from origin's tip\)[\s\S]*fake-agent\.mjs/);
       assert.ok(!existsSync(join(home(env), 'state', 'tasks')) || readdirSync(join(home(env), 'state', 'tasks')).length === 0);
       assert.match(cli(env, ['--dry-run']).out, /would start amigo \(fake\)/);
+
+      assert.match(cli(env, ['spawn', '--project', 'repo', '--type', 'fix', '--dry-run'], 'Title: Fix sidebar alignment').out, /on new branch fix\/sidebar-alignment /);
+      // A taken name, locally or on origin, gets the next free suffix.
+      git(cloneOf(env, 'repo'), 'branch', 'feat/try');
+      git(cloneOf(env, 'repo'), 'update-ref', 'refs/remotes/origin/feat/try-2', 'HEAD');
+      assert.match(cli(env, ['spawn', '--project', 'repo', '--dry-run'], 'Title: try').out, /on new branch feat\/try-3 /);
+      // origin is asked as it is now, not as the clone last fetched it; and git cannot keep docs/x beside a branch named docs.
+      git(repo, 'branch', 'fix/fresh');
+      assert.match(cli(env, ['spawn', '--project', 'repo', '--type', 'fix', '--dry-run'], 'Title: fresh').out, /on new branch fix\/fresh-2 /);
+      git(repo, 'branch', 'fix/nested/old');
+      assert.match(cli(env, ['spawn', '--project', 'repo', '--type', 'fix', '--dry-run'], 'Title: nested').out, /on new branch fix\/nested-2 /);
+      git(cloneOf(env, 'repo'), 'branch', 'docs');
+      assert.match(cli(env, ['spawn', '--project', 'repo', '--type', 'docs', '--dry-run'], 'Title: readme').err, /has a branch named "docs", so git cannot make docs\/readme beside it/);
+      assert.match(cli(env, ['spawn', '--project', 'repo', '--type', '', '--dry-run'], 'Title: try').err, /A build needs --type feat\|fix\|/);
+      assert.match(cli(env, ['spawn', '--project', 'repo', '--type', 'bugfix', '--dry-run'], 'Title: try').err, /A build needs --type/);
+      assert.match(cli(env, ['spawn', '--scratch', '--type', 'fix', '--dry-run'], 'Title: try').err, /--type names a build's branch/);
     } finally {
       cleanup(dir);
     }

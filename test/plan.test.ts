@@ -194,7 +194,7 @@ describe('backlog transitions', () => {
       assert.equal(merged.code, 0, merged.err);
       assert.match(merged.out, new RegExp(`Backlog: ${id} is Done`));
       assert.equal(item(env, id)?.state, 'done');
-      assert.match(item(env, id)?.body ?? '', /committed [0-9a-f]{12} on amigo\//);
+      assert.match(item(env, id)?.body ?? '', /committed [0-9a-f]{12} on feat\/fix-it/);
     } finally {
       cleanup(dir);
     }
@@ -317,8 +317,8 @@ describe('surveys', () => {
       assert.notEqual(cli(env, ['close', id, '--commit']).code, 0, 'close takes no --commit');
       const closed = cli(env, ['close', id]);
       assert.equal(closed.code, 0, closed.err);
-      assert.match(closed.out, /Removed the survey's scratch branch amigo\//);
-      assert.equal(git(clone, 'branch', '--list', `amigo/${id}`).trim(), '', 'the scratch branch is gone');
+      assert.match(closed.out, /Removed the survey's scratch branch survey\/why-slow/);
+      assert.equal(git(clone, 'branch', '--list', 'survey/why-slow').trim(), '', 'the scratch branch is gone');
       assert.equal(item(env, id)?.state, 'done');
       assert.ok(existsSync(join(home(env), 'data', id, 'report.md')), 'the report outlives the survey');
     } finally {
