@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { closeSync, existsSync, fstatSync, openSync, readSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { pidAlive, readJson, writeJsonAtomic } from './fsx.ts';
+import { loadConfig } from './config.ts';
 import { stateDir } from './paths.ts';
 import { lockState, type Identity } from './session.ts';
 
@@ -9,7 +10,7 @@ import { lockState, type Identity } from './session.ts';
  * Context rotation for amigo's own session. Durable records, not conversation memory, are the truth, so a long session is
  * rotated rather than left to fill up or compact:
  *
- *   1. NUDGE    past AMIGO_ROTATE_AT_TOKENS (0 turns it off) and MIN_GROWTH_TOKENS past the session's first model call,
+ *   1. NUDGE    past config.json's rotateAtTokens (0 turns it off) and MIN_GROWTH_TOKENS past the session's first model call,
  *               the turn-end guard asks amigo, once per session and again every RENUDGE_TOKENS more, to run the /remember
  *               sweep and then `amigo rotate`
  *   2. REQUEST  `amigo rotate` records state/rotate.json for this session's amigo command (LAUNCHER_ENV)
@@ -19,7 +20,6 @@ import { lockState, type Identity } from './session.ts';
  *   4. RESTART  once the session has exited, the amigo command starts a fresh one in the same terminal; its SessionStart
  *               hook prints the full digest
  */
-export const ROTATE_DEFAULT_TOKENS = 120_000;
 const RENUDGE_TOKENS = 25_000;
 /**
  * A session that has not grown this much past its own first model call is never asked: a fresh session whose startup
@@ -54,12 +54,13 @@ const nudgePath = (env: NodeJS.ProcessEnv): string => join(stateDir(env), 'rotat
 const readRotation = (env: NodeJS.ProcessEnv): RotationRecord | null => readJson<RotationRecord | null>(rotatePath(env), null);
 const kTokens = (n: number): string => `${Math.round(n / 1000)}K`;
 
-/** The rotation point in tokens; 0 means never rotate. */
+/** The rotation point in tokens (config.json's rotateAtTokens); 0 means never rotate. An unreadable config never rotates. */
 export function rotateAt(env: NodeJS.ProcessEnv): number {
-  const v = env.AMIGO_ROTATE_AT_TOKENS;
-  if (v === undefined || v.trim() === '') return ROTATE_DEFAULT_TOKENS;
-  const n = Number(v);
-  return Number.isFinite(n) && n >= 0 ? n : ROTATE_DEFAULT_TOKENS;
+  try {
+    return loadConfig(env).rotateAtTokens;
+  } catch {
+    return 0;
+  }
 }
 
 /**

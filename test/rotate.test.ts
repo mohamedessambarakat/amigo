@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 import { home } from '../src/paths.ts';
-import { clearOrphanRotation, contextTokens, requestRotation, ROTATED_NOTE, rotationStopped, takeRotation } from '../src/rotate.ts';
+import { clearOrphanRotation, contextTokens, requestRotation, rotateAt, ROTATED_NOTE, rotationStopped, takeRotation } from '../src/rotate.ts';
 import { acquireSessionLock, identity, lockState } from '../src/session.ts';
 import { autoArm, turnEndGuard } from '../src/supervise.ts';
 import { tabEnvArgs } from '../src/squad.ts';
@@ -21,6 +21,11 @@ const asSession = (env: NodeJS.ProcessEnv, pid = process.pid, session = 's1', la
   CLAUDE_CODE_SESSION_ID: session,
   ...(launcher ? { AMIGO_LAUNCHER: launcher } : {}),
 });
+/** Set config.json's rotateAtTokens in the home. */
+const rotateAtConfig = (env: NodeJS.ProcessEnv, n: number) => {
+  const p = join(home(env), 'config', 'config.json');
+  writeFileSync(p, JSON.stringify({ ...JSON.parse(readFileSync(p, 'utf8')), rotateAtTokens: n }));
+};
 const sleeper = () => spawn(process.execPath, ['-e', 'setTimeout(() => {}, 60000)'], { stdio: 'ignore' });
 const rotatePath = (env: NodeJS.ProcessEnv) => join(home(env), 'state', 'rotate.json');
 const writeRecord = (env: NodeJS.ProcessEnv, launcher: string, stopped = true) => {
@@ -77,6 +82,8 @@ describe('context rotation', () => {
     const { dir, env: base } = makeHome();
     const env = asSession(fast(base));
     try {
+      assert.equal(rotateAt(env), 500_000, 'the default');
+      rotateAtConfig(env, 120_000);
       acquireSessionLock(env, identity(env));
       assert.equal((await turnEndGuard({ session_id: 's1', transcript_path: transcript(dir, 119_000) }, env)).code, 0, 'below the point');
       const first = await turnEndGuard({ session_id: 's1', transcript_path: transcript(dir, 121_000) }, env);
@@ -106,7 +113,8 @@ describe('context rotation', () => {
       assert.equal((await turnEndGuard({ session_id: 's4', transcript_path: big }, fresh)).code, 2, 'grew 21K');
       const off = asSession(fast(base), process.pid, 's3');
       acquireSessionLock(off, identity(off));
-      assert.equal((await turnEndGuard({ session_id: 's3', transcript_path: transcript(dir, 190_000) }, { ...off, AMIGO_ROTATE_AT_TOKENS: '0' })).code, 0, '0 turns it off');
+      rotateAtConfig(env, 0);
+      assert.equal((await turnEndGuard({ session_id: 's3', transcript_path: transcript(dir, 190_000) }, off)).code, 0, '0 turns it off');
     } finally {
       cleanup(dir);
     }

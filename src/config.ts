@@ -19,6 +19,8 @@ export interface Config {
   memberMb: number;
   /** Free memory, in MB, that must remain after a crew member starts. */
   reserveMb: number;
+  /** The context size, in tokens, at which amigo's own session rotates to a fresh one (rotate.ts); 0 never rotates. */
+  rotateAtTokens: number;
 }
 
 /** How a project's work is delivered. */
@@ -51,7 +53,7 @@ export interface Project {
   watch?: string[];
 }
 
-const STARTER_CONFIG: Config = { agents: {}, memberMb: 600, reserveMb: 2048 };
+const STARTER_CONFIG: Config = { agents: {}, memberMb: 600, reserveMb: 2048, rotateAtTokens: 500_000 };
 
 /** True when the home still has the layout from before projects became clones (config.json and projects.json at its top). */
 export function oldLayout(env: NodeJS.ProcessEnv = process.env): boolean {
@@ -100,8 +102,10 @@ export function validateConfig(raw: unknown, where = 'config.json'): Config {
   };
   const memberMb = mb('memberMb');
   const reserveMb = mb('reserveMb');
+  const rotateAtTokens = o.rotateAtTokens ?? STARTER_CONFIG.rotateAtTokens;
+  if (typeof rotateAtTokens !== 'number' || !Number.isInteger(rotateAtTokens) || rotateAtTokens < 0) throw new Error(`${where}: "rotateAtTokens" must be a whole number of tokens, 0 or more (0 never rotates)`);
   if (o.defaultAgent !== undefined && !(o.defaultAgent in agents)) throw new Error(`${where}: defaultAgent "${o.defaultAgent}" is not in "agents"`);
-  return { agents, memberMb, reserveMb, ...(o.defaultAgent ? { defaultAgent: o.defaultAgent } : {}) };
+  return { agents, memberMb, reserveMb, rotateAtTokens, ...(o.defaultAgent ? { defaultAgent: o.defaultAgent } : {}) };
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {

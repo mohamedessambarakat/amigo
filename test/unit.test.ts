@@ -18,7 +18,7 @@ after(() => cleanup(tmp));
 describe('config', () => {
   it('accepts a valid config and fills in the memory gate', () => {
     const c = validateConfig({ agents: { a: { amigo: ['a', '{prompt}'], member: ['a', '-p', '{prompt}'] } } });
-    assert.deepEqual([c.memberMb, c.reserveMb], [600, 2048]);
+    assert.deepEqual([c.memberMb, c.reserveMb, c.rotateAtTokens], [600, 2048, 500_000]);
     assert.equal(pickAgent(c, undefined), 'a');
   });
 
@@ -28,6 +28,9 @@ describe('config', () => {
     assert.doesNotThrow(() => validateConfig({ agents: { memberonly: { member: ['some-agent', '--message', '{prompt}'] } } }), 'member-only agents are fine');
     assert.throws(() => validateConfig({ memberMb: -1 }), /memberMb/);
     assert.throws(() => validateConfig({ reserveMb: 'lots' }), /reserveMb/);
+    assert.throws(() => validateConfig({ rotateAtTokens: -1 }), /rotateAtTokens/);
+    assert.throws(() => validateConfig({ rotateAtTokens: '500K' }), /rotateAtTokens/);
+    assert.equal(validateConfig({ rotateAtTokens: 0 }).rotateAtTokens, 0);
     assert.throws(() => validateConfig({ agents: {}, defaultAgent: 'x' }), /defaultAgent/);
   });
 
