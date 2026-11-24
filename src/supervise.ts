@@ -2,13 +2,14 @@ import { join } from 'node:path';
 import { pidAlive, readJson, withLock, writeJsonAtomic } from './fsx.ts';
 import { cliPath, lockPath, stateDir } from './paths.ts';
 import { acquireSessionLock, identity, lockState, type Identity } from './session.ts';
+import { rotationNudge, stopForRotation, stoppingForRotation } from './rotate.ts';
 import { appendWake } from './wakes.ts';
 import { supervisionNeed, watchCycle, watcherGrace, watcherHealthy } from './watch.ts';
 
 /**
  * amigo's own Claude Code hooks (ported from fm-claude-stop-autoarm.sh and fm-turnend-guard.sh --claude):
  *
- *   SessionStart   the session-start digest, once per session (digest.ts)
+ *   SessionStart   the session-start digest, once per session and again after a compaction (digest.ts)
  *   Stop           two hooks that run side by side:
  *                    guard  synchronous: no turn ends blind while work is open and no watcher is armed
  *                    stop   asyncRewake: runs the watcher in the background; an actionable close exits 2, which wakes
@@ -37,6 +38,7 @@ export interface HookPayload {
   source?: string;
   stop_hook_active?: boolean;
   hook_event_name?: string;
+  transcript_path?: string;
 }
 
 // ---------- the auto-arm generation claim ----------
@@ -110,6 +112,9 @@ function controls(env: NodeJS.ProcessEnv, me: Identity): boolean {
 export async function autoArm(payload: HookPayload, env: NodeJS.ProcessEnv, event: 'stop' | 'stop-failure'): Promise<HookResult> {
   const me = identity(env, payload.session_id);
   if (env.AMIGO_TASK || !controls(env, me)) return { code: 0 };
+  // A session stopped for a rotation is about to be ended by its amigo command: waking it would start a turn only to cut it
+  // off. Queued wakes stay until acknowledged, and the fresh session's digest drains them.
+  if (stoppingForRotation(env)) return { code: 0 };
   if (!supervisionNeed(env).length) return { code: 0 };
   const claim = takeClaim(env, me);
   if (!claim) return { code: 0 }; // an open claim from another firing of this turn end owns it
@@ -163,11 +168,18 @@ const guardPath = (env: NodeJS.ProcessEnv): string => join(stateDir(env), 'turne
 export async function turnEndGuard(payload: HookPayload, env: NodeJS.ProcessEnv): Promise<HookResult> {
   const me = identity(env, payload.session_id);
   if (env.AMIGO_TASK) return { code: 0 };
+  // Context rotation (rotate.ts): a requested rotation is marked stopped here, so the amigo command ends this session.
+  if (stopForRotation(env)) return { code: 0 };
   let s = lockState(env, me);
   // A stale lock (this session resumed with a new process, or its old owner is gone) is reclaimed here, as the Stop hook does.
   if (s.state === 'stale' && controls(env, me)) s = lockState(env, me);
   // Another live session controls the home: this one cannot arm, so blocking it would loop. The owner keeps supervision.
   if (s.state === 'foreign') return { code: 0 };
+  if (s.state === 'owned') {
+    // Past the rotation point, ask for a rotation (rotate.ts).
+    const nudge = rotationNudge(me, payload.transcript_path, env);
+    if (nudge) return { code: 2, stderr: nudge };
+  }
   const reset = () => writeJsonAtomic(guardPath(env), { blocks: 0 });
   if (!supervisionNeed(env).length) {
     reset();

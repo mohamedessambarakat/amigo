@@ -26,6 +26,7 @@ import { fetchIssue, type Issue } from './github.ts';
 import { cliPath, codeRoot, draftsDir, home, lockPath, scratchDir, stateDir, taskDataDir, taskDir } from './paths.ts';
 import { noticesPending, takeNotices, type Notice } from './notices.ts';
 import { killTree } from './proc.ts';
+import { clearOrphanRotation, LAUNCHER_ENV, newLauncher, rotationStopped } from './rotate.ts';
 import { freeMemMb, ramAllows } from './ram.ts';
 import { eventsThisTurn, ingestStatus } from './report.ts';
 import { describeStatus, declaredWait, latestEvent, readStatus, statusFile, TERMINAL_VERBS } from './status.ts';
@@ -467,7 +468,7 @@ export function drain(env: NodeJS.ProcessEnv = process.env): string[] {
  */
 export function tabEnvArgs(env: NodeJS.ProcessEnv): string[] {
   return Object.entries(env)
-    .filter(([k, v]) => k.startsWith('AMIGO_') && k !== 'AMIGO_HOME' && k !== 'AMIGO_TASK' && k !== LEAD_MARKER && v)
+    .filter(([k, v]) => k.startsWith('AMIGO_') && k !== 'AMIGO_HOME' && k !== 'AMIGO_TASK' && k !== LEAD_MARKER && k !== LAUNCHER_ENV && v)
     .flatMap(([k, v]) => ['--env', `${k}=${v}`]);
 }
 
@@ -979,7 +980,7 @@ export function leadSessionEnv(env: NodeJS.ProcessEnv, backend?: BackendName): N
 }
 
 /** Start amigo in this terminal and wait for it to exit. */
-export async function runAmigo(agentName: string | undefined, opts: { dryRun?: boolean; briefing?: string; live?: boolean; backend?: BackendName }, env: NodeJS.ProcessEnv = process.env): Promise<number> {
+export async function runAmigo(agentName: string | undefined, opts: { dryRun?: boolean; briefing?: string; live?: boolean; backend?: BackendName; launcher?: string }, env: NodeJS.ProcessEnv = process.env): Promise<number> {
   const config = loadConfig(env);
   const agent = leadAgent(config, agentName, env);
   const template = config.agents[agent]!.amigo!;
@@ -993,13 +994,29 @@ export async function runAmigo(agentName: string | undefined, opts: { dryRun?: b
   }
   writeFileSync(file, prompt);
   writeJsonAtomic(amigoSettingsFile, amigoSettings());
-  const childEnv = leadSessionEnv(env, opts.backend);
+  const launcher = opts.launcher ?? newLauncher();
+  const childEnv = { ...leadSessionEnv(env, opts.backend), [LAUNCHER_ENV]: launcher };
+  clearOrphanRotation(env);
   const child = spawnAgent(launch, { cwd: home(env), stdio: 'inherit', env: childEnv });
+  // A context rotation (rotate.ts) is marked at the session's turn end; ending the session is this process's job, from
+  // outside the session's process tree. Only a rotation of this command's own session counts. The kill is repeated until the
+  // session has exited, so one failed kill cannot leave it running.
+  const rotation = setInterval(() => {
+    if (child.pid && rotationStopped(env, launcher)) killTree(child.pid);
+  }, ROTATION_POLL_MS);
   return await new Promise((done, fail) => {
-    child.on('error', fail);
-    child.on('close', (c) => done(c ?? 1));
+    child.on('error', (err) => {
+      clearInterval(rotation);
+      fail(err);
+    });
+    child.on('close', (c) => {
+      clearInterval(rotation);
+      done(c ?? 1);
+    });
   });
 }
+
+const ROTATION_POLL_MS = 500;
 
 /** Print a crew member's output (for Claude crew members: how each turn ended), then keep following it while it runs. */
 export async function attach(id: string, env: NodeJS.ProcessEnv = process.env, out: NodeJS.WritableStream = process.stdout): Promise<void> {

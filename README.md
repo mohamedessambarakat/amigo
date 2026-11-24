@@ -46,7 +46,7 @@ amigo never writes to a clone except through `amigo sync` (a fast-forward from o
 
 ## Start working
 
-In a herdr-app terminal, run `amigo`. It starts Claude Code with amigo's hooks; an ordinary Claude Code session has none of them, so `/amigo` there refuses and tells you to start with `amigo`. The session-start digest runs once: it takes the session lock (a second session is read-only and says why), checks your tools, presents queued notifications, shows every open task and reconciles anything that stopped while you were gone. Then you just talk:
+In a herdr-app terminal, run `amigo`. It starts Claude Code with amigo's hooks; an ordinary Claude Code session has none of them, so `/amigo` there refuses and tells you to start with `amigo`. The session-start digest runs once (and again after a compaction): it takes the session lock (a second session is read-only and says why), checks your tools, presents queued notifications, shows every open task and reconciles anything that stopped while you were gone. Then you just talk:
 
 ```
 > fix the broken footer link in my-app, and look into why the site build got slow
@@ -118,6 +118,7 @@ amigo: your right hand. Runs the crew.
   amigo land <id>                                   finish after a merge: refresh the clone, fast-forward the live folder, clean up once landed
   amigo close <id> [--force]                        tear a crew member down; a build only once its work has landed (--force: the Boss said discard it)
   amigo digest [--again]                            the session-start digest: take the session lock, drain wakes, show the fleet (once per session)
+  amigo rotate                                      (amigo itself) restart amigo's session fresh at this turn end, to free context
   amigo wake (drain | ack --through <seq> --generation <n> | status)
                                                     the durable wake queue: show it, acknowledge what was handled, or count it
   amigo watch                                       run one watcher cycle here and print the wake it closes on (the Stop hook does this itself)
