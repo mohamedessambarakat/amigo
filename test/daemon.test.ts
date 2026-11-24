@@ -260,7 +260,8 @@ exit $LASTEXITCODE`;
         encoding: 'utf8',
         timeout: 60_000,
       });
-      assert.equal(r.status, 0, r.stderr);
+      // PowerShell can wrap its errors in a bare CLIXML header on stderr: stdout and the exit details say what really failed.
+      assert.equal(r.status, 0, `exit ${r.status} signal ${r.signal} ${r.error?.message ?? ''}\nstderr: ${r.stderr}\nstdout: ${r.stdout}`);
       return { h, launch: JSON.parse(r.stdout.trim().split(/\r?\n/).at(-1)!) as ReturnType<typeof launchStart> };
     };
     const detached = run({});

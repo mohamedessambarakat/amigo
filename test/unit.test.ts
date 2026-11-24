@@ -9,7 +9,7 @@ import { HEARTBEAT_MS, memberNumber, beat, newId, nextMemberNumber, parseStatus,
 import { installSkills, removeSkills, USER_SKILLS } from '../src/skills.ts';
 import { TEMPLATES } from '../src/templates.ts';
 import { codeRoot } from '../src/paths.ts';
-import { looksSecret } from '../src/git.ts';
+import { branchName, looksSecret } from '../src/git.ts';
 import { cleanup, makeHome, tmpDir } from './helpers.ts';
 
 const tmp = tmpDir();
@@ -40,12 +40,11 @@ describe('config', () => {
     const abs = join(tmp, 'x');
     const env = { AMIGO_HOME: abs };
     assert.deepEqual(validateProjects({ projects: [{ name: 'x', source: 'https://example.com/x.git', notes: 'n' }] }, 'p', env), [
-      { name: 'x', source: 'https://example.com/x.git', path: join(abs, 'projects', 'x'), mode: 'no-mistakes', yolo: false, branchPrefix: 'amigo/', notes: 'n' },
+      { name: 'x', source: 'https://example.com/x.git', path: join(abs, 'projects', 'x'), mode: 'no-mistakes', yolo: false, notes: 'n' },
     ]);
-    assert.deepEqual(validateProjects({ projects: [{ name: 'x', source: 's', mode: 'local-only', yolo: true, branchPrefix: '', live: abs }] }, 'p', env)[0], { name: 'x', source: 's', path: join(abs, 'projects', 'x'), mode: 'local-only', yolo: true, branchPrefix: '', live: abs });
+    assert.deepEqual(validateProjects({ projects: [{ name: 'x', source: 's', mode: 'local-only', yolo: true, branchPrefix: '', live: abs }] }, 'p', env)[0], { name: 'x', source: 's', path: join(abs, 'projects', 'x'), mode: 'local-only', yolo: true, live: abs });
     assert.throws(() => validateProjects({ projects: [{ name: 'x' }] }), /needs a "source"/);
     assert.throws(() => validateProjects({ projects: [{ name: 'x', source: 's', mode: 'yolo' }] }), /"mode" must be one of no-mistakes, direct-PR, local-only/);
-    assert.throws(() => validateProjects({ projects: [{ name: 'x', source: 's', branchPrefix: 'a b/' }] }), /branchPrefix/);
     assert.throws(() => validateProjects({ projects: [{ name: 'x', source: 's', live: 'relative' }] }), /absolute/);
     assert.throws(() => validateProjects({ projects: [{ name: 'x', source: 's' }, { name: 'x', source: 's' }] }), /twice/);
     assert.throws(() => validateProjects([]), /must look like/);
@@ -131,6 +130,17 @@ describe('tasks', () => {
   it('gives reviewers the blast-radius check, read-only on production', () => {
     const r = memberPrompt({ id: 'r-1', project: 'p', cwd: '/w', followUps: [], reviewOf: 'x-1' } as unknown as Task, 'Title: review', undefined);
     for (const part of ['task x-1', 'blast radius', 'file:line', '**unproven**', 'production', 'STATUS: done']) assert.ok(r.includes(part), part);
+  });
+});
+
+describe('branch names', () => {
+  it('names a build branch <type>/<title words>, dropping a leading type word', () => {
+    assert.equal(branchName('fix', 'Fix sidebar alignment'), 'fix/sidebar-alignment');
+    assert.equal(branchName('feat', 'Add dark mode to the Studio!'), 'feat/add-dark-mode-to-the-studio');
+    assert.equal(branchName('fix', 'fix'), 'fix/fix');
+    assert.equal(branchName('docs', 'اكتب الدليل'), 'docs/task');
+    const long = branchName('refactor', 'Split the enormous squad module into smaller focused pieces please');
+    assert.ok(long.length <= 'refactor/'.length + 40 && !long.endsWith('-'), long);
   });
 });
 

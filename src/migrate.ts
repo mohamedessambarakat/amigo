@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readdirSync, renameSync, rmSync, statSync } from 'node:fs';
 import { join } from 'node:path';
-import { DEFAULT_BRANCH_PREFIX, saveProjects, validProjectName, type DeliveryMode, type Project } from './config.ts';
+import { saveProjects, validProjectName, type DeliveryMode, type Project } from './config.ts';
 import { readJson, writeJsonAtomic } from './fsx.ts';
 import { clonePath, configDir, configPath, dataDir, home, OLD_LAYOUT_FILES, projectsDir, projectsPath, stateDir, taskDataDir, tasksDir } from './paths.ts';
 import { run } from './proc.ts';
@@ -97,7 +97,6 @@ function plan(env: NodeJS.ProcessEnv, opts: MigrateOptions): PlannedProject[] {
         path: clonePath(p.name, env),
         mode,
         yolo: true,
-        branchPrefix: DEFAULT_BRANCH_PREFIX,
         addedAt: today,
         ...(opts.live?.includes(p.name) ? { live: p.path } : {}),
         ...(p.notes ? { notes: p.notes } : {}),

@@ -12,7 +12,7 @@ The registry holds the Boss's standing posture, never one task's answer:
 - `direct-PR` pushes and opens a PR without the pipeline.
 - `local-only` needs no remote or PR and lands only through the guarded local fast-forward. A project with no remote is `local-only`.
 
-`yolo` changes merge authority only, never the mode. It is off for every project unless the Boss explicitly turns it on. `--branch-prefix` changes the build branch prefix (default `amigo/`). `--live <folder>` marks a folder he runs the project from, fast-forwarded after every confirmed merge. State the resolved default for each choice while confirming, instead of asking him to choose from scratch.
+`yolo` changes merge authority only, never the mode. It is off for every project unless the Boss explicitly turns it on. `--live <folder>` marks a folder he runs the project from, fast-forwarded after every confirmed merge. State the resolved default for each choice while confirming, instead of asking him to choose from scratch.
 
 ## Add
 

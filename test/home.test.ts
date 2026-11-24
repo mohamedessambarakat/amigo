@@ -77,32 +77,32 @@ describe('projects are clones', () => {
     try {
       const live = join(dir, 'live-install');
       mkdirSync(live);
-      const { repo, bare, clone } = project(dir, env, '--mode', 'direct-PR', '--yolo', '--branch-prefix', 'feat/', '--live', live);
+      const { repo, bare, clone } = project(dir, env, '--mode', 'direct-PR', '--yolo', '--live', live);
       assert.equal(git(clone, 'remote', 'get-url', 'origin').trim(), bare);
       assert.equal(git(clone, 'rev-parse', 'HEAD').trim(), git(repo, 'rev-parse', 'HEAD').trim());
       const [p] = loadProjects(env);
-      assert.deepEqual({ ...p, addedAt: undefined }, { name: 'repo', source: bare, path: clone, mode: 'direct-PR', yolo: true, branchPrefix: 'feat/', live, addedAt: undefined });
+      assert.deepEqual({ ...p, addedAt: undefined }, { name: 'repo', source: bare, path: clone, mode: 'direct-PR', yolo: true, live, addedAt: undefined });
       const stored = JSON.parse(readFileSync(join(home(env), 'data', 'projects.json'), 'utf8')).projects[0];
       assert.equal(stored.path, undefined, 'the clone path is derived, never stored');
-      assert.deepEqual(projectPosture('repo', env), { mode: 'direct-PR', yolo: true, branchPrefix: 'feat/' });
+      assert.deepEqual(projectPosture('repo', env), { mode: 'direct-PR', yolo: true });
       assert.match(projectPosture('nope', env).warning ?? '', /not registered; defaulting to no-mistakes, yolo off/);
-      assert.deepEqual({ ...projectPosture('nope', env), warning: undefined }, { mode: 'no-mistakes', yolo: false, branchPrefix: 'amigo/', warning: undefined });
+      assert.deepEqual({ ...projectPosture('nope', env), warning: undefined }, { mode: 'no-mistakes', yolo: false, warning: undefined });
 
       const again = cli(env, ['add', bare, '--name', 'repo', '--no-yolo', '--mode', 'local-only']);
       assert.equal(again.code, 0, again.err);
       assert.match(again.out, /^Updated repo: clone of /);
-      assert.deepEqual([loadProjects(env)[0]?.mode, loadProjects(env)[0]?.yolo, loadProjects(env)[0]?.branchPrefix, loadProjects(env)[0]?.live], ['local-only', false, 'feat/', live]);
-      assert.match(cli(env, ['projects']).out, /repo  \[local-only\]  .*\(clone, from [\s\S]*branches: feat\/<task id>[\s\S]*live install: /);
+      assert.deepEqual([loadProjects(env)[0]?.mode, loadProjects(env)[0]?.yolo, loadProjects(env)[0]?.live], ['local-only', false, live]);
+      assert.match(cli(env, ['projects']).out, /repo  \[local-only\]  .*\(clone, from [\s\S]*live install: /);
     } finally {
       cleanup(dir);
     }
   });
 
-  it('add defaults to no-mistakes, yolo off, amigo/ branches, and refuses what it must not touch', () => {
+  it('add defaults to no-mistakes, yolo off, and refuses what it must not touch', () => {
     const { dir, env } = makeHome();
     try {
       const { clone } = project(dir, env);
-      assert.deepEqual([loadProjects(env)[0]?.mode, loadProjects(env)[0]?.yolo, loadProjects(env)[0]?.branchPrefix], ['no-mistakes', false, 'amigo/']);
+      assert.deepEqual([loadProjects(env)[0]?.mode, loadProjects(env)[0]?.yolo], ['no-mistakes', false]);
 
       const other = makeRepo(join(dir, 'other'));
       assert.match(cli(env, ['add', other, '--name', 'repo']).err, /already exists, cloned from/);
@@ -127,20 +127,20 @@ describe('projects are clones', () => {
 });
 
 describe('worktrees from the pool', () => {
-  it("a build starts from origin's tip on the project's branch prefix, never from the clone's checkout, and goes back to the pool", async () => {
+  it("a build starts from origin's tip on a branch named after it, never from the clone's checkout, and goes back to the pool", async () => {
     const { dir, env } = makeHome();
     try {
-      const { repo, clone } = project(dir, env, '--branch-prefix', 'feat/');
+      const { repo, clone } = project(dir, env);
       // The clone's checkout drifts: a feature branch with a local commit. Origin moves on meanwhile.
       git(clone, 'checkout', '-q', '-b', 'stray');
       git(clone, 'commit', '-q', '--allow-empty', '-m', 'local only');
       const tip = advanceOrigin(repo, 'fresh.txt');
       assert.match(cli(env, ['projects']).out, /CLONE ON BRANCH stray, not its default/);
 
-      const id = idFrom(cli(env, ['spawn', '--project', 'repo'], 'Title: Fresh base').out);
+      const id = idFrom(cli(env, ['spawn', '--project', 'repo', '--type', 'fix'], 'Title: Fix the fresh base').out);
       const t = await waitFor(id, env, ['done', 'failed']);
       assert.equal(t.status, 'done', t.summary);
-      assert.equal(t.branch, `feat/${id}`);
+      assert.equal(t.branch, 'fix/the-fresh-base');
       assert.equal(t.baseSha, tip, "origin's tip, fetched at spawn");
       assert.equal(git(t.worktree as string, 'rev-parse', 'HEAD~1').trim(), tip, 'its one commit sits on the base');
       assert.ok(existsSync(join(t.worktree as string, 'fresh.txt')));
@@ -151,7 +151,7 @@ describe('worktrees from the pool', () => {
 
       assert.match(cli(env, ['close', id]).err, /has not landed/, 'committed work nobody pushed is not discarded');
       assert.equal(cli(env, ['close', id, '--force']).code, 0);
-      assert.equal(git(clone, 'log', '-1', '--format=%s', `feat/${id}`).trim(), 'feat: write member output', 'a discarded build keeps its branch');
+      assert.equal(git(clone, 'log', '-1', '--format=%s', 'fix/the-fresh-base').trim(), 'feat: write member output', 'a discarded build keeps its branch');
       assert.equal(git(t.worktree as string, 'rev-parse', '--abbrev-ref', 'HEAD').trim(), 'HEAD', 'returned detached');
       assert.match(readFileSync(join(dir, 'treehouse.log'), 'utf8'), /"args":\["return","--force",/);
 
@@ -218,12 +218,12 @@ describe('guarded sync', () => {
       assert.equal(git(clone, 'rev-parse', 'main').trim(), tip);
 
       // A merged branch: pushed, tracked, then deleted on origin.
-      git(clone, 'branch', 'amigo/1-done');
-      git(clone, 'push', '-q', '-u', 'origin', 'amigo/1-done');
-      git(bare, 'branch', '-D', 'amigo/1-done');
+      git(clone, 'branch', 'fix/done');
+      git(clone, 'push', '-q', '-u', 'origin', 'fix/done');
+      git(bare, 'branch', '-D', 'fix/done');
       advanceOrigin(repo, 'c.txt');
-      assert.match(syncProject(p), /^repo: pruned amigo\/1-done\nrepo: synced /);
-      assert.equal(git(clone, 'branch', '--list', 'amigo/1-done').trim(), '');
+      assert.match(syncProject(p), /^repo: pruned fix\/done\nrepo: synced /);
+      assert.equal(git(clone, 'branch', '--list', 'fix/done').trim(), '');
 
       writeFileSync(join(clone, 'a.txt'), 'dirty\n');
       advanceOrigin(repo, 'd.txt');
@@ -337,7 +337,6 @@ describe('migration to the clone layout', () => {
         path: cloneOf(s.env, 'web'),
         mode: 'no-mistakes',
         yolo: true,
-        branchPrefix: 'amigo/',
         live: s.withOrigin,
         notes: 'be kind',
         liveCommands: ['echo hi'],

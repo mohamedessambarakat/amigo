@@ -98,6 +98,9 @@ export function fakeTreehouseEnv(dir: string, script = join(codeRoot, 'test', 'f
 export const cloneOf = (env: NodeJS.ProcessEnv, name: string): string => join(env.AMIGO_HOME as string, 'projects', name);
 
 /** The path of a file in a task's runtime folder (state/tasks/<id>). */
+/** The branch spawn named a build after (task.json's branch). */
+export const branchOf = (env: NodeJS.ProcessEnv, id: string): string => (JSON.parse(readFileSync(taskFilePath(env, id, 'task.json'), 'utf8')) as { branch: string }).branch;
+
 export const taskFilePath = (env: NodeJS.ProcessEnv, id: string, file: string): string => join(env.AMIGO_HOME as string, 'state', 'tasks', id, file);
 
 export function git(cwd: string, ...args: string[]): string {
@@ -124,9 +127,16 @@ export function asBuildBrief(text: string): string {
   return `${title}## Boss's intent\n${lines.join('\n').trim() || 'Do the task in the title.'}\n## amigo spec\nDo what the intent asks; keep it small.\n`;
 }
 
-/** Run the real CLI in a child process. A brief piped to a build's spawn (--project, --after or --task, not a survey) is put in the build sections (asBuildBrief). */
+/**
+ * Run the real CLI in a child process. A build's spawn (--project, --after or --task, not a survey) gets --type feat unless it
+ * names a type or passes --type "" (to leave it out), and a brief piped to it is put in the build sections (asBuildBrief).
+ */
 export function cli(env: NodeJS.ProcessEnv, args: string[], input?: string): { code: number; out: string; err: string } {
-  const build = args[0] === 'spawn' && (args.includes('--project') || args.includes('--after') || args.includes('--task')) && !args.includes('--survey') && !args.includes('--review') && input !== undefined;
+  const spawnsBuild = args[0] === 'spawn' && (args.includes('--project') || args.includes('--after') || args.includes('--task')) && !args.includes('--survey') && !args.includes('--review') && !args.includes('--scratch');
+  const typed = args.indexOf('--type');
+  if (spawnsBuild && typed < 0) args = [...args, '--type', 'feat'];
+  else if (typed >= 0 && args[typed + 1] === '') args = [...args.slice(0, typed), ...args.slice(typed + 2)];
+  const build = spawnsBuild && input !== undefined;
   const r = spawnSync(process.execPath, [cliPath, ...args], { env, input: build ? asBuildBrief(input) : (input ?? ''), encoding: 'utf8' });
   lastCli = { args, code: r.status ?? -1, out: r.stdout, err: r.stderr };
   return { code: lastCli.code, out: lastCli.out, err: lastCli.err };

@@ -18,10 +18,10 @@ import {
   trustFolder,
 } from './claude.ts';
 import { buildLaunch, describeLaunch, type Launch } from './command.ts';
-import { findProject, loadConfig, loadProjects, pickAgent, type Config } from './config.ts';
+import { findProject, loadConfig, loadProjects, pickAgent, type Config, type Project } from './config.ts';
 import { parseBriefInput, renderBrief, reportCommand } from './delivery.ts';
 import { withLock, writeJsonAtomic } from './fsx.ts';
-import { branchName, changedFiles } from './git.ts';
+import { BRANCH_TYPES, branchName, changedFiles, freeBranch } from './git.ts';
 import { fetchIssue, type Issue } from './github.ts';
 import { cliPath, codeRoot, draftsDir, home, lockPath, scratchDir, stateDir, taskDataDir, taskDir } from './paths.ts';
 import { noticesPending, takeNotices, type Notice } from './notices.ts';
@@ -162,6 +162,8 @@ export interface SpawnInput {
   issue?: number;
   /** build (default) or survey (see survey.ts). */
   kind?: TaskKind;
+  /** A build's kind of change (one of BRANCH_TYPES): its branch is <type>/<title words>. */
+  type?: string;
   /** Dispatch this existing backlog item: the task takes its id, title, kind and project. */
   task?: string;
   /** The dispatch profile's model and effort (see dispatch.ts). */
@@ -219,6 +221,9 @@ export function spawnMember(input: SpawnInput, opts: { dryRun?: boolean }, env: 
   }
   if (!input.brief.trim()) throw new Error('The brief is empty');
   if (!input.scratch && !input.project === !input.review) throw new Error('Give either --project <name>, --review <task-id> or --scratch');
+  const isBuild = Boolean(input.project) && !input.review && !input.scratch && input.kind !== 'survey';
+  if (isBuild && !BRANCH_TYPES.includes(input.type ?? '')) throw new Error(`A build needs --type ${BRANCH_TYPES.join('|')}: its branch is named <type>/<title>, as fix/sidebar-alignment`);
+  if (!isBuild && input.type !== undefined) throw new Error('--type names a build\'s branch; a review, scratch task or survey has none');
   const config = loadConfig(env);
   const agent = pickAgent(config, input.agent, env);
   // Fails early, before any folder is made, outside herdr-app.
@@ -231,6 +236,17 @@ export function spawnMember(input: SpawnInput, opts: { dryRun?: boolean }, env: 
     if (sections.contractMode !== mode) throw new Error(`The brief's delivery contract says mode=${sections.contractMode}, but ${input.project} is registered as ${mode}. Write the brief for ${mode}, or change the project's mode (amigo add ... --mode).`);
   }
   const title = input.title?.trim() || sections?.title?.trim() || titleOf(sections ? sections.intent : input.brief);
+  // A build or survey works on the project's clone, on a branch named after the task (fix/sidebar-alignment): both are settled
+  // before any folder is made. A name an open task or an existing branch holds gets -2, -3...
+  let project: Project | null = null;
+  let branch: string | null = null;
+  if (!input.review && !input.scratch) {
+    project = findProject(loadProjects(env), input.project as string);
+    if (!existsSync(project.path)) throw new Error(`The clone of ${project.name} is missing at ${project.path}. Add the project again: amigo add ${project.source} --name ${project.name}`);
+    const repo = project.path;
+    const taken = new Set(listTasks(env).flatMap((t) => (t.status !== 'closed' && t.repo === repo && t.branch ? [t.branch] : [])));
+    branch = freeBranch(repo, branchName(input.kind === 'survey' ? 'survey' : (input.type as string), title), taken);
+  }
   let id = item ? item.id : newId(title, nextMemberNumber(env));
   if (item && !opts.dryRun && !claimTaskDir(id, env)) throw new Error(`A task named ${id} already exists (see amigo status ${id})`);
   if (!opts.dryRun && !item) {
@@ -251,11 +267,11 @@ export function spawnMember(input: SpawnInput, opts: { dryRun?: boolean }, env: 
     task = { ...base, project: parent.project, ...(parent.scratch ? { scratch: true } : {}), cwd: parent.cwd, repo: null, worktree: null, branch: null, baseSha: null, reviewOf: parent.id };
   } else if (input.scratch) {
     task = { ...base, project: 'scratch', scratch: true, ...(input.briefing ? { briefing: true } : {}), cwd: scratchDir(id, env), repo: null, worktree: null, branch: null, baseSha: null };
-  } else {
-    const project = findProject(loadProjects(env), input.project as string);
-    if (!existsSync(project.path)) throw new Error(`The clone of ${project.name} is missing at ${project.path}. Add the project again: amigo add ${project.source} --name ${project.name}`);
+  } else if (project) {
     // The worktree is leased from treehouse's pool when the task starts (spawn, or once the task it follows is closed).
-    task = { ...base, project: project.name, mode: project.mode, cwd: '', repo: project.path, worktree: null, branch: branchName(id, project.branchPrefix), baseSha: null, leased: true, ...(dependency ? { after: dependency.id } : {}) };
+    task = { ...base, project: project.name, mode: project.mode, cwd: '', repo: project.path, worktree: null, branch, baseSha: null, leased: true, ...(dependency ? { after: dependency.id } : {}) };
+  } else {
+    throw new Error('unreachable: a task is a review, a scratch task or a project task');
   }
 
   if (!input.review) {

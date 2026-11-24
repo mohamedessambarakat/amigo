@@ -26,12 +26,11 @@ export type DeliveryMode = 'no-mistakes' | 'direct-PR' | 'local-only';
 export const DELIVERY_MODES: readonly DeliveryMode[] = ['no-mistakes', 'direct-PR', 'local-only'];
 /** What an unregistered project, or a registry entry without one, resolves to. */
 export const DEFAULT_MODE: DeliveryMode = 'no-mistakes';
-export const DEFAULT_BRANCH_PREFIX = 'amigo/';
 
 /**
  * One registered project. amigo works on its own clone in projects/<name> (`path`, derived, never stored), made from `source`
  * by `amigo add`. The registry records the Boss's standing delivery posture: `mode`, `yolo` (merge authority only: amigo may
- * merge green, in-scope work itself) and the build branch prefix.
+ * merge green, in-scope work itself).
  */
 export interface Project {
   name: string;
@@ -41,8 +40,6 @@ export interface Project {
   path: string;
   mode: DeliveryMode;
   yolo: boolean;
-  /** Build branches are named <branchPrefix><task id>. "" gives a bare task id. */
-  branchPrefix: string;
   /** A live install of this project (a folder the Boss runs it from), fast-forwarded after a confirmed merge. */
   live?: string;
   addedAt?: string;
@@ -144,12 +141,11 @@ export function validateProjects(raw: unknown, where = 'projects.json', env: Nod
     const mode = p.mode ?? DEFAULT_MODE;
     if (!DELIVERY_MODES.includes(mode)) throw bad(`"mode" must be one of ${DELIVERY_MODES.join(', ')}`);
     if (p.yolo !== undefined && typeof p.yolo !== 'boolean') throw bad('"yolo" must be true or false');
-    const branchPrefix = p.branchPrefix ?? DEFAULT_BRANCH_PREFIX;
-    if (typeof branchPrefix !== 'string' || /\s/.test(branchPrefix)) throw bad('"branchPrefix" must be text without spaces');
     if (p.live !== undefined && (typeof p.live !== 'string' || !isAbsolute(p.live))) throw bad('"live" must be an absolute folder path');
     if (p.notes !== undefined && typeof p.notes !== 'string') throw bad('"notes" must be text');
     if (p.addedAt !== undefined && typeof p.addedAt !== 'string') throw bad('"addedAt" must be text');
-    // checks and risky (the per-project gates before the delivery modes) are no longer read: an old entry keeps working without them.
+    // checks, risky (the per-project gates before the delivery modes) and branchPrefix (branches are named after their task now)
+    // are no longer read: an old entry keeps working without them, and drops them when the registry is next saved.
     for (const key of ['liveCommands', 'watch'] as const) {
       if (p[key] !== undefined && !isTextList(p[key])) throw bad(`"${key}" must be a list of non-empty strings`);
     }
@@ -159,7 +155,6 @@ export function validateProjects(raw: unknown, where = 'projects.json', env: Nod
       path: clonePath(p.name, env),
       mode,
       yolo: p.yolo ?? false,
-      branchPrefix,
       ...(p.live ? { live: p.live } : {}),
       ...(p.addedAt ? { addedAt: p.addedAt } : {}),
       ...(p.notes ? { notes: p.notes } : {}),
@@ -199,10 +194,10 @@ export function nameFromSource(source: string): string {
 }
 
 /** A registered project's delivery posture, or the default for an unregistered one (`warning` says so). */
-export function projectPosture(name: string, env: NodeJS.ProcessEnv = process.env): { mode: DeliveryMode; yolo: boolean; branchPrefix: string; warning?: string } {
+export function projectPosture(name: string, env: NodeJS.ProcessEnv = process.env): { mode: DeliveryMode; yolo: boolean; warning?: string } {
   const p = loadProjects(env).find((x) => x.name === name);
-  if (!p) return { mode: DEFAULT_MODE, yolo: false, branchPrefix: DEFAULT_BRANCH_PREFIX, warning: `project "${name}" is not registered; defaulting to ${DEFAULT_MODE}, yolo off` };
-  return { mode: p.mode, yolo: p.yolo, branchPrefix: p.branchPrefix };
+  if (!p) return { mode: DEFAULT_MODE, yolo: false, warning: `project "${name}" is not registered; defaulting to ${DEFAULT_MODE}, yolo off` };
+  return { mode: p.mode, yolo: p.yolo };
 }
 
 /** Add a line to a project's notes (the hard rules every later crew member gets). */

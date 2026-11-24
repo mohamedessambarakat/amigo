@@ -137,8 +137,61 @@ export function secretRefusal(what: string, paths: string[], history: string[] =
   return `refusing to land ${what}: ${found.join('; ')}. Have the crew member remove them from the branch, rewriting its commits when the history holds them (and rotate the secret if it was real), then merge again. This check is not waivable, not even with --boss; the Boss can still merge by hand on GitHub. Nothing was merged.`;
 }
 
-/** A build's branch: the project's registered prefix (amigo/ unless it names another) and the task id. */
-export const branchName = (id: string, prefix = 'amigo/'): string => `${prefix}${id}`;
+/** The kinds of change a build's branch can be named after: the commit types. */
+export const BRANCH_TYPES: readonly string[] = ['feat', 'fix', 'refactor', 'docs', 'style', 'test', 'chore', 'perf', 'build', 'ci'];
+
+const SLUG_MAX = 40;
+
+/**
+ * A branch named after its task: <type>/<the title in a few words>, as "fix/sidebar-alignment" for "Fix sidebar alignment"
+ * (a title that starts with the type word drops it). A title with no latin letters or digits gives <type>/task.
+ */
+export function branchName(type: string, title: string): string {
+  let words = title.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+  if (words.length > 1 && words[0] === type) words = words.slice(1);
+  let slug = (words[0] ?? '').slice(0, SLUG_MAX);
+  for (const w of words.slice(1)) {
+    if (slug.length + 1 + w.length > SLUG_MAX) break;
+    slug += `-${w}`;
+  }
+  return `${type}/${slug || 'task'}`;
+}
+
+/** The branch names `repo` already has: local, origin's as it is now (ls-remote), and the tracking refs from its last fetch. */
+function branchNames(repo: string): Set<string> {
+  const names = new Set<string>();
+  // origin is asked directly because the tracking refs can be stale; if it cannot be reached, the tracking refs are all there is.
+  const remote = run('git', ['-C', repo, 'ls-remote', '--heads', 'origin'], { timeoutMs: 60_000 });
+  for (const line of remote.status === 0 ? remote.stdout.split(/\r?\n/) : []) {
+    const ref = line.split('\t')[1];
+    if (ref?.startsWith('refs/heads/')) names.add(ref.slice('refs/heads/'.length));
+  }
+  const local = run('git', ['-C', repo, 'for-each-ref', '--format=%(refname)', 'refs/heads', 'refs/remotes/origin']).stdout;
+  for (const ref of local.split(/\r?\n/)) {
+    if (ref.startsWith('refs/heads/')) names.add(ref.slice('refs/heads/'.length));
+    else if (ref.startsWith('refs/remotes/origin/') && ref !== 'refs/remotes/origin/HEAD') names.add(ref.slice('refs/remotes/origin/'.length));
+  }
+  return names;
+}
+
+/**
+ * `name`, else name-2, name-3...: the first that no branch of `repo` (local or origin's) and nothing in `taken` holds. Git
+ * cannot keep a/b beside a or a/b/c, so a name also counts as taken when an existing one is a folder of it or inside it.
+ */
+export function freeBranch(repo: string, name: string, taken: ReadonlySet<string>): string {
+  const names = new Set([...branchNames(repo), ...taken]);
+  const type = name.split('/')[0] as string;
+  if (names.has(type)) throw new Error(`${repo} has a branch named "${type}", so git cannot make ${name} beside it. Rename or delete that branch, or pick another --type.`);
+  const used = (b: string) => [...names].some((n) => n === b || b.startsWith(`${n}/`) || n.startsWith(`${b}/`));
+  for (let i = 1; i <= 100; i++) {
+    const b = i === 1 ? name : `${name}-${i}`;
+    if (!used(b)) return b;
+  }
+  throw new Error(`Branches ${name} to ${name}-100 are all taken in ${repo}; give the task a more specific title`);
+}
+
+/** A branch amigo made for a task: <type>/..., survey/..., or amigo/... from before branches were named after their task. */
+const TASK_BRANCH_RE = new RegExp(`^refs/heads/(${[...BRANCH_TYPES, 'survey', 'amigo'].join('|')})/`);
 
 export function isGitRepo(path: string): boolean {
   const r = run('git', ['-C', path, 'rev-parse', '--is-inside-work-tree']);
@@ -240,7 +293,7 @@ function defaultBranchRefs(repo: string, selfBranch?: string): string[] {
   }
   if (!refs.length) {
     const localHead = run('git', ['-C', repo, 'symbolic-ref', '-q', 'HEAD']).stdout.trim();
-    if (localHead && localHead !== selfRef && !localHead.startsWith('refs/heads/amigo/')) {
+    if (localHead && localHead !== selfRef && !TASK_BRANCH_RE.test(localHead)) {
       add(localHead);
       if (localHead.startsWith('refs/heads/')) add(`refs/remotes/origin/${localHead.slice('refs/heads/'.length)}`);
     }

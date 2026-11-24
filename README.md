@@ -11,7 +11,7 @@ amigo itself runs on Claude Code inside the herdr desktop app; crew members can 
 Made by [essam](https://essam.pro). Workflow ported from firstmate by Kun Chen (MIT).
 
 ```
-Boss ──▶ amigo ──spawn──▶ crew member 1 (build: worktree, branch amigo/<id>, PR)
+Boss ──▶ amigo ──spawn──▶ crew member 1 (build: worktree, branch fix/<title>, PR)
            ▲              crew member 2 (survey: data/<id>/report.md)
            │              crew member 3 (queued until capacity frees up)
            └── "Boss, the footer fix is green: https://github.com/me/my-app/pull/12. Merge it?"
@@ -40,7 +40,7 @@ amigo add https://github.com/me/my-app.git
 amigo add git@github.com:me/website.git --name site --mode direct-PR --yolo --notes "Never touch .env."
 ```
 
-`add` clones the project into `~/.amigo/projects/<name>` and registers your standing posture for it: `--mode no-mistakes` (the default), `direct-PR` or `local-only`; `--yolo` (amigo may merge green work itself; off by default); `--branch-prefix` (builds use `amigo/<id>` unless you name another); and `--live <folder>`, a folder you run the project from, fast-forwarded after every confirmed merge. Running `add` again with the same name and source updates the entry. Notes are hard rules for every crew member on that project (`amigo note my-app "Use the v2 endpoint."`).
+`add` clones the project into `~/.amigo/projects/<name>` and registers your standing posture for it: `--mode no-mistakes` (the default), `direct-PR` or `local-only`; `--yolo` (amigo may merge green work itself; off by default); and `--live <folder>`, a folder you run the project from, fast-forwarded after every confirmed merge. Running `add` again with the same name and source updates the entry. Notes are hard rules for every crew member on that project (`amigo note my-app "Use the v2 endpoint."`).
 
 amigo never writes to a clone except through `amigo sync` (a fast-forward from origin when that is safe; anything else is reported and left alone), the guarded local-only landing and the refresh after a merge. Each crew member gets a worktree leased from treehouse's pool, checked to be separate from the clone, reset to origin's current default branch, with a new branch. To keep amigo itself up to date with `/updateamigo`, register this folder as the live folder of a project named `amigo`.
 
@@ -85,7 +85,7 @@ amigo: your right hand. Runs the crew.
   amigo [--agent <name>] [--dry-run]                start amigo in this terminal: a briefing first, then you just talk to it
   amigo install-skill [<agent>] [--remove]          set up your agent CLIs: /amigo for Claude Code, crew templates for the rest
   amigo brief --agent <name>                        print amigo's instructions and the briefing (what /amigo runs; only inside a session amigo started)
-  amigo add <git url or path> [--name <name>] [--mode no-mistakes|direct-PR|local-only] [--yolo | --no-yolo] [--branch-prefix <p>]
+  amigo add <git url or path> [--name <name>] [--mode no-mistakes|direct-PR|local-only] [--yolo | --no-yolo]
             [--live <folder>] [--notes <text>] [--live-command <cmd>]... [--watch <text>]...
                                                     clone a project into projects/<name> and register it; the same name and source again updates it
   amigo projects                                    list registered projects
@@ -93,9 +93,11 @@ amigo: your right hand. Runs the crew.
   amigo migrate [--live <project>]... [--drop <project>]... [--dry-run]
                                                     convert a home from before this version: projects become clones, the old gate files go
   amigo note <project> <text>                       add a line to a project's notes (every later crew member gets it)
-  amigo spawn (--project <name> | --review <id> | --scratch) [--title <t>] [--agent <name>] [--after <id>] [--issue <n>] [--brief-file <file>] [--dry-run]
+  amigo spawn (--project <name> | --review <id> | --scratch) [--type <t>] [--title <t>] [--agent <name>] [--after <id>] [--issue <n>] [--brief-file <file>] [--dry-run]
                                                     start a crew member; the brief comes from stdin unless --brief-file is given. A build's
-                                                    brief is "## Boss's intent" and "## amigo spec"; amigo adds the rules and the definition of done
+                                                    brief is "## Boss's intent" and "## amigo spec"; amigo adds the rules and the definition of done.
+                                                    A build needs --type feat|fix|refactor|docs|style|test|chore|perf|build|ci: its
+                                                    branch is <type>/<title words>, as fix/sidebar-alignment
             [--survey] [--task <backlog id>] [--model <m>] [--effort low|medium|high|xhigh|max] [--boss-max]
                                                     a survey writes data/<id>/report.md and never pushes; --task dispatches a backlog item
   amigo status [<id>]                               tasks by station, or one in detail (status, inbox, PR, uncommitted files)
@@ -173,7 +175,7 @@ Flags come from each tool's documentation; check them against your installed ver
 - **Claude Code crew members** are interactive sessions named `amigo-<id>` that you can type into in their tab. Hooks record each turn's report, and a turn that ends without one is sent back once. Before one starts, amigo marks its folder trusted in `~/.claude.json` and removes that entry when the worktree is closed.
 - On Windows, agents installed by npm are `.cmd` files that cannot carry a multi-line prompt, so they get one line: "Read the file <path> and follow the instructions in it exactly." The same happens for any prompt longer than 24,000 characters.
 
-Check a template without running anything: `amigo spawn --project <name> --dry-run --brief-file README.md` prints the exact command.
+Check a template without running anything: `amigo spawn --project <name> --type docs --dry-run --brief-file README.md` prints the exact command.
 
 ## Install with an AI agent
 
@@ -183,7 +185,7 @@ Give your agent the link to this repository and ask it to set up amigo. Agent, d
 2. Clone the repository into a folder the user will keep, and run `npm install -g .` inside it. Check: `amigo help` prints the command list.
 3. Run `amigo install-skill <your agent>` (claude, codex, gemini, antigravity or grok). **Ask the user** whether the crew member permission flags are right for them; never switch to flags that skip all checks on your own.
 4. **Ask the user** which projects to add, their delivery mode and whether any may be yolo, then run `amigo add <git url or path> [--mode ...] [--notes "..."]` for each. Check: `amigo projects` lists them.
-5. Check the template: `amigo spawn --project <name> --dry-run --brief-file README.md` must print a command, not an error.
+5. Check the template: `amigo spawn --project <name> --type docs --dry-run --brief-file README.md` must print a command, not an error.
 6. Tell the user to run `amigo` in a herdr-app terminal. Do not start it yourself.
 
 ## Safety
