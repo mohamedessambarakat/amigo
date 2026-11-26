@@ -1,6 +1,6 @@
 import { amigoHooks } from '../src/supervise.ts';
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import os from 'node:os';
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -1064,6 +1064,25 @@ describe('test terminal backend', () => {
       while (!gone() && Date.now() < end) await new Promise((r) => setTimeout(r, 100));
       assert.ok(gone(), "close must end the terminal's own process");
     } finally {
+      cleanup(dir);
+    }
+  });
+
+  it('a terminal seen finished stays finished when its pid is reused', () => {
+    const { dir, env } = makeHome();
+    const other = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 60000)'], { stdio: 'ignore' });
+    try {
+      const backend = terminalBackend(env);
+      const ep = backend.open({ task: '1-x', cwd: dir, argv: [process.execPath, '-e', ''], dir, env, placement: { label: '1-x', ownSpace: false, spaces: [] } });
+      const recFile = join(stateDir(env), 'test-terminals', `${ep.terminal}.json`);
+      writeFileSync(recFile, JSON.stringify({ ...JSON.parse(readFileSync(recFile, 'utf8')), pid: 2 ** 22 + 1 }));
+      assert.equal(backend.state(ep).liveness, 'finished');
+      // Windows hands the pid to a new process: the terminal is still the one that finished.
+      writeFileSync(recFile, JSON.stringify({ ...JSON.parse(readFileSync(recFile, 'utf8')), pid: other.pid }));
+      assert.equal(backend.state(ep).liveness, 'finished');
+      assert.deepEqual(backend.list().map((e) => e.liveness), ['finished']);
+    } finally {
+      other.kill();
       cleanup(dir);
     }
   });
