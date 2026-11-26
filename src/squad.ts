@@ -1059,8 +1059,7 @@ const ROTATION_POLL_MS = 500;
 /** Print a crew member's output (for Claude crew members: how each turn ended), then keep following it while it runs. */
 export async function attach(id: string, env: NodeJS.ProcessEnv = process.env, out: NodeJS.WritableStream = process.stdout): Promise<void> {
   const log = logFile(id, env);
-  const first = requireTask(id, env);
-  if (first.sessionId) out.write(`[${id} is the Claude session ${memberName(id)}; this shows how each turn ended]\n`);
+  if (requireTask(id, env).sessionId) out.write(`[${id} is the Claude session ${memberName(id)}; this shows how each turn ended]\n`);
   let offset = 0;
   const flush = () => {
     if (!existsSync(log)) return;
