@@ -3,7 +3,7 @@ import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 import { cliPath, codeRoot, home } from '../src/paths.ts';
-import { getTask } from '../src/tasks.ts';
+import { getTask, runnerAlive } from '../src/tasks.ts';
 import { branchOf, cleanup, cli, cloneOf, fakeAgent, git, idFrom, makeHome, makeRepo, releaseHeld, tmpDir, waitFor, waitForTabExit } from './helpers.ts';
 
 describe('end to end with a fake agent', () => {
@@ -286,6 +286,69 @@ describe('end to end with a fake agent', () => {
       const log = readFileSync(join(home(env), 'state', 'tasks', id, 'output.log'), 'utf8');
       assert.match(log, /No conversation found with session ID/);
       assert.doesNotMatch(log, /inherited/, 'the crew member does not inherit amigo session');
+    } finally {
+      cleanup(dir);
+    }
+  });
+});
+
+describe('interactive crew members of other agents', () => {
+  const fakeInteractive = join(codeRoot, 'test', 'fake-interactive.mjs');
+  const liveHome = () => {
+    const made = makeHome();
+    writeFileSync(
+      join(home(made.env), 'config', 'config.json'),
+      JSON.stringify({ agents: { live: { member: [process.execPath, fakeInteractive, '{prompt}'], interactive: true }, once: { member: [process.execPath, fakeAgent, '{prompt}'] } }, memberMb: 0, reserveMb: 0 }),
+    );
+    return made;
+  };
+
+  it('gives an interactive template the tab, keeps its session open after it reports, and stops it with control exit and close', async () => {
+    const { dir, env } = liveHome();
+    try {
+      const id = idFrom(cli(env, ['spawn', '--scratch', '--agent', 'live'], 'Title: Watch it work').out);
+      const t = await waitFor(id, env, ['done', 'failed']);
+      assert.equal(t.status, 'done', t.summary);
+      assert.equal(t.summary, 'screen is up');
+      assert.equal(t.sessionStarted, true);
+      const session = readFileSync(join(t.cwd, 'session.txt'), 'utf8');
+      assert.match(session, /^notes=true$/m, 'its prompt says only the report command reaches amigo');
+      assert.doesNotMatch(session, /^stdout=pipe$/m, "its screen is the tab's own, not a pipe into output.log");
+      const log = readFileSync(join(home(env), 'state', 'tasks', id, 'output.log'), 'utf8');
+      assert.match(log, /=== amigo: run 1 \(interactive session in its tab/);
+      assert.match(log, /fake interactive stderr/, 'stderr is kept in output.log');
+      assert.doesNotMatch(log, /fake interactive screen/);
+      assert.equal(runnerAlive(id, env), true, 'the session stays open after reporting');
+
+      assert.match(cli(env, ['send', id, 'look again']).out, /Rang /);
+      assert.equal(cli(env, ['control', id, 'interrupt']).code, 0);
+      const exited = cli(env, ['control', id, 'exit']);
+      assert.equal(exited.code, 0, exited.err);
+      assert.match(exited.out, /Stopped .*'s agent/);
+      await waitForTabExit(id, env);
+      const stopped = getTask(id, env)!;
+      assert.equal(stopped.status, 'blocked', 'a stop by amigo is not a crash');
+      assert.match(stopped.summary ?? '', /Stopped by amigo \(control exit\)/);
+      const closed = cli(env, ['close', id]);
+      assert.equal(closed.code, 0, closed.err);
+      assert.equal(getTask(id, env)!.status, 'closed');
+    } finally {
+      cleanup(dir);
+    }
+  });
+
+  it('fails an interactive session that ends without reporting, and still logs a print-mode member', async () => {
+    const { dir, env } = liveHome();
+    try {
+      const quit = idFrom(cli(env, ['spawn', '--scratch', '--agent', 'live'], 'Title: Quit\nMODE:quit').out);
+      const failed = await waitFor(quit, env, ['failed', 'done']);
+      assert.equal(failed.status, 'failed');
+      assert.equal(failed.summary, 'The session ended in the middle of a turn (exit 4): fake interactive stderr');
+      const once = idFrom(cli(env, ['spawn', '--scratch', '--agent', 'once'], 'Title: Print').out);
+      const done = await waitFor(once, env, ['done', 'failed']);
+      assert.equal(done.status, 'done');
+      assert.notEqual(done.sessionStarted, true);
+      assert.match(readFileSync(join(home(env), 'state', 'tasks', once, 'output.log'), 'utf8'), /fake agent in .*\nSTATUS: done - wrote member-output.txt/, "a print-mode member's output stays in output.log");
     } finally {
       cleanup(dir);
     }

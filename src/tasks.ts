@@ -92,6 +92,7 @@ export interface Task {
   startedAt?: string | null;
   /** Claude Code crew members: the session id, resumed when a follow-up reopens the tab once the session has started. */
   sessionId?: string | null;
+  /** An interactive session (Claude Code, or an `interactive` template) is running or ran for this task: it stays open after reporting. */
   sessionStarted?: boolean;
   /** Claude Code crew members: the session's transcript, as its hooks report it; a --resume needs it to exist. */
   transcriptPath?: string | null;
