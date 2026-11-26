@@ -515,7 +515,7 @@ function testBackend(env: NodeJS.ProcessEnv): TerminalBackend {
     if (rec.finished) return false;
     if (alive(rec.pid)) return true;
     try {
-      writeFileSync(recordFile(terminal), JSON.stringify({ ...rec, finished: true }));
+      writeFileSync(recordFile(terminal), JSON.stringify({ ...rec, finished: true }), { flag: 'r+' });
     } catch {
       // closed meanwhile
     }

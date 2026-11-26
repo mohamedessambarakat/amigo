@@ -83,15 +83,6 @@ export function memberRun(t: Pick<Task, 'agent'>, config: Config): MemberRun {
   return config.agents[t.agent]?.interactive ? 'interactive' : 'once';
 }
 
-/** memberRun from the current config, or null when the agent is no longer configured. */
-const runsAs = (t: Pick<Task, 'agent'>, env: NodeJS.ProcessEnv): MemberRun | null => {
-  try {
-    return memberRun(t, loadConfig(env));
-  } catch {
-    return null;
-  }
-};
-
 /** The crew member part an interactive crew member of another agent gets: no hook reads its screen, so it reports through the status command. */
 export function interactiveMemberNotes(): string {
   return `## Your session\n\nYou are an interactive session in a terminal tab the user can see and type in, and your session stays open after each turn: amigo may type a line into it saying an instruction waits in your inbox. Nothing reads your screen, so amigo hears from you only through the report command under "Your task": run it whenever a turn ends (done, blocked or a question), then end with your STATUS line.`;
@@ -1070,7 +1061,6 @@ export async function attach(id: string, env: NodeJS.ProcessEnv = process.env, o
   const log = logFile(id, env);
   const first = requireTask(id, env);
   if (first.sessionId) out.write(`[${id} is the Claude session ${memberName(id)}; this shows how each turn ended]\n`);
-  else if (runsAs(first, env) === 'interactive') out.write(`[${id} is an interactive ${first.agent} session; its screen is in its tab, and this shows only its stderr]\n`);
   let offset = 0;
   const flush = () => {
     if (!existsSync(log)) return;
