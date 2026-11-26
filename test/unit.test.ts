@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { after, describe, it } from 'node:test';
-import { age, memberPrompt, amigoPrompt, titleOf } from '../src/squad.ts';
+import { age, memberPrompt, memberRun, amigoPrompt, titleOf } from '../src/squad.ts';
 import { INLINE_LIMIT, buildLaunch, pointerLine, quoteForCmd, resolveExecutable } from '../src/command.ts';
 import { nameFromSource, pickAgent, validateConfig, validateProjects } from '../src/config.ts';
 import { HEARTBEAT_MS, memberNumber, beat, newId, nextMemberNumber, parseStatus, resolveId, runnerAlive, saveTask, type Task } from '../src/tasks.ts';
@@ -32,6 +32,12 @@ describe('config', () => {
     assert.throws(() => validateConfig({ rotateAtTokens: '500K' }), /rotateAtTokens/);
     assert.equal(validateConfig({ rotateAtTokens: 0 }).rotateAtTokens, 0);
     assert.throws(() => validateConfig({ agents: {}, defaultAgent: 'x' }), /defaultAgent/);
+  });
+
+  it('reads interactive as true or false, and picks how each crew member runs', () => {
+    assert.throws(() => validateConfig({ agents: { a: { member: ['a', '-i', '{prompt}'], interactive: 'yes' } } }), /agents.a.interactive must be true or false/);
+    const c = validateConfig({ agents: { claude: { member: ['claude', '{prompt}'] }, agy: { member: ['agy', '-i', '{prompt}'], interactive: true }, once: { member: ['agy', '-p', '{prompt}'] } } });
+    assert.deepEqual(['claude', 'agy', 'once'].map((agent) => memberRun({ agent }, c)), ['claude', 'interactive', 'once']);
   });
 
   it('explains what to do when no agent is configured', () => {
@@ -82,6 +88,14 @@ describe('launching agents', () => {
     const l = buildLaunch(['agent', '-p', '{prompt}'], { prompt: 'line 1\nline "2"', promptFile: '/p.md' }, WIN, 'win32');
     assert.deepEqual(l.args, ['-p', 'line 1\nline "2"']);
     assert.equal(l.shell, false);
+  });
+
+  it('fills {cwd} with the crew member folder in forward slashes, so it fits inside a JSON argument', () => {
+    const template = ['agent', '--settings', '{"trustedWorkspaces":["{cwd}"]}', '-i', '{prompt}'];
+    const l = buildLaunch(template, { prompt: 'say {cwd}', promptFile: '/p.md', cwd: 'C:\\work\\1-x' }, WIN, 'win32');
+    assert.deepEqual(l.args, ['--settings', '{"trustedWorkspaces":["C:/work/1-x"]}', '-i', 'say {cwd}']);
+    assert.deepEqual(JSON.parse(l.args[1] as string), { trustedWorkspaces: ['C:/work/1-x'] });
+    assert.equal(buildLaunch(template, { prompt: 'x', promptFile: '/p.md', cwd: '' }, WIN, 'win32').args[1], '{"trustedWorkspaces":["{cwd}"]}', 'no folder yet: left as written');
   });
 
   it('uses a prompt file for Windows .cmd shims and for very long prompts', () => {

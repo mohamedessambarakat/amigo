@@ -62,10 +62,14 @@ export function fill(template: string[], vars: Record<string, string>): string[]
 
 export const pointerLine = (promptFile: string): string => `Read the file ${promptFile} and follow the instructions in it exactly.`;
 
-/** Turn an agent template plus a prompt into something child_process.spawn can run on this platform. */
+/**
+ * Turn an agent template plus a prompt into something child_process.spawn can run on this platform. `{cwd}` becomes the crew
+ * member's folder with forward slashes, which every OS reads and which needs no escaping inside a JSON argument (as agy's
+ * `--settings '{"trustedWorkspaces":["{cwd}"]}'`); without a folder yet (a dry run before its worktree is leased) it stays as it is.
+ */
 export function buildLaunch(
   template: string[],
-  opts: { prompt: string; promptFile: string },
+  opts: { prompt: string; promptFile: string; cwd?: string },
   env: NodeJS.ProcessEnv = process.env,
   platform: NodeJS.Platform = process.platform,
 ): Launch {
@@ -74,7 +78,7 @@ export function buildLaunch(
   if (!file) throw new Error(`Agent command "${cmd}" was not found on PATH. Install it or fix the template in config.json.`);
   const shell = platform === 'win32' && /\.(cmd|bat)$/i.test(file);
   const viaFile = shell || opts.prompt.length > INLINE_LIMIT;
-  const args = fill(rest, { prompt: viaFile ? pointerLine(opts.promptFile) : opts.prompt });
+  const args = fill(rest, { prompt: viaFile ? pointerLine(opts.promptFile) : opts.prompt, ...(opts.cwd ? { cwd: opts.cwd.replaceAll('\\', '/') } : {}) });
   if (!shell) return { file, args, shell };
   return { file, args, shell, commandLine: [file, ...args].map(quoteForCmd).join(' ') };
 }

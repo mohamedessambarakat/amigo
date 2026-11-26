@@ -482,6 +482,8 @@ interface FakeRecord {
   cwd: string;
   /** When the process was spawned (epoch ms), so close never kills a process that later reused its pid. */
   openedAt?: number;
+  /** Its process was seen gone: the terminal stays finished, even when Windows hands the pid to a new process soon after. */
+  finished?: boolean;
 }
 
 /**
@@ -508,11 +510,22 @@ function testBackend(env: NodeJS.ProcessEnv): TerminalBackend {
       return (err as NodeJS.ErrnoException).code === 'EPERM';
     }
   };
+  /** Whether the terminal's process still runs. The first time it is seen gone, the record says so for good. */
+  const running = (terminal: string, rec: FakeRecord): boolean => {
+    if (rec.finished) return false;
+    if (alive(rec.pid)) return true;
+    try {
+      writeFileSync(recordFile(terminal), JSON.stringify({ ...rec, finished: true }), { flag: 'r+' });
+    } catch {
+      // closed meanwhile
+    }
+    return false;
+  };
   const liveness = (ep: Pick<Endpoint, 'terminal' | 'task'>): Liveness => {
     const rec = load(ep.terminal);
     if (!rec) return 'absent';
     if (rec.task !== ep.task || rec.home !== tag) return 'foreign';
-    return alive(rec.pid) ? 'live' : 'finished';
+    return running(ep.terminal, rec) ? 'live' : 'finished';
   };
   return {
     name: 'test',
@@ -548,7 +561,7 @@ function testBackend(env: NodeJS.ProcessEnv): TerminalBackend {
       if (l === 'absent') return;
       if (l === 'foreign') throw new Error(`Terminal ${ep.terminal} does not carry ${ep.task}'s labels: amigo does not close it`);
       const rec = load(ep.terminal);
-      if (rec?.pid && alive(rec.pid) && !pidReused(rec.pid, rec.openedAt)) killTree(rec.pid);
+      if (rec?.pid && running(ep.terminal, rec) && !pidReused(rec.pid, rec.openedAt)) killTree(rec.pid);
       rmSync(recordFile(ep.terminal), { force: true });
       rmSync(join(dir, `${ep.terminal}.input`), { force: true });
     },
@@ -562,7 +575,7 @@ function testBackend(env: NodeJS.ProcessEnv): TerminalBackend {
       return files.flatMap((f) => {
         const terminal = f.slice(0, -'.json'.length);
         const rec = load(terminal);
-        return rec && rec.home === tag ? [{ task: rec.task, terminal, space: null, tab: null, liveness: alive(rec.pid) ? ('live' as const) : ('finished' as const) }] : [];
+        return rec && rec.home === tag ? [{ task: rec.task, terminal, space: null, tab: null, liveness: running(terminal, rec) ? ('live' as const) : ('finished' as const) }] : [];
       });
     },
   };

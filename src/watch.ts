@@ -230,9 +230,10 @@ const endpointState = (t: Task, env: NodeJS.ProcessEnv): EndpointState => {
 const AT_REST: readonly Task['status'][] = ['done', 'blocked', 'question'];
 
 /**
- * A Claude crew member that reported (done at its handoff, blocked, or a question) keeps its session open for amigo's next
- * message. When its runner and its tab are both gone it stopped responding at rest: the endpoint state, else null. An
- * unreadable endpoint is not proof it is gone. Other agents run once and exit after reporting, so they never count.
+ * An interactive crew member (Claude Code, or an `interactive` template) that reported (done at its handoff, blocked, or a
+ * question) keeps its session open for amigo's next message. When its runner and its tab are both gone it stopped responding
+ * at rest: the endpoint state, else null. An unreadable endpoint is not proof it is gone. Other agents run once and exit
+ * after reporting, so they never count.
  */
 export function goneAtRest(t: Task, env: NodeJS.ProcessEnv): EndpointState | null {
   if (!AT_REST.includes(t.status) || t.sessionStarted !== true || !t.endpoint || runnerAlive(t.id, env)) return null;

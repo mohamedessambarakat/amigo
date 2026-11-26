@@ -75,14 +75,27 @@ function memberTemplate(t: Pick<Task, 'agent'>, config: Config): string[] {
   return template;
 }
 
+/** How a crew member runs in its tab: a Claude Code session, another agent's interactive session, or one task that exits. */
+export type MemberRun = 'claude' | 'interactive' | 'once';
+
+export function memberRun(t: Pick<Task, 'agent'>, config: Config): MemberRun {
+  if (isClaude(memberTemplate(t, config))) return 'claude';
+  return config.agents[t.agent]?.interactive ? 'interactive' : 'once';
+}
+
+/** The crew member part an interactive crew member of another agent gets: no hook reads its screen, so it reports through the status command. */
+export function interactiveMemberNotes(): string {
+  return `## Your session\n\nYou are an interactive session in a terminal tab the user can see and type in, and your session stays open after each turn: amigo may type a line into it saying an instruction waits in your inbox. Nothing reads your screen, so amigo hears from you only through the report command under "Your task": run it whenever a turn ends (done, blocked or a question), then end with your STATUS line.`;
+}
+
 /** Everything a crew member gets for its first run: the crew member rules, the project notes, the brief and any follow-ups. */
-export function memberPrompt(t: Task, brief: string, notes: string | undefined, claudeNotes?: string, env: NodeJS.ProcessEnv = process.env): string {
+export function memberPrompt(t: Task, brief: string, notes: string | undefined, sessionNotes?: string, env: NodeJS.ProcessEnv = process.env): string {
   const slash = (path: string) => path.replaceAll('\\', '/');
   const parts = [
     readPrompt('member.md'),
     `## Your task\n\nTask id: ${t.id}\nProject: ${t.project}\nWorking directory: ${t.cwd}\nReport status: ${reportCommand()} <state> "<one short line>" (it appends to ${slash(statusFile(t.id, env))})\nInstruction inbox: ${slash(inboxDir(t.id, env))}`,
   ];
-  if (claudeNotes) parts.push(claudeNotes);
+  if (sessionNotes) parts.push(sessionNotes);
   if (kindOf(t) === 'survey' && !t.reviewOf) parts.push(surveyContract(t));
   if (t.reviewOf) {
     parts.push(
@@ -126,7 +139,7 @@ function memberLaunch(t: Task, config: Config, prompt: string, env: NodeJS.Proce
   const claudeFull = isClaude(template) ? claudeMemberTemplate(template, { id: t.id, sessionId: t.sessionId ?? '<new session id>', resume, settingsFile: settingsFile(t.id, env) }) : null;
   // The dispatch profile's model and effort reach a Claude Code crew member as flags; other agents only record them.
   const full = claudeFull ? [claudeFull[0] as string, ...claudeProfileArgs(t), ...claudeFull.slice(1)] : template;
-  return buildLaunch(full, { prompt, promptFile: promptFile(t.id, env) }, env);
+  return buildLaunch(full, { prompt, promptFile: promptFile(t.id, env), cwd: t.cwd }, env);
 }
 
 /** A build's brief: the scaffold (delivery.ts) around the two sections amigo wrote, in the project's registered delivery mode. */
@@ -491,7 +504,8 @@ export function startMember(t: Task, config: Config, env: NodeJS.ProcessEnv, run
     }
     // The crew member starts now: its backlog item moves In flight first, or it does not start.
     if (t.backlogItem && findItem(t.id, env)?.state !== 'in_flight') startItem(t.id, env);
-    const claude = isClaude(memberTemplate(t, config));
+    const run = memberRun(t, config);
+    const claude = run === 'claude';
     const backend = terminalBackend(env, runner ? { runner } : {});
     const resume = claude && t.sessionStarted === true && hasTranscript(t, env);
     // A started session with no transcript is started afresh: a new session id, the brief and every follow-up.
@@ -502,7 +516,8 @@ export function startMember(t: Task, config: Config, env: NodeJS.ProcessEnv, run
       writeFileSync(promptFile(t.id, env), followUpPrompt(t));
     } else {
       const brief = readFileSync(briefFile(t.id, env), 'utf8');
-      writeFileSync(promptFile(t.id, env), memberPrompt(t, brief, notesFor(t, env), claude ? claudeMemberNotes(t.id, t.amigoAddress) : undefined, env));
+      const sessionNotes = claude ? claudeMemberNotes(t.id, t.amigoAddress) : run === 'interactive' ? interactiveMemberNotes() : undefined;
+      writeFileSync(promptFile(t.id, env), memberPrompt(t, brief, notesFor(t, env), sessionNotes, env));
     }
     let trustAdded = false;
     if (claude) {
@@ -520,6 +535,8 @@ export function startMember(t: Task, config: Config, env: NodeJS.ProcessEnv, run
         startedAt: new Date().toISOString(),
         sessionId: claude ? (fresh || !cur.sessionId ? randomUUID() : cur.sessionId) : null,
         ...(fresh ? { sessionStarted: false, transcriptPath: null } : {}),
+        // Another agent's session is set started again once its process runs (runInteractiveMember).
+        ...(claude ? {} : { sessionStarted: false }),
         trustAdded: cur.trustAdded || trustAdded,
       }),
       env,
@@ -558,7 +575,8 @@ function recordPid(id: string, pid: number | undefined, env: NodeJS.ProcessEnv, 
 
 /**
  * `amigo _tab <id>`: runs inside the crew member's terminal tab. Claude Code gets an interactive session the user can type
- * in (its hooks record each turn); other agents run once with their output shown in the tab and kept in the log.
+ * in (its hooks record each turn), as does another agent whose template is `interactive` (it reports through the status
+ * command); other agents run once with their output shown in the tab and kept in the log.
  * Returns the tab's exit code: non-zero keeps the tab open so the error stays readable.
  */
 export async function runTab(id: string, env: NodeJS.ProcessEnv = process.env, run?: number): Promise<number> {
@@ -581,8 +599,10 @@ export async function runTab(id: string, env: NodeJS.ProcessEnv = process.env, r
   const heartbeat = setInterval(tick, HEARTBEAT_MS);
   let code = 1;
   try {
-    const template = memberTemplate(t, loadConfig(env));
-    code = isClaude(template) ? await runClaudeMember(t, env) : await runOnce(t, template, env);
+    const config = loadConfig(env);
+    const run = memberRun(t, config);
+    const template = memberTemplate(t, config);
+    code = run === 'claude' ? await runClaudeMember(t, env) : run === 'interactive' ? await runInteractiveMember(t, template, env) : await runOnce(t, template, env);
   } catch (err) {
     process.stderr.write(`amigo: ${(err as Error).message}\n`);
     appendFileSync(logFile(id, env), `amigo: ${(err as Error).message}\n`);
@@ -616,23 +636,41 @@ async function runClaudeMember(t: Task, env: NodeJS.ProcessEnv): Promise<number>
     }
   }
   const launch = memberLaunch(t, loadConfig(env), readFileSync(promptFile(t.id, env), 'utf8'), env);
+  // Only once it runs does the session exist (resumable later) and has it been given the follow-ups in its prompt.
+  return runInTerminal(t, launch, { ...ownSessionEnv(env), ...surveyGitEnv(t, env), AMIGO_TASK: t.id, AMIGO_HOME: home(env) }, 'claude', env, (cur) => ({ sessionStarted: true, followUpsSent: cur.followUps.length }));
+}
+
+/**
+ * Another agent's interactive session (its template is `interactive`): it owns the tab's terminal like a Claude crew member,
+ * and reports through the status command. Each run starts it afresh from the brief and every follow-up.
+ */
+async function runInteractiveMember(t: Task, template: string[], env: NodeJS.ProcessEnv): Promise<number> {
+  appendLog(t.id, `\n=== amigo: run ${t.runs} (interactive session in its tab; only stderr is kept here), ${new Date().toISOString()} ===\n`, env);
+  const launch = buildLaunch(template, { prompt: readFileSync(promptFile(t.id, env), 'utf8'), promptFile: promptFile(t.id, env), cwd: t.cwd }, env);
+  // Started: like a Claude session it stays open after reporting, so the watcher reports it if it goes away at rest.
+  return runInTerminal(t, launch, { ...env, ...surveyGitEnv(t, env), AMIGO_TASK: t.id, AMIGO_HOME: home(env) }, t.agent, env, () => ({ sessionStarted: true }));
+}
+
+/**
+ * Run an interactive crew member in this tab and wait for it to end. The agent gets the tab's terminal (its screen and its
+ * input); stderr is piped, and still shown in the tab, so a launch that dies at once leaves its error in output.log. A session
+ * that ends while its task is still at work failed; one stopped by amigo or ended after reporting is a clean end.
+ */
+async function runInTerminal(t: Task, launch: Launch, childEnv: NodeJS.ProcessEnv, agent: string, env: NodeJS.ProcessEnv, started?: (cur: Task) => Partial<Task>): Promise<number> {
   // Ctrl+C belongs to the session, not to this wrapper.
   process.on('SIGINT', () => {});
-  // stderr is piped (and still shown in the tab) so a launch that dies at once, like a failed --resume, leaves its error
-  // in output.log; the session's screen is stdout, which stays the tab's own.
-  const child = spawnAgent(launch, { cwd: t.cwd, stdio: ['inherit', 'inherit', 'pipe'], env: { ...ownSessionEnv(env), ...surveyGitEnv(t, env), AMIGO_TASK: t.id, AMIGO_HOME: home(env) } });
+  const child = spawnAgent(launch, { cwd: t.cwd, stdio: ['inherit', 'inherit', 'pipe'], env: childEnv });
   let stderr = '';
   child.stderr?.on('data', (chunk: Buffer) => {
     process.stderr.write(chunk);
     stderr += chunk.toString();
     appendLog(t.id, chunk, env);
   });
-  // Only now does the session exist (resumable later) and has it been given the follow-ups in its prompt.
-  if (!recordPid(t.id, child.pid, env, (cur) => ({ sessionStarted: true, followUpsSent: cur.followUps.length }))) return 0;
+  if (!recordPid(t.id, child.pid, env, started)) return 0;
   const exit = await new Promise<number | null>((done) => {
     child.on('error', (err) => {
-      process.stderr.write(`amigo: claude could not start: ${err.message}\n`);
-      appendLog(t.id, `amigo: claude could not start: ${err.message}\n`, env);
+      process.stderr.write(`amigo: ${agent} could not start: ${err.message}\n`);
+      appendLog(t.id, `amigo: ${agent} could not start: ${err.message}\n`, env);
       done(null);
     });
     // close, not exit: it also waits for the stderr pipe to drain.
@@ -654,7 +692,7 @@ async function runClaudeMember(t: Task, env: NodeJS.ProcessEnv): Promise<number>
 async function runOnce(t: Task, template: string[], env: NodeJS.ProcessEnv): Promise<number> {
   const log = logFile(t.id, env);
   const before = existsSync(log) ? readFileSync(log).length : 0;
-  const launch = buildLaunch(template, { prompt: readFileSync(promptFile(t.id, env), 'utf8'), promptFile: promptFile(t.id, env) }, env);
+  const launch = buildLaunch(template, { prompt: readFileSync(promptFile(t.id, env), 'utf8'), promptFile: promptFile(t.id, env), cwd: t.cwd }, env);
   const statusBefore = readStatus(t.id, env).length;
   appendFileSync(log, `\n=== amigo: run ${t.runs}, ${new Date().toISOString()} ===\n`);
   // AMIGO_TASK marks the crew member's environment: amigo refuses to manage tasks from inside a crew member.

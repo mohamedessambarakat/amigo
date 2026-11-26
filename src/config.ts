@@ -7,8 +7,17 @@ import { clonePath, configDir, configPath, dataDir, home, OLD_LAYOUT_FILES, proj
 export interface AgentTemplate {
   /** Interactive session that stays open for the user (amigo). Optional: some agents can only be crew members. */
   amigo?: string[];
-  /** A crew member. Claude Code runs it as an interactive session (any -p is dropped); other agents run one task and exit. */
+  /**
+   * A crew member. Claude Code runs it as an interactive session (any -p is dropped); other agents run one task and exit, unless
+   * `interactive` says the template starts an interactive session.
+   */
   member: string[];
+  /**
+   * The member template starts an interactive session (as `agy -i {prompt}`): it gets its tab's terminal, to draw its screen and
+   * take input, and stays open after each turn. Left out or false: it runs one task and exits, its output kept in output.log.
+   * Claude Code crew members are always interactive.
+   */
+  interactive?: boolean;
 }
 
 export interface Config {
@@ -94,6 +103,8 @@ export function validateConfig(raw: unknown, where = 'config.json'): Config {
       if (!isArgv(argv)) throw new Error(`${where}: agents.${name}.${kind} must be a non-empty array of strings`);
       if (!argv.slice(1).some((a) => a.includes('{prompt}'))) throw new Error(`${where}: agents.${name}.${kind} needs a "{prompt}" argument`);
     }
+    const interactive = (t as Partial<AgentTemplate>).interactive;
+    if (interactive !== undefined && typeof interactive !== 'boolean') throw new Error(`${where}: agents.${name}.interactive must be true or false`);
   }
   const mb = (key: 'memberMb' | 'reserveMb'): number => {
     const v = o[key] ?? STARTER_CONFIG[key];

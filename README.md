@@ -145,7 +145,7 @@ Data lives in $AMIGO_HOME (default ~/.amigo): config/, data/, state/ and project
 
 ## Agents
 
-`~/.amigo/config/config.json` holds one entry per agent. `amigo` starts the session you talk to, and only Claude Code has one: the Stop hook supervision and the user commands are Claude Code's, so `amigo` refuses another agent as the lead. `member` starts a crew member: Claude Code runs it as an interactive session; other agents run one task and exit. `{prompt}` is replaced by the instructions. `install-skill` fills this in for you; edit it to change flags.
+`~/.amigo/config/config.json` holds one entry per agent. `amigo` starts the session you talk to, and only Claude Code has one: the Stop hook supervision and the user commands are Claude Code's, so `amigo` refuses another agent as the lead. `member` starts a crew member: Claude Code runs it as an interactive session; other agents run one task and exit, unless the agent sets `"interactive": true`. `{prompt}` is replaced by the instructions, and `{cwd}` by the crew member's folder with forward slashes. `install-skill` fills this in for you; edit it to change flags.
 
 ```json
 {
@@ -171,10 +171,18 @@ Data lives in $AMIGO_HOME (default ~/.amigo): config/, data/, state/ and project
 
 Flags come from each tool's documentation; check them against your installed version.
 
-- **Permissions are yours to choose.** Crew members work without anyone approving each step, so a crew member can only do what its flags allow, and whatever you allow applies to every crew member. Claude Code's `auto` mode lets a classifier approve safe actions and blocks risky ones; Codex works in a sandbox limited to the crew member's folder; Gemini CLI approves edits only; Grok's `--always-approve` approves everything your Grok deny rules allow; Antigravity documents no headless approval flag, so its crew members may stop and ask. Flags that skip all checks belong only inside a container or VM.
+- **Permissions are yours to choose.** Crew members work without anyone approving each step, so a crew member can only do what its flags allow, and whatever you allow applies to every crew member. Claude Code's `auto` mode lets a classifier approve safe actions and blocks risky ones; Codex works in a sandbox limited to the crew member's folder; Gemini CLI approves edits only; Grok's `--always-approve` approves everything your Grok deny rules allow; Antigravity approves edits and safe commands only with `--mode auto`, which the default template leaves out (see the interactive example below). Flags that skip all checks belong only inside a container or VM.
 - Crew members use the same agent as amigo unless a dispatch profile or amigo picks another (`--agent`).
 - A crew member starts only while free memory, minus `memberMb`, stays at or above `reserveMb`; other tasks wait in a queue. Only one crew member runs in a folder at a time.
 - amigo's own session rotates once its context passes `rotateAtTokens` (default 500000; `0` turns it off): amigo saves what only that session knows with `/remember`, and the `amigo` command restarts it fresh in the same tab with the full digest.
+- **Interactive crew members of other agents.** Set `"interactive": true` on an agent whose `member` template starts an interactive session, such as Antigravity's:
+
+  ```json
+  "member": ["agy", "--mode", "auto", "--settings", "{\"trustedWorkspaces\":[\"{cwd}\"]}", "-i", "{prompt}"],
+  "interactive": true
+  ```
+
+  Its crew member then gets its tab's terminal, so you can watch it work and type into it, and its session stays open after each turn. It reports with `amigo report`, and `amigo send`, `amigo control` and `amigo close` work as for Claude Code; `output.log` keeps only its stderr. Nobody answers a dialog in an unattended tab, so the template must not stop to ask: here `--mode auto` approves edits and safe commands, and `--settings` trusts the crew member's folder for this session only, which skips Antigravity's folder-trust question without changing its saved settings. Without the field, the template runs one task and exits, and its output is kept in `output.log`.
 - **Claude Code crew members** are interactive sessions named `amigo-<id>` that you can type into in their tab. Hooks record each turn's report, and a turn that ends without one is sent back once. Before one starts, amigo marks its folder trusted in `~/.claude.json` and removes that entry when the worktree is closed.
 - On Windows, agents installed by npm are `.cmd` files that cannot carry a multi-line prompt, so they get one line: "Read the file <path> and follow the instructions in it exactly." The same happens for any prompt longer than 24,000 characters.
 
