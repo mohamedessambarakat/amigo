@@ -175,8 +175,11 @@ Remove-Item Env:AMIGO_DETACH_CMDLINE
 Remove-Item Env:AMIGO_NM_NO_BREAKAWAY -ErrorAction SilentlyContinue
 [AmigoDetach]::Start($line, $breakaway)`;
 
-/** The environment the daemon gets: none of amigo's or Claude Code's own variables, so its agents never look like amigo's lead. */
-const daemonEnv = (env: NodeJS.ProcessEnv): NodeJS.ProcessEnv => Object.fromEntries(Object.entries(env).filter(([k]) => !/^(AMIGO_|CLAUDE)/i.test(k)));
+/**
+ * The environment the daemon gets: none of amigo's, Claude Code's or T3 Code's own variables, so its agents never look like
+ * amigo's lead, or (T3CODE_THREAD_ID) like the crew thread that started it.
+ */
+const daemonEnv = (env: NodeJS.ProcessEnv): NodeJS.ProcessEnv => Object.fromEntries(Object.entries(env).filter(([k]) => !/^(AMIGO_|CLAUDE|T3CODE_)/i.test(k)));
 
 /** Launch `daemon start` so neither it nor the daemon it spawns belongs to this process or its terminal. It does not wait. */
 export function launchStart(env: NodeJS.ProcessEnv): { ok: true; how: string } | { ok: false; error: string } {

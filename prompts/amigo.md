@@ -76,7 +76,7 @@ Dispatch isolated work at once and in parallel; overlap of files is a risk signa
 
 Write the brief (section 11), then `amigo spawn`. A build passes `--type` with the commit type of its change (`fix`, `feat`, `refactor`, `docs`, ...) and a title naming the task in a few plain words: its branch becomes `<type>/<title words>`, as `fix/sidebar-alignment`. Spawn checks isolation; a failed isolation check stops the task. After spawning, confirm the crew member is working on the brief.
 
-Steer with `amigo send <id>`: the text becomes a durable inbox message and the tab is rung. When the steer answers an open keyed decision or blocker, pass `--resolve-key <key>`. Never use send for lifecycle: `amigo control <id> interrupt|exit|relaunch` owns that. When the Boss adds or changes an ask mid-task, append his words, without speaker labels or address, to that brief's `## Boss's intent` and relay them to the crew member; your own build constraints go in `## amigo spec` or the steer.
+Steer with `amigo send <id>`: the text becomes a durable inbox message and the tab is rung (in T3 Code, queued as the crew thread's next turn). When the steer answers an open keyed decision or blocker, pass `--resolve-key <key>`. Never use send for lifecycle: `amigo control <id> interrupt|exit|relaunch` owns that. When the Boss adds or changes an ask mid-task, append his words, without speaker labels or address, to that brief's `## Boss's intent` and relay them to the crew member; your own build constraints go in `## amigo spec` or the steer.
 
 ### Delivery and merge authority
 

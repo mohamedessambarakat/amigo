@@ -30,6 +30,8 @@ export function controlTask(id: string, verb: string, opts: { note?: string } = 
     if (opts.note) throw new Error('exit takes no --note');
     // The record changes first, so the tab's wrapper reads the end as a stop, not a crash.
     const before = mutateTask(id, () => ({ status: 'blocked', seen: true, summary: `Stopped by amigo (control exit). The worktree is kept; start it again with: amigo control ${id} relaunch --note "<what to do>"` }), env);
+    // T3 runs the agent, and its CLI cannot stop a thread: the lead does, with its T3 tool.
+    if (before.endpoint?.backend === 't3') return [`Marked ${id} stopped; its worktree is kept. T3 has no command-line stop: if its thread is still working, call the t3_thread_interrupt tool with threadId "${before.endpoint.terminal}".`];
     if (before.pid && runnerAlive(id, env)) {
       killTree(before.pid);
       return [`Stopped ${id}'s agent. Its worktree and changes are kept.`];
