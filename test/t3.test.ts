@@ -26,8 +26,10 @@ function t3Home(): { dir: string; env: NodeJS.ProcessEnv; state: () => { project
   writeFileSync(shim, win ? `@echo off\r\n"${process.execPath}" "${fakeT3}" %*\r\n` : `#!/bin/sh\nexec "${process.execPath}" "${fakeT3}" "$@"\n`, { mode: 0o755 });
   const stateFile = join(dir, 'fake-t3.json');
   writeFileSync(stateFile, JSON.stringify({ projects: { 'proj-lead': { path: dir } }, threads: { [LEAD]: { threadId: LEAD, projectId: 'proj-lead', model: 'sonnet', status: 'running', activeRunId: 'run:1', pendingRequestCount: 0, archived: false, messages: [] } }, calls: [], n: 0 }));
-  // Claude Code crew members only: the t3 backend starts them as T3 threads.
-  writeFileSync(join(env.AMIGO_HOME as string, 'config', 'config.json'), JSON.stringify({ agents: { claude: { amigo: ['claude', '{prompt}'], member: ['claude', '--permission-mode', 'auto', '{prompt}'] } }, memberMb: 0, reserveMb: 0 }));
+  // Claude Code crew members only: the t3 backend starts them as T3 threads. makeHome's `claude` shim stands in for Claude Code
+  // (never run here), so the templates resolve on a machine without it.
+  const claude = join(dir, win ? 'claude.cmd' : 'claude');
+  writeFileSync(join(env.AMIGO_HOME as string, 'config', 'config.json'), JSON.stringify({ agents: { claude: { amigo: [claude, '{prompt}'], member: [claude, '--permission-mode', 'auto', '{prompt}'] } }, memberMb: 0, reserveMb: 0 }));
   const t3env: NodeJS.ProcessEnv = { ...env, AMIGO_TERMINAL: undefined, T3CODE_THREAD_ID: LEAD, T3CODE_CLI_PATH: shim, FAKE_T3_STATE: stateFile, AMIGO_T3_REGISTRY: join(dir, 't3-threads.json'), AMIGO_CLAUDE_SETTINGS: join(dir, 'claude-settings.json'), CLAUDE_PID: String(process.pid), CLAUDE_CODE_SESSION_ID: 'lead-session' };
   delete t3env.AMIGO_TERMINAL;
   return { dir, env: t3env, state: () => JSON.parse(readFileSync(stateFile, 'utf8')) };
