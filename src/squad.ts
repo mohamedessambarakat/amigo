@@ -32,6 +32,7 @@ import { eventsThisTurn, ingestStatus } from './report.ts';
 import { describeStatus, declaredWait, latestEvent, readStatus, statusFile, TERMINAL_VERBS } from './status.ts';
 import { inboxDir, pendingMessages } from './steer.ts';
 import { herdrLabel, terminalBackend, type BackendName, type Placement, type Runner } from './terminal.ts';
+import { t3MemberNotes, T3_PROVIDER, type T3Runner } from './t3.ts';
 import {
   FINISHED,
   HEARTBEAT_MS,
@@ -240,8 +241,9 @@ export function spawnMember(input: SpawnInput, opts: { dryRun?: boolean }, env: 
   if (!isBuild && input.type !== undefined) throw new Error('--type names a build\'s branch; a review, scratch task or survey has none');
   const config = loadConfig(env);
   const agent = pickAgent(config, input.agent, env);
-  // Fails early, before any folder is made, outside herdr-app.
-  terminalBackend(env);
+  // Fails early, before any folder is made, outside herdr-app and T3 Code.
+  const backendName = terminalBackend(env).name;
+  if (backendName === 't3' && !isClaude(memberTemplate({ agent }, config))) throw new Error(t3ClaudeOnly(agent));
   // A build's brief is checked before anything is made: both sections, and a delivery contract (if it names one) that matches the registry.
   // A survey delivers a report, not a change, so it gets the survey contract instead of a delivery scaffold.
   const sections = input.project && !input.review && !input.scratch && input.kind !== 'survey' ? parseBriefInput(input.brief) : null;
@@ -271,7 +273,8 @@ export function spawnMember(input: SpawnInput, opts: { dryRun?: boolean }, env: 
     }
   }
   const now = new Date().toISOString();
-  const amigoAddress = sessionAddress(env);
+  // A T3 crew member reports through amigo report and the watcher: messaging between T3 threads is not relied on.
+  const amigoAddress = backendName === 't3' ? undefined : sessionAddress(env);
   const base = { id, title, agent, status: 'queued' as const, createdAt: now, updatedAt: now, runs: 0, followUps: [], seen: true, ...(amigoAddress ? { amigoAddress } : {}) };
 
   let task: Task;
@@ -311,8 +314,8 @@ export function spawnMember(input: SpawnInput, opts: { dryRun?: boolean }, env: 
     ...shape,
     `folder:  ${where}`,
     ...(task.mode ? [`deliver: ${task.mode} (brief: ${briefFile(id, env)})`] : []),
-    `agent:   ${agent}${profile ? ` (${profile}${isClaude(memberTemplate(task, config)) ? '' : ': recorded only, this agent gets no such flags'})` : ''} (in a new tab, as ${memberName(id)})`,
-    `command: ${describeLaunch(launch)}`,
+    `agent:   ${agent}${profile ? ` (${profile}${isClaude(memberTemplate(task, config)) ? '' : ': recorded only, this agent gets no such flags'})` : ''} (${backendName === 't3' ? `in a new T3 Code thread, provider ${T3_PROVIDER}` : `in a new tab, as ${memberName(id)}`})`,
+    ...(backendName === 't3' ? [] : [`command: ${describeLaunch(launch)}`]),
   ].join('\n');
   if (opts.dryRun) return { task, text: `DRY RUN, nothing was started.\n${text}` };
   // A build's pipeline needs the shared daemon: take the first look now, so a down one is confirmed and started (detached, by
@@ -453,7 +456,9 @@ export function drain(env: NodeJS.ProcessEnv = process.env): string[] {
         if (dep.state === 'blocked') mutateTask(t.id, (cur) => (cur.status === 'queued' ? { status: 'blocked', seen: false, summary: dep.why } : null), env);
         if (dep.state !== 'go') continue;
       }
-      if ((t.cwd && busy.has(t.cwd)) || (t.cwd && open.has(t.cwd) && !t.reviewOf) || runnerAlive(t.id, env)) continue;
+      // A T3 crew member's runner lives as long as its thread: a follow-up goes into that thread (startMember), not a new one.
+      const inThread = t.endpoint?.backend === 't3' && runnerAlive(t.id, env);
+      if ((t.cwd && busy.has(t.cwd)) || (!inThread && ((t.cwd && open.has(t.cwd) && !t.reviewOf) || runnerAlive(t.id, env)))) continue;
       // Project capacity: a project at its declared limit keeps its task queued; other projects' tasks may still start.
       if (!t.scratch && !t.reviewOf && projectCapacityProblem(t.project, tasks, env, startedIn(t.project))) continue;
       // Lane capacity, once lane-capacity declares admit-spawns, replaces the memory check.
@@ -493,7 +498,7 @@ export function herdrPlacement(t: Task, env: NodeJS.ProcessEnv, amigoSpace: stri
 }
 
 /** Start one queued crew member: write its prompt, mark it running, open its tab. Exported with a runner so tests need no real terminal. */
-export function startMember(t: Task, config: Config, env: NodeJS.ProcessEnv, runner?: Runner): boolean {
+export function startMember(t: Task, config: Config, env: NodeJS.ProcessEnv, runner?: Runner, t3Runner?: T3Runner): boolean {
   try {
     if (t.after && t.leased && t.repo && t.branch && !t.baseSha) {
       // The task follows another one: its worktree starts from the commit that one was closed with.
@@ -506,7 +511,8 @@ export function startMember(t: Task, config: Config, env: NodeJS.ProcessEnv, run
     if (t.backlogItem && findItem(t.id, env)?.state !== 'in_flight') startItem(t.id, env);
     const run = memberRun(t, config);
     const claude = run === 'claude';
-    const backend = terminalBackend(env, runner ? { runner } : {});
+    const backend = terminalBackend(env, { ...(runner ? { runner } : {}), ...(t3Runner ? { t3Runner } : {}) });
+    if (backend.name === 't3') return startT3Member(t, run, backend, env);
     const resume = claude && t.sessionStarted === true && hasTranscript(t, env);
     // A started session with no transcript is started afresh: a new session id, the brief and every follow-up.
     const fresh = claude && t.sessionStarted === true && !resume;
@@ -559,6 +565,79 @@ export function startMember(t: Task, config: Config, env: NodeJS.ProcessEnv, run
   }
 }
 
+const t3ClaudeOnly = (agent: string): string => `In T3 Code amigo starts Claude Code crew members only (T3 provider ${T3_PROVIDER}); "${agent}" is not Claude Code. Spawn with --agent claude, or run amigo in herdr-app for other agents.`;
+
+/**
+ * Start a crew member in T3 Code: a new thread in its folder with the whole prompt, or, while its thread still lives (a
+ * follow-up or a relaunch), the follow-ups as that thread's next turn. Throws to the caller's failure handling.
+ */
+function startT3Member(t: Task, run: MemberRun, backend: ReturnType<typeof terminalBackend>, env: NodeJS.ProcessEnv): boolean {
+  if (run !== 'claude') throw new Error(t3ClaudeOnly(t.agent));
+  const was = t.endpoint?.backend === 't3' ? backend.state(t.endpoint).liveness : 'absent';
+  // A thread T3 did not answer about, or that is no longer this task's, may still be working: never a second one beside it.
+  if (was === 'unreadable' || was === 'foreign') throw new Error(`its T3 thread ${t.endpoint!.terminal} is ${was}, so no new thread was started beside it`);
+  const live = was === 'live';
+  const prompt = live ? followUpPrompt(t) : memberPrompt(t, readFileSync(briefFile(t.id, env), 'utf8'), notesFor(t, env), t3MemberNotes(), env);
+  writeFileSync(promptFile(t.id, env), prompt);
+  const now = mutateTask(
+    t.id,
+    (cur) => ({ status: 'running', pid: null, runs: cur.runs + 1, seen: true, exitCode: null, startedAt: new Date().toISOString(), sessionId: null, sessionStarted: true, followUpsSent: cur.followUps.length }),
+    env,
+  );
+  if (live) {
+    backend.send(t.endpoint!, prompt);
+    return true;
+  }
+  const endpoint = backend.open({
+    task: t.id,
+    cwd: taskDir(t.id, env),
+    // The runner: it beats while the thread lives, and starts the queue again when the thread is gone (runT3Member).
+    argv: [process.execPath, cliPath, '_tab', t.id, '--run', String(now.runs), '--home', home(env), ...tabEnvArgs({ ...env, AMIGO_TERMINAL: 't3' })],
+    dir: taskDir(t.id, env),
+    env: { ...env, AMIGO_HOME: home(env) },
+    placement: { label: herdrLabel(t.id, t.title, 60), ownSpace: true, spaces: [] },
+    agent: { cwd: t.cwd, prompt, ...(t.model ? { model: t.model } : {}), ...(t.effort ? { effort: t.effort } : {}) },
+  });
+  mutateTask(t.id, () => ({ endpoint }), env);
+  return true;
+}
+
+/** How often a T3 crew member's runner reads its thread. */
+const T3_READ_MS = 15_000;
+/** How long T3 may stay unreadable (the app closed) before the runner stops vouching for the thread. */
+const T3_UNREADABLE_MS = 10 * 60_000;
+
+/**
+ * A T3 crew member's runner (`_tab` with AMIGO_TERMINAL=t3): T3 runs the agent, so this only watches its thread while runTab
+ * beats for it. A thread that is gone while its task is at work failed mid-turn; one gone at rest or at close is a clean end.
+ */
+async function runT3Member(id: string, env: NodeJS.ProcessEnv): Promise<number> {
+  const opened = Date.now();
+  let readAt = 0;
+  let readable = Date.now();
+  for (;;) {
+    const t = requireTask(id, env);
+    if (t.status === 'closing' || t.status === 'closed') return 0;
+    if (t.endpoint?.backend !== 't3') {
+      // open() starts this runner just before the endpoint is recorded.
+      if (Date.now() - opened > 60_000) throw new Error('its T3 thread was never recorded');
+    } else if (Date.now() - readAt >= T3_READ_MS) {
+      readAt = Date.now();
+      const ep = t.endpoint;
+      const state = terminalBackend({ ...env, AMIGO_TERMINAL: 't3' }).state(ep);
+      if (state.liveness === 'unreadable') {
+        if (Date.now() - readable > T3_UNREADABLE_MS) throw new Error(`T3 did not answer for ${Math.round(T3_UNREADABLE_MS / 60_000)} min: its thread ${ep.terminal} may be gone`);
+      } else if (state.liveness === 'live') {
+        readable = Date.now();
+      } else {
+        mutateTask(id, (cur) => (isActive(cur) ? { status: 'failed', pid: null, seen: false, summary: `The session ended in the middle of a turn: its T3 thread ${ep.terminal} is ${state.liveness}.` } : null), env);
+        return 0;
+      }
+    }
+    await new Promise((r) => setTimeout(r, 1000));
+  }
+}
+
 function spawnAgent(launch: Launch, opts: Parameters<typeof spawn>[2]) {
   return launch.shell ? spawn(launch.commandLine as string, { ...opts, shell: true }) : spawn(launch.file, launch.args, opts);
 }
@@ -602,7 +681,7 @@ export async function runTab(id: string, env: NodeJS.ProcessEnv = process.env, r
     const config = loadConfig(env);
     const run = memberRun(t, config);
     const template = memberTemplate(t, config);
-    code = run === 'claude' ? await runClaudeMember(t, env) : run === 'interactive' ? await runInteractiveMember(t, template, env) : await runOnce(t, template, env);
+    code = env.AMIGO_TERMINAL === 't3' ? await runT3Member(id, env) : run === 'claude' ? await runClaudeMember(t, env) : run === 'interactive' ? await runInteractiveMember(t, template, env) : await runOnce(t, template, env);
   } catch (err) {
     process.stderr.write(`amigo: ${(err as Error).message}\n`);
     appendFileSync(logFile(id, env), `amigo: ${(err as Error).message}\n`);
@@ -955,6 +1034,14 @@ export function statusText(id: string | undefined, env: NodeJS.ProcessEnv = proc
   return `${head}\n${stationText(stations(all), all)}`;
 }
 
+/** In T3 Code the lead is a T3 thread and so is every crew member (t3.ts). */
+const T3_AMIGO = `## Talking to crew members (you run in a T3 Code thread)
+
+- Each crew member is a T3 Code thread titled "<id> · <title>", in its own folder. Crew members report through \`amigo report\`; the watcher wakes this thread with a message that starts "amigo wake", which you handle like a Stop hook wake.
+- \`amigo send <id>\` writes to the crew member's durable inbox and queues a line as its thread's next turn (nothing is interrupted). \`amigo control <id> relaunch\` sends the note into the same thread while it lives, or starts a new one.
+- T3 has no command-line interrupt or archive yet. To stop a crew member's turn, call the t3_thread_interrupt tool with its thread id (\`amigo control <id> interrupt\` names it). \`amigo close\` removes the crew member's T3 project with its threads; a thread left in a shared folder (a reviewer's) can be archived with the t3_thread_update tool.
+- Never start crew members with your own T3 tools (t3_thread_launch, delegate_task): amigo starts them, so its records, worktrees and watcher cover them.`;
+
 const CLAUDE_AMIGO = `## Talking to crew members (you are Claude Code)
 
 - Claude crew members are sessions named \`amigo-<id>\` in terminal tabs. Each one messages the session that spawned it when a turn ends, whatever that session is named, so never ask the Boss to rename this session.
@@ -996,14 +1083,14 @@ export const RESTART_RULE =
   "Open your first reply with a short report from this briefing: what finished, what is under way, and anything you noticed. A restart is a non-event: reconcile each open task from its records, then carry on with every in-flight task's next step under the authority already recorded for it (for example, at a no-mistakes handoff of work the Boss ordered through to merge, send the validate step) without asking again. Put to the Boss only the decisions that are the Boss's to make, as options with your pick first. When none are open, say so in one line and carry on supervising.";
 
 /** Amigo's full instructions, for the bare `amigo` start and for the /amigo skill (`amigo brief`). */
-export function amigoPrompt(agent: string, env: NodeJS.ProcessEnv = process.env, briefing = '', opts: { live?: boolean } = {}): string {
+export function amigoPrompt(agent: string, env: NodeJS.ProcessEnv = process.env, briefing = '', opts: { live?: boolean; backend?: BackendName } = {}): string {
   const config = loadConfig(env);
   const others = Object.keys(config.agents).filter((a) => a !== agent);
   const drafts = draftsDir(env);
   return [
     readPrompt('amigo.md'),
     `## Your setup\n\n- You run as the "${agent}" agent. Pass \`--agent ${agent}\` to every spawn so crew members use the same agent${others.length ? `, unless a task is better suited to another configured agent: ${others.join(', ')}` : ''}.\n- Write briefs and messages to new files in ${drafts} (create the folder if needed) and pass them with \`--brief-file\` or \`--file\`.\n- amigo's code folder is ${codeRoot.replaceAll('\\', '/')}: \`skills/agent/\`, \`prompts/\` and \`src/\` above are relative to it. Your home is ${home(env).replaceAll('\\', '/')}.`,
-    CLAUDE_AMIGO,
+    opts.backend === 't3' ? T3_AMIGO : CLAUDE_AMIGO,
     `## Briefing\n\n${RESTART_RULE}${opts.live ? ' Live checks are running in the background: their result arrives in `amigo inbox`; mention it when it arrives.' : ''}\n\n${briefing.trim() || '(no briefing)'}`,
   ].join('\n\n') + '\n';
 }

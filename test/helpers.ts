@@ -36,16 +36,16 @@ export function moveFolder(from: string, to: string): void {
 }
 
 /**
- * The environment a test starts from: this process's, without any AMIGO_* or GIT_* variable (a git hook sets GIT_DIR and friends, which would point every test git call at the hooked repo). Crew member tabs set
+ * The environment a test starts from: this process's, without any AMIGO_*, GIT_* or T3CODE_* variable (a git hook sets GIT_DIR and friends, which would point every test git call at the hooked repo; inside a T3 Code thread, T3CODE_* would pick the t3 backend). Crew member tabs set
  * AMIGO_TASK and AMIGO_HOME, so `npm test` run inside a crew member would otherwise act as that crew member, on its home.
  * Tests set only what they need on top.
  */
 export function cleanEnv(from: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
-  return Object.fromEntries(Object.entries(from).filter(([k]) => !/^(AMIGO_|GIT_|TREEHOUSE_)/.test(k.toUpperCase())));
+  return Object.fromEntries(Object.entries(from).filter(([k]) => !/^(AMIGO_|GIT_|TREEHOUSE_|T3CODE_)/.test(k.toUpperCase())));
 }
 
 // Code that falls back to process.env, git and other child processes see the clean environment too.
-for (const k of Object.keys(process.env)) if (/^(AMIGO_|GIT_|TREEHOUSE_)/.test(k.toUpperCase())) delete process.env[k];
+for (const k of Object.keys(process.env)) if (/^(AMIGO_|GIT_|TREEHOUSE_|T3CODE_)/.test(k.toUpperCase())) delete process.env[k];
 
 // Code that falls back to process.env (a function called without an env) must never reach the real ~/.amigo or ~/.claude.json: point it at a throwaway home.
 const strayHome = mkdtempSync(join(os.tmpdir(), 'amigo-stray-home-'));

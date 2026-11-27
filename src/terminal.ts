@@ -5,15 +5,16 @@ import { join, posix, win32 } from 'node:path';
 import { processStartMs } from './fsx.ts';
 import { home, stateDir } from './paths.ts';
 import { killTree, run, type RunResult } from './proc.ts';
+import { T3_TESTED_VERSION, t3Backend, t3Runner, type T3Runner } from './t3.ts';
 
 /**
- * The terminal backend: every terminal action amigo takes goes through one TerminalBackend. There are two: the herdr desktop app
- * (`herdr-app`, driven through `herdr-app do` and herdr-core's `hc`), and `test`, a fake for the test suite that runs a crew
- * member's command as a detached process. amigo runs only inside herdr-app: started anywhere else it refuses (see
- * terminalBackend). AMIGO_TERMINAL is internal: `test` selects the fake, and `herdr-app` is carried into crew member tabs so
- * they do not detect the app again.
+ * The terminal backend: every terminal action amigo takes goes through one TerminalBackend. There are three: the herdr desktop
+ * app (`herdr-app`, driven through `herdr-app do` and herdr-core's `hc`), T3 Code (`t3`, see t3.ts: crew members are T3
+ * threads), and `test`, a fake for the test suite that runs a crew member's command as a detached process. amigo runs only
+ * inside herdr-app or a T3 Code thread: started anywhere else it refuses (see terminalBackend). AMIGO_TERMINAL is internal:
+ * `test` selects the fake, and the backend found is carried into crew member runners so they do not detect it again.
  */
-export type BackendName = 'herdr-app' | 'test';
+export type BackendName = 'herdr-app' | 't3' | 'test';
 
 /** The herdr-app and hc versions this backend was tested against. The session-start briefing warns when another is installed. */
 export const TESTED_VERSIONS = { 'herdr-app': '0.1.16', hc: '0.1.21' } as const;
@@ -85,6 +86,11 @@ export interface OpenRequest {
   /** The environment the command runs with (the test backend only: a herdr-app tab gets its shell's environment). */
   env: NodeJS.ProcessEnv;
   placement: Placement;
+  /**
+   * The t3 backend starts the agent itself (T3 runs it): its folder, first prompt, and the dispatch profile's model and effort.
+   * argv is then the crew member's runner, started detached beside the thread. Other backends ignore it.
+   */
+  agent?: { cwd: string; prompt: string; model?: string; effort?: string };
 }
 
 /** Every terminal action amigo takes. */
@@ -130,14 +136,19 @@ export function homeTag(env: NodeJS.ProcessEnv): string {
   return `amigo-${createHash('sha256').update(home(env)).digest('hex').slice(0, 8)}`;
 }
 
-const REFUSAL = 'amigo runs only inside the herdr desktop app (herdr-app). Open a terminal in herdr-app and start amigo there';
+const REFUSAL = 'amigo runs only inside the herdr desktop app (herdr-app) or a T3 Code thread. Open a terminal in herdr-app and start amigo there, or type /amigo in a T3 Code thread';
 
 /**
  * The backend for this process. AMIGO_TERMINAL=test is the fake; a carried herdr-app is trusted (a crew member's tab is a
  * herdr-app terminal); otherwise this process must run inside a herdr-app terminal, or amigo refuses with the reason.
  */
-export function terminalBackend(env: NodeJS.ProcessEnv, opts: { runner?: Runner; platform?: NodeJS.Platform; insideApp?: (id: string) => boolean; warn?: (line: string) => void; now?: () => number } = {}): TerminalBackend {
+export function terminalBackend(env: NodeJS.ProcessEnv, opts: { runner?: Runner; t3Runner?: T3Runner; platform?: NodeJS.Platform; insideApp?: (id: string) => boolean; warn?: (line: string) => void; now?: () => number } = {}): TerminalBackend {
   if (env.AMIGO_TERMINAL === 'test') return testBackend(env);
+  // A T3 Code thread: T3 sets both for every command and hook its Claude Code session runs. A herdr-app terminal carries neither.
+  if (env.AMIGO_TERMINAL === 't3' || (env.AMIGO_TERMINAL !== 'herdr-app' && env.T3CODE_THREAD_ID && env.T3CODE_CLI_PATH)) {
+    if (!env.T3CODE_CLI_PATH) throw new Error(`${REFUSAL}: this T3 Code process has no T3CODE_CLI_PATH to reach T3 with.`);
+    return t3Backend(env, opts.t3Runner);
+  }
   const runner = opts.runner ?? quickRun;
   const warn = opts.warn ?? warnLine;
   if (env.AMIGO_TERMINAL !== 'herdr-app') {
@@ -339,8 +350,19 @@ export function versionWarnings(runner: Runner = quickRun): string[] {
 }
 
 /** The version warnings for this process's backend: none for the test fake. */
-export function backendVersionWarnings(env: NodeJS.ProcessEnv, runner: Runner = quickRun): string[] {
-  return env.AMIGO_TERMINAL === 'test' ? [] : versionWarnings(runner);
+export function backendVersionWarnings(env: NodeJS.ProcessEnv, runner: Runner = quickRun, t3: T3Runner = t3Runner(env)): string[] {
+  if (env.AMIGO_TERMINAL === 'test') return [];
+  let backend: BackendName;
+  try {
+    backend = terminalBackend(env, { insideApp: () => true }).name;
+  } catch {
+    backend = 'herdr-app';
+  }
+  if (backend !== 't3') return versionWarnings(runner);
+  const r = t3(['--version']);
+  const have = r.error || r.status !== 0 ? null : (/^t3\s+v?(\d+\.\d+\.\d+\S*)/.exec(r.stdout.trim())?.[1] ?? null);
+  if (have === T3_TESTED_VERSION) return [];
+  return [have ? `t3 ${have} is installed, but amigo was tested with ${T3_TESTED_VERSION}: crew member threads may misbehave until amigo is checked against it.` : `t3 did not report its version (t3 --version); amigo was tested with ${T3_TESTED_VERSION}.`];
 }
 
 const livenessOf = (state: unknown): Liveness => (state === 'live' ? 'live' : state === 'finished' ? 'finished' : 'unreadable');

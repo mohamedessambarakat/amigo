@@ -4,6 +4,7 @@ import { cliPath, lockPath, stateDir } from './paths.ts';
 import { acquireSessionLock, identity, lockState, type Identity } from './session.ts';
 import { rotationNudge, stopForRotation, stoppingForRotation } from './rotate.ts';
 import { appendWake } from './wakes.ts';
+import { isT3Lead } from './t3.ts';
 import { supervisionNeed, watchCycle, watcherGrace, watcherHealthy } from './watch.ts';
 
 /**
@@ -175,7 +176,8 @@ export async function turnEndGuard(payload: HookPayload, env: NodeJS.ProcessEnv)
   if (s.state === 'stale' && controls(env, me)) s = lockState(env, me);
   // Another live session controls the home: this one cannot arm, so blocking it would loop. The owner keeps supervision.
   if (s.state === 'foreign') return { code: 0 };
-  if (s.state === 'owned') {
+  // A T3 lead has no amigo command around it to start a fresh session: T3 compacts instead (t3-lead.ts).
+  if (s.state === 'owned' && !isT3Lead(env)) {
     // Past the rotation point, ask for a rotation (rotate.ts).
     const nudge = rotationNudge(me, payload.transcript_path, env);
     if (nudge) return { code: 2, stderr: nudge };

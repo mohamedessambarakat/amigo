@@ -30,12 +30,14 @@ import { planCommand } from './plan-commands.ts';
 import { describeTend, ensureDaemon, openPipelineBuilds } from './nmdaemon.ts';
 import { AWAY_MODES, describeAway, enterAway, leaveAway, readAway, type AwayMode } from './away.ts';
 import { updateAmigo } from './update.ts';
+import { adoptT3Env } from './t3.ts';
+import { t3Arm, t3Hook, t3LeadBrief } from './t3-lead.ts';
 
 export const HELP = `amigo: your right hand. Runs the crew.
 
-  amigo [--agent <name>] [--dry-run]                start amigo in this terminal: a briefing first, then you just talk to it
-  amigo install-skill [<agent>] [--remove]          set up your agent CLIs: /amigo for Claude Code, crew templates for the rest
-  amigo brief --agent <name>                        print amigo's instructions and the briefing (what /amigo runs; only inside a session amigo started)
+  amigo [--agent <name>] [--dry-run]                start amigo in this terminal (in a T3 Code thread: make the thread amigo): a briefing first, then you just talk to it
+  amigo install-skill [<agent>] [--remove]          set up your agent CLIs: /amigo for Claude Code (and its T3 Code hook), crew templates for the rest
+  amigo brief --agent <name>                        print amigo's instructions and the briefing (what /amigo runs; only inside a session amigo started, or a T3 Code thread)
   amigo add <git url or path> [--name <name>] [--mode no-mistakes|direct-PR|local-only] [--yolo | --no-yolo]
             [--live <folder>] [--notes <text>] [--live-command <cmd>]... [--watch <text>]...
                                                     clone a project into projects/<name> and register it; the same name and source again updates it
@@ -114,7 +116,8 @@ const readOnlyOk = (cmd: string, sub: string | undefined): boolean => READ_ONLY_
 
 export async function main(argv: string[], rawEnv: NodeJS.ProcessEnv = process.env): Promise<number> {
   // A session the former name started still counts as a crew member, in the home it was started with.
-  const env = adoptLegacyEnv(rawEnv);
+  // A T3 thread's commands and hooks get their home (and a crew member's task) from amigo's thread registry (t3.ts).
+  const env = adoptT3Env(adoptLegacyEnv(rawEnv));
   const internal = argv[0]?.startsWith('_') ?? false;
   // -h or --help anywhere asks for the help; nothing else runs.
   const wantsHelp = !internal && argv.some((a) => a === '--help' || a === '-h');
@@ -158,6 +161,29 @@ export async function main(argv: string[], rawEnv: NodeJS.ProcessEnv = process.e
       appendFileSync(join(stateDir(env), 'hook-errors.log'), `${new Date().toISOString()} amigo ${rest[0]}: ${(err as Error).message}\n`);
       return 0;
     }
+  }
+  if (cmd === '_t3-hook') {
+    // The T3 dispatcher (t3-hook.ts) for a registered thread. Exit 2 carries a block; any error is logged and the session goes on.
+    try {
+      const raw = process.stdin.isTTY ? '' : readFileSync(0, 'utf8');
+      const r = await t3Hook(rest[0] ?? '', (raw.trim() ? JSON.parse(raw) : {}) as HookPayload, env);
+      if (r.stdout) process.stdout.write(r.stdout);
+      if (r.stderr) process.stderr.write(r.stderr);
+      return r.code;
+    } catch (err) {
+      appendFileSync(join(stateDir(env), 'hook-errors.log'), `${new Date().toISOString()} amigo t3 ${rest[0]}: ${(err as Error).message}\n`);
+      return 0;
+    }
+  }
+  if (cmd === '_t3-arm') {
+    // The T3 lead's detached watcher (t3-lead.ts).
+    const { values, positionals } = parse(rest, { session: { type: 'string' } });
+    try {
+      await t3Arm(positionals[0] === 'stop-failure' ? 'stop-failure' : 'stop', values.session as string | undefined, env);
+    } catch (err) {
+      appendFileSync(join(stateDir(env), 'hook-errors.log'), `${new Date().toISOString()} amigo t3 arm: ${(err as Error).message}\n`);
+    }
+    return 0;
   }
   if (cmd === '_ring') {
     // amigo send's detached worker: rings a crew member that was still starting once its agent is up.
@@ -209,8 +235,17 @@ export async function main(argv: string[], rawEnv: NodeJS.ProcessEnv = process.e
     case '': {
       const { values } = parse(rest, { agent: { type: 'string' }, 'dry-run': { type: 'boolean' } });
       const dryRun = Boolean(values['dry-run']);
-      // amigo starts only inside herdr-app: this throws with the reason anywhere else, before the briefing starts anything.
+      // amigo starts only inside herdr-app or a T3 thread: this throws with the reason anywhere else, before the briefing starts anything.
       const backend = terminalBackend(env).name;
+      // In T3 this thread becomes the lead: the contract and the digest are this command's output (t3-lead.ts).
+      if (backend === 't3') {
+        if (dryRun) {
+          out(`DRY RUN: would make this T3 thread amigo's lead in ${home(env)} (session lock, digest, briefing).`);
+          return 0;
+        }
+        out(t3LeadBrief(values.agent as string | undefined, env));
+        return 0;
+      }
       const agent = leadAgent(loadConfig(env), values.agent as string | undefined, env);
       const briefing = startBriefing(agent, env, { dryRun });
       const launcher = newLauncher();
@@ -224,12 +259,17 @@ export async function main(argv: string[], rawEnv: NodeJS.ProcessEnv = process.e
     }
 
     case 'rotate': {
+      if (terminalBackend(env).name === 't3') throw new Error('In T3 Code there is no amigo command to restart this session: T3 compacts the conversation itself, and the SessionStart hook puts the instructions back.');
       out(requestRotation(identity(env), env));
       return 0;
     }
 
     case 'brief': {
       const { values } = parse(rest, { agent: { type: 'string' } });
+      if (terminalBackend(env).name === 't3') {
+        out(t3LeadBrief(values.agent as string | undefined, env));
+        return 0;
+      }
       const notLead = leadSessionProblem(env);
       if (notLead) throw new Error(notLead);
       terminalBackend(env);
@@ -247,7 +287,7 @@ export async function main(argv: string[], rawEnv: NodeJS.ProcessEnv = process.e
 
     case 'install-skill': {
       const { values, positionals } = parse(rest, { remove: { type: 'boolean' } });
-      const lines = values.remove ? removeSkills(positionals[0]) : installSkills(positionals[0], env);
+      const lines = values.remove ? removeSkills(positionals[0], undefined, env) : installSkills(positionals[0], env);
       for (const line of lines) out(line);
       return 0;
     }

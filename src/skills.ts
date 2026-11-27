@@ -6,6 +6,7 @@ import { loadConfig } from './config.ts';
 import { writeJsonAtomic } from './fsx.ts';
 import { codeRoot, configPath } from './paths.ts';
 import { TEMPLATES } from './templates.ts';
+import { installT3Hooks, removeT3Hooks, t3Installed, userSettingsPath } from './t3-lead.ts';
 
 /** Marks files amigo wrote, so --remove never deletes anything else. */
 export const MARKER = 'installed by amigo';
@@ -96,6 +97,8 @@ export function installSkills(agent: string | undefined, env: NodeJS.ProcessEnv 
       writeFileSync(file, t.content());
       out.push(`${t.agent}: wrote ${file} (type ${t.invoke} in a session started with amigo)`);
       out.push(...installUserSkills(userHome));
+      // In T3 Code amigo cannot pass hooks to a session: one user-level hook dispatches for the threads amigo registered.
+      if (t3Installed(env, userHome)) out.push(installT3Hooks(userSettingsPath(env, userHome)));
     } else {
       out.push(`${name}: crew members only - amigo itself runs on Claude Code, so there is no slash command here`);
     }
@@ -111,7 +114,7 @@ export function installSkills(agent: string | undefined, env: NodeJS.ProcessEnv 
 }
 
 /** Delete only files amigo wrote, plus their folder when it is left empty. */
-export function removeSkills(agent: string | undefined, userHome: string = os.homedir()): string[] {
+export function removeSkills(agent: string | undefined, userHome: string = os.homedir(), env: NodeJS.ProcessEnv = process.env): string[] {
   agentsFor(agent ?? 'claude');
   const targets = !agent || agent === 'claude' ? TARGETS : [];
   const out: string[] = [];
@@ -130,6 +133,7 @@ export function removeSkills(agent: string | undefined, userHome: string = os.ho
       if (readdirSync(dirname(file)).length === 0) rmSync(dirname(file), { recursive: true });
       out.push(`removed ${file}`);
     }
+    out.push(...removeT3Hooks(userSettingsPath(env, userHome)));
   }
   return out.length ? out : ['Nothing to remove.'];
 }

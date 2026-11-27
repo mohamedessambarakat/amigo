@@ -6,7 +6,7 @@ Your right hand. Runs the crew. You are the Boss: you talk to one agent, **amigo
 
 Each task is a **build** (it changes a project) or a **survey** (it produces a written report). Each project has a delivery mode: the crew member runs the [no-mistakes](https://github.com/kunchenguid/no-mistakes) pipeline to a pull request, opens the pull request itself, or leaves a clean ready branch. amigo merges only green work, and only on your word or when you made the project yolo.
 
-amigo itself runs on Claude Code inside the herdr desktop app; crew members can run on any supported agent CLI. It is a small Node.js tool with no runtime dependencies and works natively on Windows, Linux and macOS.
+amigo itself runs on Claude Code inside the herdr desktop app or in a [T3 Code](https://t3.codes) thread; crew members can run on any supported agent CLI (in T3 Code, on Claude Code). It is a small Node.js tool with no runtime dependencies and works natively on Windows, Linux and macOS.
 
 Made by [essam](https://essam.pro). Workflow ported from firstmate by Kun Chen (MIT).
 
@@ -19,7 +19,7 @@ Boss ──▶ amigo ──spawn──▶ crew member 1 (build: worktree, branch
 
 ## Install
 
-You need Node.js 24.3 or newer, git, Claude Code, and the herdr desktop app (`herdr-app`, with `herdr-app` and `hc` on PATH). amigo runs only inside a herdr-app terminal and refuses to start anywhere else. It was tested with herdr-app 0.1.16 and hc 0.1.21; the session-start digest warns when another version is installed. Builds use [treehouse](https://github.com/kunchenguid/treehouse) for worktrees, `gh` for GitHub, no-mistakes for `no-mistakes` projects (its `init` also adds a no-mistakes skill to `~/.claude/skills` and `~/.agents/skills`; amigo asks you once whether to keep it and otherwise has it removed after init), and [tasks-axi](https://github.com/kunchenguid/tasks-axi) (0.2.6 or newer) for the backlog.
+You need Node.js 24.3 or newer, git, Claude Code, and the herdr desktop app (`herdr-app`, with `herdr-app` and `hc` on PATH). amigo runs only inside a herdr-app terminal or a T3 Code thread (see [In T3 Code](#in-t3-code)) and refuses to start anywhere else. It was tested with herdr-app 0.1.16 and hc 0.1.21; the session-start digest warns when another version is installed. Builds use [treehouse](https://github.com/kunchenguid/treehouse) for worktrees, `gh` for GitHub, no-mistakes for `no-mistakes` projects (its `init` also adds a no-mistakes skill to `~/.claude/skills` and `~/.agents/skills`; amigo asks you once whether to keep it and otherwise has it removed after init), and [tasks-axi](https://github.com/kunchenguid/tasks-axi) (0.2.6 or newer) for the backlog.
 
 ```sh
 git clone https://github.com/mohamedessambarakat/amigo
@@ -29,7 +29,7 @@ amigo install-skill
 ```
 
 - `npm install -g .` links the `amigo` command to this folder, so keep the folder where it is (`git pull` or `/updateamigo` updates it). Installing straight from GitHub (`npm install -g github:...`) does not work: Node will not run TypeScript from inside `node_modules`.
-- `amigo install-skill` adds every supported agent CLI it finds to your config. amigo itself runs only on Claude Code (its Stop hook runs the watcher and the turn-end guard), so only Claude Code gets `/amigo`, which reloads amigo's instructions inside a session the `amigo` command started; the other agents run crew members. For Claude Code it also installs your commands inside an amigo session: `/catchup`, `/rundown`, `/remember`, `/updateamigo`, `/afk` and `/quiet`. It prints every file it writes, never overwrites a file it did not write, and `amigo install-skill --remove` takes them out again.
+- `amigo install-skill` adds every supported agent CLI it finds to your config. amigo itself runs only on Claude Code (its Stop hook runs the watcher and the turn-end guard), so only Claude Code gets `/amigo`, which reloads amigo's instructions inside a session the `amigo` command started; the other agents run crew members. For Claude Code it also installs your commands inside an amigo session: `/catchup`, `/rundown`, `/remember`, `/updateamigo`, `/afk` and `/quiet`. Where T3 Code is installed it also adds one hook to `~/.claude/settings.json` (see [In T3 Code](#in-t3-code)). It prints every file it writes, never overwrites a file it did not write, and `amigo install-skill --remove` takes them out again.
 - Everything amigo stores lives in `~/.amigo/` (`AMIGO_HOME` puts it elsewhere): `config/` (local choices), `data/` (durable records: the project registry, `boss.md`, `learnings.md`, the backlog, briefs and survey reports), `state/` (runtime records, status events, the wake queue, the worktree pool) and `projects/` (amigo's own clones).
 - **Coming from an older amigo?** A home with `config.json` and `projects.json` at its top is refused until you convert it: close every open task, run `amigo migrate --dry-run` to see the plan, then `amigo migrate`. Each registered folder becomes a clone in `~/.amigo/projects/<name>` (registered `no-mistakes` with yolo on; a folder without an origin becomes `local-only`). `--live <project>` records the old folder as its live install, `--drop <project>` leaves one out. The old gate files are dropped; task history moves to `state/tasks/`.
 
@@ -61,6 +61,18 @@ amigo picks the project, writes the instructions (your own words under `## Boss'
 - `/quiet` keeps you in the session with fewer routine updates; `/quiet off` ends it.
 - `/updateamigo` fast-forwards amigo's own folder from origin and picks up the new instructions.
 
+### In T3 Code
+
+In a T3 Code thread, type `/amigo` (or have the thread run `amigo`). T3 starts Claude Code itself, so amigo cannot launch it with its own hooks and instructions: instead that thread becomes amigo. It takes the session lock, is recorded as this home's lead, and gets amigo's instructions and the session-start digest as the command's output. Each crew member is a T3 thread of its own, titled `<id> · <title>`, started with `t3 thread start` in its folder (a build or survey still gets a worktree leased from treehouse, added as a T3 project). Crew members in T3 run on Claude Code (T3 provider `claudeAgent`); their model is the task's dispatch model, else the lead thread's.
+
+- **One hook for every session.** `amigo install-skill` adds a hook for SessionStart, UserPromptSubmit, Stop and StopFailure to `~/.claude/settings.json`: `node "<amigo>/src/t3-hook.ts" <event>`. Every Claude Code session runs it, so it reads only amigo's thread registry (`~/.amigo/state/t3-threads.json`) and exits at once, printing nothing, unless the session is a T3 thread amigo started or made its lead (about 50 ms of Node start-up). The registry also tells a thread's commands their home and task, since T3 starts threads without amigo's environment.
+- **Waking amigo.** At each turn end the lead's Stop hook runs the turn-end guard and starts the watcher in the background; an actionable event is sent into the lead thread with `t3 thread send`, as a message that starts "amigo wake". Crew members report with `amigo report`; their Stop hook sends a turn without its STATUS line back once.
+- **Steering.** `amigo send` and `amigo control <id> relaunch` queue their text as the crew thread's next turn: nothing is typed, nothing is interrupted.
+- **What T3 cannot do from the command line yet.** There is no `t3` command to interrupt or archive one thread, so `amigo control <id> interrupt` names the thread for amigo to stop with its `t3_thread_interrupt` tool. `amigo close` removes the crew member's T3 project with its threads; a thread in a folder another crew member still uses (a reviewer's) is only forgotten, and amigo can archive it with `t3_thread_update`.
+- T3 compacts long conversations itself: the SessionStart hook then puts amigo's instructions back with the fleet as it is now. `amigo rotate` does not apply.
+
+It was tested with t3 0.1.13; the digest warns when another version is installed.
+
 ## How it works
 
 **The contract.** amigo's instructions are `prompts/amigo.md`: a short always-loaded contract (identity and hard rules, intake, delivery and merge authority, supervision, how to talk to you) plus agent-only playbooks in `skills/agent/` that it reads only at their trigger (stuck crew recovery, landing, survey completion, validation, ask-user findings, diagnosis, decisions, projects, away mode). Crew members get `prompts/member.md` and, for a build, a brief generated from code. Inside an amigo session the contract wins over your other standing instructions, except your security rules.
@@ -82,9 +94,9 @@ You can use every command yourself too:
 ```
 amigo: your right hand. Runs the crew.
 
-  amigo [--agent <name>] [--dry-run]                start amigo in this terminal: a briefing first, then you just talk to it
-  amigo install-skill [<agent>] [--remove]          set up your agent CLIs: /amigo for Claude Code, crew templates for the rest
-  amigo brief --agent <name>                        print amigo's instructions and the briefing (what /amigo runs; only inside a session amigo started)
+  amigo [--agent <name>] [--dry-run]                start amigo in this terminal (in a T3 Code thread: make the thread amigo): a briefing first, then you just talk to it
+  amigo install-skill [<agent>] [--remove]          set up your agent CLIs: /amigo for Claude Code (and its T3 Code hook), crew templates for the rest
+  amigo brief --agent <name>                        print amigo's instructions and the briefing (what /amigo runs; only inside a session amigo started, or a T3 Code thread)
   amigo add <git url or path> [--name <name>] [--mode no-mistakes|direct-PR|local-only] [--yolo | --no-yolo]
             [--live <folder>] [--notes <text>] [--live-command <cmd>]... [--watch <text>]...
                                                     clone a project into projects/<name> and register it; the same name and source again updates it
@@ -197,7 +209,7 @@ Give your agent the link to this repository and ask it to set up amigo. Agent, d
 3. Run `amigo install-skill <your agent>` (claude, codex, gemini, antigravity or grok). **Ask the user** whether the crew member permission flags are right for them; never switch to flags that skip all checks on your own.
 4. **Ask the user** which projects to add, their delivery mode and whether any may be yolo, then run `amigo add <git url or path> [--mode ...] [--notes "..."]` for each. Check: `amigo projects` lists them.
 5. Check the template: `amigo spawn --project <name> --type docs --dry-run --brief-file README.md` must print a command, not an error.
-6. Tell the user to run `amigo` in a herdr-app terminal. Do not start it yourself.
+6. Tell the user to run `amigo` in a herdr-app terminal, or type `/amigo` in a T3 Code thread. Do not start it yourself.
 
 ## Safety
 
